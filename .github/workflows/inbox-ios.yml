@@ -38,6 +38,6 @@ jobs:
           xcrun simctl boot "$device"
           xcrun simctl bootstatus "$device" -b
           (cd iosApp && xcodegen generate)
-          cargo test --locked -p yappers-netkit --test portability --no-run
+          cargo test --locked -p yappers-netkit --features server --test portability --no-run
           xcodebuild -project iosApp/Yappers.xcodeproj -scheme Yappers -configuration Debug -destination "platform=iOS Simulator,id=$device" -derivedDataPath build/ios build-for-testing
           NETKIT_TEST_SCOPE=messaging scripts/test-netkit-ios.sh "$device"
