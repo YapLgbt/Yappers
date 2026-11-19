@@ -67,7 +67,11 @@ async function applyEnrollment(enrollment) {
   activeRoute = key;
   if (previous) await previous.close();
 }
-export async function start(intent, alias = 'Neighbor', invitation = '') {
+export async function start(intent, alias = '', invitation = '') {
+  alias = alias.trim();
+  if (intent === 'create' && (alias.length < 2 || alias.length > 30))
+    throw new Error('Choose a display name between 2 and 30 characters.');
+  if (!alias) alias = 'Neighbor';
   if (!navigator.locks || !crypto.subtle) throw new Error('Open Yap in a browser with secure device storage.');
   await init();
   profile = await load();
@@ -178,6 +182,21 @@ function milesBetween(a, b) {
   const h = Math.sin((b.lat100-a.lat100)*rad/2)**2 + Math.cos(a.lat100*rad)*Math.cos(b.lat100*rad)*Math.sin((b.lon100-a.lon100)*rad/2)**2;
   return 7917.52 * Math.asin(Math.sqrt(Math.min(1,h)));
 }
+export function queuedPosts(state, feed) {
+  const scope = state.activeGroup || state.join.community;
+  const area = !state.activeGroup && state.nearby;
+  const known = new Set(feed.map(post => post.id));
+  return state.outbox.flatMap(({id, payload}) => {
+    const action = payload.action;
+    if (known.has(id) || payload.community !== scope || !['post', 'postV2'].includes(action.kind) ||
+      (area && (!action.area || milesBetween(action.area, area.center) > area.radiusMiles))) return [];
+    return [{
+      id, scope, pending: true, mine: true, author: action.displayName, visibility: { anonymous: action.anonymous },
+      username: action.anonymous ? undefined : state.username, profile: action.profile, area: action.area,
+      headline: action.headline, body: action.body, topic: action.topic, createdAt: payload.createdAt, replies: []
+    }];
+  }).reverse();
+}
 function changeFeed(state, change) {
   const next = {...state,...change};
   if (viewKey(state) === viewKey(next)) return next;
@@ -206,7 +225,7 @@ function purgeDeleted(state, learned = []) {
     .map(post=>({...post,replies:post.replies.filter(reply=>!known.has(reply.id))})),
     outbox:state.outbox.filter(event=>!known.has(event.id)), saved:state.saved.filter(id=>!known.has(id))};
 }
-export async function queue(action, alias, scope = profile.activeGroup || profile.join.community) {
+export async function queue(action, _legacyAlias, scope = profile.activeGroup || profile.join.community) {
   let eventId;
   await modify(state => {
     if (state.setupStep || state.welcomePending) throw new Error('Finish setting up your account before posting.');
@@ -219,7 +238,7 @@ export async function queue(action, alias, scope = profile.activeGroup || profil
     if (scope !== (state.activeGroup || state.join.community) && !savedTarget) throw new Error('The feed changed. Reopen the composer.');
     const prepared = JSON.parse(prepare_action(JSON.stringify(state.wallet),scope,JSON.stringify(action)));
     eventId = prepared.event.id;
-    return {...state, alias:alias || state.alias, wallet:{...state.wallet,nextSequence:prepared.nextSequence},
+    return {...state, wallet:{...state.wallet,nextSequence:prepared.nextSequence},
       outbox:[...state.outbox,prepared.event]};
   });
   scheduleDelivery();
@@ -291,11 +310,15 @@ async function synchronize() {
       await modify(s=>({...s,pendingApprovals:s.pendingApprovals.filter(id=>id!==peer)}));
     }
     let sent = 0;
+    const acceptedFeedEvents = new Set();
     for (const event of profile.outbox) {
       const receipt=await scopedRpc(event.payload.community,{type:'submit',event});
       const removed = event.payload.action.kind==='delete' ? [event.payload.action.target] : receipt.envelope?.deletion ? [event.id] : [];
+      // Keep the local article or reply until the same store update supplies its confirmed version.
+      const awaitingFeed = ['post', 'postV2', 'reply'].includes(event.payload.action.kind) && !removed.length;
+      if (awaitingFeed) acceptedFeedEvents.add(event.id);
       await modify(s=>purgeDeleted({...s,posts:event.payload.action.kind==='vote'?s.posts.map(post=>post.id===event.payload.action.target
-        ? {...post,vote:event.payload.action.value,score:post.score-post.vote+event.payload.action.value}:post):s.posts,ownedEvents:mergeHistory(s.ownedEvents,[receipt.erased,receipt.envelope].filter(Boolean)),outbox:s.outbox.filter(v=>v.id!==event.id)},removed));
+        ? {...post,vote:event.payload.action.value,score:post.score-post.vote+event.payload.action.value}:post):s.posts,ownedEvents:mergeHistory(s.ownedEvents,[receipt.erased,receipt.envelope].filter(Boolean)),outbox:awaitingFeed ? s.outbox : s.outbox.filter(v=>v.id!==event.id)},removed));
       if(event.payload.community!==(profile.activeGroup||profile.join.community) && [event.payload.action.parent,event.payload.action.target].some(id=>id && profile.savedPosts?.[id])){
         const other=await scopedRpc(event.payload.community,{type:'feed'});
         await modify(s=>{
@@ -321,7 +344,7 @@ async function synchronize() {
       const savedPosts=newlyBlocked?{}:{...s.savedPosts};
       const scope=s.activeGroup||s.join.community;
       for(const post of latest.posts)if(s.saved.includes(post.id))savedPosts[post.id]={...post,scope};
-      return purgeDeleted({...s,savedPosts,feedCache:newlyBlocked ? {} : s.feedCache,blocks:[...confirmedBlocks,...s.blocks.filter(b=>!b.handle)], posts:latest.posts, lastSync:Date.now(), safeForPublic:safe,
+      return purgeDeleted({...s,savedPosts,outbox:s.outbox.filter(event=>!acceptedFeedEvents.has(event.id)),feedCache:newlyBlocked ? {} : s.feedCache,blocks:[...confirmedBlocks,...s.blocks.filter(b=>!b.handle)], posts:latest.posts, lastSync:Date.now(), safeForPublic:safe,
       directAvailable:latest.direct === true && !s.mailboxElsewhere, messageRequests:privacy.requests || [], inboxPolicy:s.pendingPrivacy || privacy.settings, hideAnonymous:s.pendingPrivacy?.hideAnonymous ?? (s.privacyManaged ? privacy.settings.hideAnonymous : s.hideAnonymous || privacy.settings.hideAnonymous),
       usernameDomain:privacy.usernameDomain || s.usernameDomain, username:privacy.username || s.username,
       wallet:latest.accountChain?.length ? {...s.wallet,chain:latest.accountChain} : s.wallet},latest.deleted);});

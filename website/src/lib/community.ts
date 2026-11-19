@@ -9,6 +9,7 @@ export interface Author {
   profile?: PublicProfile;
 }
 export interface Post extends Author {
+  pending?: boolean; createdAt?: number;
   topic: string;
   headline?: string;
   acceptedAt?: number;
@@ -40,7 +41,6 @@ export interface Profile {
   blocks: BlockedAccount[];
   pendingUnblocks: string[];
   lastSync?: number;
-  postAnonymously?: boolean;
   setupStep?: string | null;
   outbox: { id:string; payload: { community:string;action: { kind: string; target?:string; parent?:string; displayName?:string; value?:number; headline?: string; body?: string } } }[];
 }
@@ -55,13 +55,14 @@ export interface Community {
   reportDraft():Promise<{home:string;receipt:string}>;
   reportStatus(receipt:string):Promise<{status:string}>;
   submitReport(receipt:string,evidence:ReportEvidence):Promise<{status:string}>;
+  queuedPosts(state: Profile, feed: Post[]): Post[];
   profile: Profile | null;
   replicaFeed?: { posts: Post[]; asOf: number };
   updates: EventTarget;
   start(intent?: 'create', alias?: string,invitation?:string): Promise<boolean>;
   sync(): Promise<'primary' | 'replica'>;
   modify(change: (profile: Profile) => Profile): Promise<void>;
-  queue(action: Record<string, unknown>, alias?: string | null, scope?:string): Promise<string>;
+  queue(action: Record<string, unknown>, legacyAlias?: null, scope?:string): Promise<string>;
   listGroups():Promise<void>; joinGroup(id:string|null,details?:GroupDetails):Promise<string>;selectGroup(id:string|null):Promise<void>;
   setNearby(value:Nearby|null):Promise<void>;setPrivacy(change:Partial<Privacy>):Promise<void>;
   inboxError: string;

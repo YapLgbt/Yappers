@@ -28,7 +28,7 @@
       <p class="form-help">You’ll need both the file and the same passkey to restore.</p>
       <div class="form-actions">
         <ActionButton type="button" id="protect-account" variant="tonal">Create recovery file</ActionButton>
-        <a id="download-recovery" class="mtrl-button mtrl-button--outlined" hidden download="yap-account.yap-recovery">Save recovery file</a>
+        <a id="download-recovery" class="btn" data-variant="outlined" hidden download="yap-account.yap-recovery">Save recovery file</a>
       </div>
     </details>
   </section>
@@ -56,7 +56,7 @@
   #recovery > section { margin-block-start: .625rem; }
   #recovery .key-row { margin-block-start: .375rem; }
   #backup-key { margin: 0; }
-  #recovery .form-actions :global(.mtrl-button--filled) { margin: 0; }
+  #recovery .form-actions :global(.btn[data-variant=filled]) { margin: 0; }
   #recovery details .form-actions { margin-block-start: .5rem; }
   #recovery .restore-alternative { justify-content: flex-start; }
   #download-recovery { margin: 0; text-decoration: none; }

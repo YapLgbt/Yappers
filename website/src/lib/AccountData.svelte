@@ -82,7 +82,7 @@
 </script>
 
 <Sheet
-  triggerClass={restoreOnly ? "mtrl-button mtrl-button--text" : undefined}
+  triggerVariant={restoreOnly ? 'text' : 'tonal'}
   label={restoreOnly ? 'Restore a full backup' : 'Account data'}
   title={mode === 'export'
     ? 'Save a full backup'
@@ -210,9 +210,9 @@
 
 {#snippet buttons(close: () => void)}
   {#if error}<p class="form-feedback form-error action-feedback" role="alert">{error}</p>{/if}
-  <div class="form-actions account-actions" class:destructive={mode === 'reset'}>
+  <div class="form-actions account-actions">
     <ActionButton type="button" disabled={busy} onclick={() => (restoreOnly ? close() : openMode('overview'))}>Cancel</ActionButton>
-    <ActionButton form={id + '-form'} variant="filled" type="submit" disabled={busy}>
+    <ActionButton form={id + '-form'} variant={mode === 'reset' ? 'danger' : 'filled'} type="submit" disabled={busy}>
       {busy ? 'Working…' : mode === 'export' ? 'Download backup' : mode === 'import' ? 'Restore account' : 'Reset browser'}
     </ActionButton>
   </div>
@@ -224,8 +224,4 @@
   .restore-consequence { font: var(--type-small); }
   .account-actions { justify-content: flex-end; }
   .action-feedback { margin: 0 0 .5rem; }
-  .destructive {
-    --mtrl-sys-color-primary: var(--mtrl-sys-color-error);
-    --mtrl-sys-color-on-primary: var(--mtrl-sys-color-on-error);
-  }
 </style>

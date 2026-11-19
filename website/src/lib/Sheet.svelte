@@ -9,7 +9,8 @@
     prepare,
     dismiss,
     canDismiss,
-    triggerClass = 'mtrl-button mtrl-button--tonal',
+    triggerClass,
+    triggerVariant = 'tonal',
     busy = false,
     disabled = false,
     opener,
@@ -22,6 +23,7 @@
     dismiss?: () => void;
     canDismiss?: () => boolean;
     triggerClass?: string;
+    triggerVariant?: 'tonal' | 'text';
     busy?: boolean;
     disabled?: boolean;
     opener?: Snippet;
@@ -42,7 +44,7 @@
 </script>
 
 <Dialog.Root bind:open={() => open, change}>
-  <Dialog.Trigger bind:ref={trigger} class={triggerClass} {disabled} aria-label={label}
+  <Dialog.Trigger bind:ref={trigger} class={triggerClass ?? 'btn'} data-variant={triggerClass ? undefined : triggerVariant} {disabled} aria-label={label}
     >{#if opener}{@render opener()}{:else}{label}{/if}</Dialog.Trigger
   >
   <Dialog.Portal>
@@ -57,7 +59,7 @@
       interactOutsideBehavior={busy ? 'ignore' : 'close'}
     >
       <div class="dialog-title">
-        <Dialog.Title>{title}</Dialog.Title><Dialog.Close class="mtrl-button mtrl-button--text" disabled={busy}
+        <Dialog.Title>{title}</Dialog.Title><Dialog.Close class="btn" data-variant="text" disabled={busy}
           >Close</Dialog.Close
         >
       </div>

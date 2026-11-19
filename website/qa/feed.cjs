@@ -43,6 +43,17 @@ const stop=()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnec
   await page.getByRole('heading',{name:'Welcome to Yap'}).waitFor();
   assert.equal(await page.evaluate(async()=>await (await import('./store.js')).load()),null);
   if (!upgradeFrom) {
+    const storedEntries = await page.evaluate(() => new Promise((resolve, reject) => {
+      const open = indexedDB.open('yap-web-v1');
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const count = db.transaction('device').objectStore('device').count();
+        count.onsuccess = () => { db.close(); resolve(count.result); };
+        count.onerror = () => { db.close(); reject(count.error); };
+      };
+    }));
+    assert.equal(storedEntries, 0, 'Welcome should not create a device key before the first write.');
     const policies = page.getByRole('navigation',{name:'Policies'});
     const terms = await policies.getByRole('link',{name:'Terms of Service'}).boundingBox();
     const privacy = await policies.getByRole('link',{name:'Privacy Policy'}).boundingBox();
@@ -69,6 +80,15 @@ const stop=()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnec
   if (!upgradeFrom) await page.getByRole('button',{name:'Back',exact:true}).click();
   await page.locator('#welcome-create').click();
   const suggestion=await page.locator('#welcome-alias').inputValue();
+  if (!upgradeFrom) {
+    assert.equal(suggestion, '');
+    for (const blank of ['', '   ']) {
+      await page.locator('#welcome-alias').fill(blank);
+      await page.locator('#welcome-join').click();
+      await page.locator('#welcome-alias[aria-invalid=true]:focus').waitFor();
+      assert.equal(await page.evaluate(async () => (await import('./store.js')).load()), null);
+    }
+  }
   await page.locator('#suggest-name').click();
   assert.notEqual(await page.locator('#welcome-alias').inputValue(),suggestion);
   if (!upgradeFrom) {
@@ -151,7 +171,7 @@ const stop=()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnec
   }
   await verifyPull('neighborhood');
   // Rehearse the same consent and receipt flow on a disposable, staffed test home.
-  if (process.env.YAP_QA_REPORTS === '1') {
+  if (!upgradeFrom && process.env.YAP_QA_REPORTS === '1') {
     await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'You',exact:true}).click(); await page.locator('#settings').click();
     await page.getByRole('button',{name:'Report to your home',exact:true}).click();
     let dialog=page.getByRole('dialog',{name:'Report to your home'});
@@ -180,32 +200,57 @@ const stop=()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnec
     assert.ok(!persisted.includes(receipt) && !persisted.includes('Browser rehearsal: selected excerpt'));
     console.log('PASS home-only report review, recovery-key rejection, submission and private receipt lookup.');
   }
-  await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'Saved',exact:true}).click();
+  function viewFeed(name) {
+    if (assets !== currentAssets) return page.locator(name === 'Nearby' ? '#feed-tab' : '#saved-tab').click();
+    return page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name,exact:true}).click();
+  }
+  await viewFeed('Saved');
   await verifyPull('neighborhood');
-  await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'You',exact:true}).click(); await page.locator('#settings').click();
+  if (!upgradeFrom) await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'You',exact:true}).click();
+  await page.locator('#settings').click();
   await verifyPull(upgradeFrom ? 'options' : 'preferences-body');
   await page.locator('#options [data-close]').click();
-  await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'Nearby',exact:true}).click();
-  const title='A library walk '+Date.now();
-  await page.getByRole('button',{name:'Post',exact:true}).click();
+  const displayName = upgradeFrom ? 'Library neighbor' : 'West End reader';
+  const handle = 'library_reader@neighborhood.test';
   if (!upgradeFrom) {
-    assert.ok(await page.locator('#posting-identity').evaluate(select => select.offsetHeight) >= 48,
-      'The native posting identity select should retain its full field height in WebKit.');
+    await page.getByRole('button', {name:'Edit profile',exact:true}).click();
+    const profileEditor = page.getByRole('dialog', {name:'Edit profile'});
+    await profileEditor.getByRole('textbox', {name:'Display name',exact:true}).fill(displayName);
+    await profileEditor.getByRole('button', {name:'Save profile',exact:true}).click();
+    await profileEditor.waitFor({state:'hidden'});
+  }
+  await viewFeed('Nearby');
+  const anonymousMode = page.getByRole('switch', {name: 'Anonymous mode'});
+  async function assertNamedDraft() {
+    const editor = page.locator('#editor');
+    assert.equal(await anonymousMode.isChecked(), false);
+    assert.equal(await editor.getByRole('textbox',{name:'Display name',exact:true,includeHidden:true}).count(),0);
+    assert.equal(await editor.locator('#public-byline strong').innerText(), displayName);
+    assert.equal(await editor.locator('#public-byline .signature-handle').innerText(), handle);
+  }
+  const title='A library walk '+Date.now();
+  await page.locator('#compose').click();
+  if (!upgradeFrom) {
+    await assertNamedDraft();
     await page.locator('#send').click();
     await page.locator('#headline[aria-invalid="true"]:focus').waitFor();
     assert.equal(await page.locator('#headline').getAttribute('aria-describedby'), 'headline-error headline-limit');
     assert.equal(await page.locator('#body').getAttribute('aria-invalid'), 'true');
     assert.equal(await page.locator('#body').getAttribute('aria-describedby'), 'body-error body-limit');
+    await anonymousMode.check();
     await page.locator('#headline').fill('Keep my draft');
     await page.keyboard.press('Escape');
     const discard = page.getByRole('dialog',{name:'Discard your draft?'});
     await discard.getByRole('button',{name:'Keep editing'}).click();
     assert.equal(await page.locator('#headline').inputValue(), 'Keep my draft');
+    assert(await anonymousMode.isChecked(), 'Keep editing preserves this draft’s anonymous choice');
     await page.keyboard.press('Escape');
     await discard.getByRole('button',{name:'Discard draft'}).click();
     await page.locator('#editor').waitFor({state:'hidden'});
+    await page.locator('#compose:focus').waitFor();
     await page.getByRole('button',{name:'Post',exact:true}).click();
     assert.equal(await page.locator('#headline').inputValue(), '');
+    await assertNamedDraft();
   }
   await page.locator('#headline').fill(title);
   await page.locator('#body').fill('Meet at the west entrance.');
@@ -213,8 +258,8 @@ const stop=()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnec
     assert.equal(await page.locator('#headline').getAttribute('aria-invalid'), null);
     assert.equal(await page.locator('#body').getAttribute('aria-invalid'), null);
   }
-  await page.locator('#posting-identity').selectOption('named');
   if (upgradeFrom) {
+    await page.locator('#posting-identity').selectOption('named');
     assert.equal(await page.locator('#send').isDisabled(),true);
     await page.locator('#editor-username button').click();
     await page.locator('#username-local').fill('library_reader');
@@ -225,10 +270,10 @@ const stop=()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnec
   const card=page.locator('article').filter({has:page.getByRole('heading',{name:title,exact:true})});
   await card.waitFor({timeout:65000});
   await card.getByText('library_reader@neighborhood.test',{exact:true}).waitFor();
-  assert.match(await card.locator('.byline').first().textContent(),/Library neighbor/);
+  assert((await card.locator('.byline').first().textContent()).includes(displayName));
   if (!upgradeFrom) assert.equal(await card.locator('.avatar').count(), 0);
   await card.getByRole('button',{name:'Save',exact:true}).click();
-  await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'Saved',exact:true}).click();
+  await viewFeed('Saved');
   if (!upgradeFrom) {
     const viewport = page.viewportSize();
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -255,21 +300,37 @@ const stop=()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnec
   assert.equal(await page.locator('#editor').isVisible(),false);
   assert.equal(await page.locator('textarea:focus').count(),0);
   await card.getByRole('button',{name:'Write a reply'}).click();
-  assert.equal(await page.locator('#posting-identity').inputValue(),'named');
+  if (upgradeFrom) assert.equal(await page.locator('#posting-identity').inputValue(),'named');
+  else await assertNamedDraft();
   await page.locator('#body').fill('See you there.');
   await page.locator('#send').click();
   await card.getByText('See you there.').waitFor({timeout:65000});
   await card.getByText('library_reader@neighborhood.test',{exact:true}).nth(1).waitFor({timeout:65000});
-  assert.equal(await card.getByText('library_reader@neighborhood.test',{exact:true}).count(),2);
+  if (!upgradeFrom) await card.locator('.reply:focus').getByText('See you there.').waitFor();
+  assert.equal(await card.getByText(handle,{exact:true}).count(),2);
+  const namedReply = card.locator('.reply').filter({hasText:'See you there.'});
+  if (!upgradeFrom) {
+    await namedReply.getByText(displayName,{exact:true}).waitFor();
+    await card.getByRole('button',{name:'Write a reply'}).click();
+    await assertNamedDraft();
+    await anonymousMode.check();
+    assert.equal(await page.locator('#public-byline').getByText(handle,{exact:true}).count(),0);
+    await page.locator('#body').fill('Bringing a spare library card.');
+    await page.locator('#send').click();
+    const privateReply = card.locator('.reply').filter({hasText:'Bringing a spare library card.'});
+    await privateReply.getByText('Anonymous neighbor',{exact:true}).waitFor();
+    await privateReply.getByRole('button',{name:'Delete reply'}).waitFor({timeout:65000});
+    assert.equal(await privateReply.getByText(handle,{exact:true}).count(),0);
+  }
   await page.evaluate(()=>document.fonts.ready);
   for (const selector of ['h2',':scope > p','.reply p']) {
-    assert.match(await card.locator(selector).evaluate(el=>getComputedStyle(el).fontFamily),/Geist Serif/);
+    assert.match(await card.locator(selector).first().evaluate(el=>getComputedStyle(el).fontFamily),/Geist Serif/);
   }
   assert.match(await card.locator('.byline').first().evaluate(el=>getComputedStyle(el).fontFamily),/Geist Sans/);
   if (process.env.YAP_QA_SCREENSHOTS) {
     await card.screenshot({path:path.join(process.env.YAP_QA_SCREENSHOTS,'post-type-'+engine+'.png')});
   }
-  await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'Nearby',exact:true}).click();
+  await viewFeed('Nearby');
   await page.evaluate(()=>navigator.serviceWorker.ready);
   await page.reload();await page.locator('#posts[data-feed-state=primary]').waitFor({timeout:65000});
   // WebKit's emulated offline mode rejects document navigation before the service
@@ -285,11 +346,22 @@ const stop=()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnec
   }
   if(engine==='webkit') await ctx.setOffline(true);
   await page.locator('#compose').click();
-  assert.equal(await page.locator('#posting-identity').inputValue(),'named');
-  await page.locator('#posting-identity').selectOption('anonymous');
+  if (upgradeFrom) {
+    assert.equal(await page.locator('#posting-identity').inputValue(),'named');
+    await page.locator('#posting-identity').selectOption('anonymous');
+  } else {
+    await assertNamedDraft();
+    await anonymousMode.check();
+  }
   await page.locator('#headline').fill(title+' offline');
   await page.locator('#body').fill('Written while offline.');await page.locator('#send').click();
-  await page.getByText('Post waiting to send · '+title+' offline').waitFor();
+  if (upgradeFrom) await page.getByText('Post waiting to send · '+title+' offline').waitFor();
+  else await page.getByRole('article').filter({has:page.getByRole('heading',{name:title+' offline',exact:true})}).getByText('Waiting to send',{exact:true}).waitFor();
+  const queued = await page.evaluate(async () => (await (await import('./store.js')).load()).outbox.map(e => e.payload.action));
+  const queuedPost = queued.find(action => action.headline === title+' offline');
+  assert.equal(queuedPost?.anonymous,true);
+  assert.equal(queuedPost.displayName,'Anonymous neighbor');
+  assert.ok(!queuedPost.profile);
   let accountBefore;
   if (upgradeFrom) {
     const local=await page.evaluate(async()=>{
@@ -336,37 +408,57 @@ const stop=()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnec
   const offlinePosts=await page.getByRole('heading',{name:title+' offline',exact:true}).count();
   assert.equal(offlinePosts,1);
   const {join}=await (await ctx.request.get(new URL('/.well-known/yap-home.json',base).href)).json();
-  const received=await page.evaluate(async join=>{
+  const received=await page.evaluate(async ({join, title})=>{
    const {default:init,BrowserClient,create_wallet}=await import('./runtime/yap.js');await init();
    const w=JSON.parse(create_wallet(join.serverAddr.id));
    const c=await BrowserClient.open(JSON.stringify({join,authorSecret:w.deviceSecret,nextSequence:1,accountChain:w.chain}));
    try{
     const feed=JSON.parse(await c.request('{"type":"feed"}'));
-    const offline=feed.posts.find(p=>p.headline.endsWith(' offline'));
-    if (!offline || offline.username || offline.author!=='Anonymous neighbor') throw Error('Anonymous post exposed a name');
+    const offline=feed.posts.find(p=>p.headline===title+' offline');
+    const published=feed.posts.find(p=>p.headline===title);
+    if (!offline || offline.username || offline.profile || offline.author!=='Anonymous neighbor') throw Error('Anonymous post exposed a name or profile');
     let conflict=false;
     try { await c.request(JSON.stringify({type:'social',op:{kind:'claimUsername',name:'LIBRARY_READER'}})); }
     catch(e){conflict=String(e).includes('taken');}
     if(!conflict) throw Error('A second account could claim the same username');
-    return feed.posts.map(p=>p.headline);
+    return {titles:feed.posts.map(p=>p.headline), published};
    }
    finally{await c.close();}
-  },join);
-  assert.equal(received.filter(x=>x===title+' offline').length,1);
+  },{join,title});
+  assert.equal(received.titles.filter(x=>x===title+' offline').length,1);
+  assert.equal(received.published.author,displayName);
+  assert.equal(received.published.username,handle);
+  const publishedReply=received.published.replies.find(reply=>reply.body==='See you there.');
+  assert.equal(publishedReply.author,displayName);
+  assert.equal(publishedReply.username,handle);
+  if (!upgradeFrom) {
+    const privateReply=received.published.replies.find(reply=>reply.body==='Bringing a spare library card.');
+    assert.equal(privateReply.author,'Anonymous neighbor');
+    assert.ok(!privateReply.username && !privateReply.visibility?.peer && !privateReply.profile);
+  }
   await page.locator('#feed-filter').click();
   const filters = page.getByRole('dialog', { name: 'Feed filters' });
-  await filters.getByRole('button', { name: 'Popular', exact: true }).click();
-  await filters.getByRole('gridcell', { name: 'Plans', exact: true }).click();
+  const newest = filters.getByRole('radio', { name: 'New', exact: true });
+  const popular = filters.getByRole('radio', { name: 'Popular', exact: true });
+  await newest.focus();
+  await page.keyboard.press('ArrowRight');
+  assert(await popular.isChecked());
+  await page.keyboard.press('Escape');
+  await page.locator('#feed-filter:focus').waitFor();
+  await page.locator('#feed-filter').click();
+  assert(await newest.isChecked(), 'Dismissing the filter dialog discards the pending selection');
+  await popular.click();
+  await filters.getByRole('radio', { name: 'Plans', exact: true }).click();
   await page.locator('#filter-form button[type=submit]').click();
   await page.getByRole('heading',{name:'No posts in Plans'}).waitFor();
   await page.getByRole('button',{name:'Show all topics'}).click();
-  const repliesButton=card.getByRole('button',{name:'Replies (1)'});
+  const repliesButton=card.getByRole('button',{name:upgradeFrom ? 'Replies (1)' : 'Replies (2)'});
   if (await repliesButton.getAttribute('aria-expanded')!=='true') await repliesButton.click();
   await card.getByRole('button',{name:'Write a reply'}).click();
-  assert.equal(await page.locator('#posting-identity').inputValue(),'anonymous');
+  await assertNamedDraft();
   await page.locator('#editor [data-close]').click();
   page.once('dialog',dialog=>dialog.accept());
-  await card.getByRole('button',{name:'Delete reply'}).click();
+  await namedReply.getByRole('button',{name:'Delete reply'}).click();
   await card.getByText('See you there.',{exact:true}).waitFor({state:'detached',timeout:65000});
   await card.locator('button[aria-label="Post options"]').click();
   page.once('dialog',dialog=>dialog.accept());

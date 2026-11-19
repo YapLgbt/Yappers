@@ -1,6 +1,6 @@
 <script lang="ts">
   import ActionButton from './ActionButton.svelte';
-  import { Chip, Chips, Dialog } from 'material/svelte';
+  import { Chip, Chips } from 'material/svelte';
   import AppIcon from './AppIcon.svelte';
   import Avatar from './Avatar.svelte';
   import { blankProfile, type Community, type Profile } from './community';
@@ -35,6 +35,8 @@
     y = $state(0.5),
     version = 0;
   let initial = $state(''), editing = $state(false);
+  let closing = $state(false), reserveScrollbar = $state(false);
+  let dialog: HTMLDialogElement;
   let photoInput: HTMLInputElement;
   let trigger: HTMLButtonElement;
   const formId = $props.id();
@@ -63,19 +65,25 @@
   }
 
   function cancel(event: Event) {
-    if (busy || (dirty && !window.confirm('Discard your unsaved profile changes?'))) {
-      event.preventDefault();
-      return false;
-    }
-    return true;
+    event.preventDefault();
+    if (busy || closing || (dirty && !window.confirm('Discard your unsaved profile changes?'))) return;
+    void dismiss();
   }
 
-  function dismiss() {
-    editing = false;
+  async function dismiss() {
+    if (closing || !dialog.open) return;
+    closing = true;
+    await tick();
+    // Keep focus and the backdrop in the modal until the surface has finished leaving.
+    await Promise.allSettled(dialog.getAnimations().map(animation => animation.finished));
+    if (dialog.open) dialog.close();
+  }
+
+  function didClose() {
+    if (dialog.open) return;
+    editing = closing = false;
     clearImage();
-    void tick().then(() => {
-      if (!editing) trigger?.focus({ preventScroll: true });
-    });
+    trigger?.focus({ preventScroll: true });
   }
   $effect(()=>{
     if (!editing || !dirty) return;
@@ -90,7 +98,8 @@
     loadingPhoto = false;
   }
   onDestroy(clearImage);
-  function prepare(event: MouseEvent & { currentTarget: HTMLButtonElement }) {
+  async function prepare(event: MouseEvent & { currentTarget: HTMLButtonElement }) {
+    if (editing) return;
     trigger = event.currentTarget;
     clearImage();
     alias = profile.alias;
@@ -100,8 +109,13 @@
       hereFor: [...(profile.publicProfile?.hereFor || [])],
     };
     initial = snapshot();
+    reserveScrollbar = window.innerWidth > document.documentElement.clientWidth;
     editing = true;
+    closing = false;
     error = '';
+    await tick();
+    dialog.showModal();
+    dialog.querySelector('form')?.scrollTo(0, 0);
   }
   async function pick(file?: File) {
     if (!file) return;
@@ -193,7 +207,7 @@
   });
   async function save(e: SubmitEvent) {
     e.preventDefault();
-    if (busy || loadingPhoto || !dirty) return;
+    if (busy || closing || loadingPhoto || !dirty) return;
     busy = true;
     error = '';
     try {
@@ -212,7 +226,7 @@
       }
       const updated = { ...draft, photo, hereFor: [...draft.hereFor] };
       await client.modify((s) => ({ ...s, alias: alias.trim(), publicProfile: updated }));
-      dismiss();
+      await dismiss();
     } catch (e) {
       error = e instanceof Error ? e.message : 'Couldn’t save your profile.';
     } finally {
@@ -222,8 +236,9 @@
 </script>
 
 <ActionButton type="button" variant="tonal" aria-label="Edit profile" aria-haspopup="dialog" onclick={prepare}>Edit profile</ActionButton>
-<Dialog class="profile-editor" size="fullscreen" headline="Edit profile" divider open={editing}
-  noCloseOnScrimClick oncancel={cancel} onclose={() => { if (editing) dismiss(); }}>
+<dialog class="profile-editor" class:closing class:reserveScrollbar bind:this={dialog}
+  aria-labelledby={formId + '-title'} oncancel={cancel} onclose={didClose}>
+  <header><h2 id={formId + '-title'}>Edit profile</h2></header>
   <form id={formId} onsubmit={save}>
     <div class="profile-photo" aria-busy={loadingPhoto}>
       <button type="button" class="photo-picker" aria-label={source || draft.photo ? 'Change profile photo' : 'Add profile photo'}
@@ -304,11 +319,11 @@
       {/each}
     </Chips>
   </form>
-  {#snippet actions()}
+  <footer>
     {#if error}<p class="profile-error" role="alert">{error}</p>{/if}
     <div class="profile-editor-actions">
-      <ActionButton type="button" disabled={busy} onclick={(event) => { if (cancel(event)) dismiss(); }}>Cancel</ActionButton>
+      <ActionButton type="button" disabled={busy} onclick={cancel}>Cancel</ActionButton>
       <ActionButton type="submit" form={formId} variant="filled" disabled={busy || loadingPhoto || !dirty}>Save profile</ActionButton>
     </div>
-  {/snippet}
-</Dialog>
+  </footer>
+</dialog>

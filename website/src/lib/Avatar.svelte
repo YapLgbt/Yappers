@@ -1,3 +1,7 @@
+<script module lang="ts">
+  const initials = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+</script>
+
 <script lang="ts">
   let {
     photo = '',
@@ -6,6 +10,7 @@
   }: { photo?: string; label: string; large?: boolean } = $props();
   let canvas = $state<HTMLCanvasElement>(),
     loaded = $state(false);
+  const initial = $derived(initials.segment(label.trim()).containing(0)?.segment.toLocaleUpperCase() || '');
   $effect(() => {
     const target = canvas,
       encoded = photo;
@@ -32,7 +37,7 @@
 </script>
 
 <span class="avatar" class:large aria-hidden="true"
-  >{#if !loaded}{label.slice(0, 1).toUpperCase()}{/if}<canvas
+  >{#if !loaded}{initial}{/if}<canvas
     hidden={!loaded}
     width="96"
     height="96"

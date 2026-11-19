@@ -12,7 +12,7 @@ The HTTPS host serves the app and a public enrollment document. The browser then
 
 ## Parity with iOS and Android
 
-The PWA shares the native apps’ Rust account, feed and encrypted messaging protocol. The SvelteKit app uses Material 3 for its navigation, action buttons, tabs and privacy switches. Its theme uses Yap’s plum palette, Geist controls and serif post text. Bits UI handles focus, dismissal and keyboard navigation for sheets, menus and tab panels.
+The PWA shares the native apps’ Rust account, feed and encrypted messaging protocol. The SvelteKit app uses Skeleton for the responsive navigation, feed sort control and shared button styles. Post and reply editors use native text fields. Yap’s plum palette, Geist controls and serif post text carry across the app. Existing menus and tabs use Bits UI, and some profile, group and preference controls still use Material.
 
 | Workflow | Browser behavior |
 |---|---|

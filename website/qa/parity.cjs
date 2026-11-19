@@ -10,6 +10,7 @@ module.exports = async function (page, ctx, base, engine) {
   const audit = (label) => require('./accessibility.cjs')(page, label);
   const shots = process.env.YAP_QA_SCREENSHOTS;
   await require('./demo.cjs')(ctx.browser(),base);
+  await require('./feed-motion.cjs')(ctx.browser(),base);
   if (engine === 'chrome') await require('./background.cjs')(page, ctx, base);
   async function layout(name) {
     for (const width of [320, 390, 1100]) {
@@ -36,7 +37,27 @@ module.exports = async function (page, ctx, base, engine) {
   await audit('Local demo');
   await page.goto(base);
   await page.locator('#posts[data-feed-state=primary]').waitFor({ timeout: 65000 });
-  await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'You',exact:true}).click();
+  const nav = page.getByRole('navigation', {name: 'Neighborhood'});
+  // Sample the first painted frame so short transitions are observable even in CI.
+  async function changePage(label) {
+    return button(label, nav).evaluate(async trigger => {
+      trigger.click();
+      await new Promise(requestAnimationFrame);
+      const pane = document.querySelector('.reading-list');
+      const animation = pane.getAnimations().find(a => a.effect?.target === pane);
+      if (!animation) return 0;
+      const start = animation.effect.getKeyframes()[0].transform;
+      animation.finish();
+      return new DOMMatrix(start).m41;
+    });
+  }
+  await page.emulateMedia({reducedMotion: 'no-preference'});
+  assert(await changePage('Saved') > 0, 'Saved enters from the right of Nearby');
+  assert(await changePage('Nearby') < 0, 'Nearby returns from the left');
+  assert.equal(await changePage('Nearby'), 0, 'Reselecting the active tab keeps its content still');
+  await page.emulateMedia({reducedMotion: 'reduce'});
+  assert.equal(await changePage('You'), 0, 'Reduce Motion keeps navigation instant');
+  await page.emulateMedia({reducedMotion: null});
   await audit('You');
   await button('Preferences').click();
   const hideAnonymous = dialog.getByRole('switch', { name: 'Hide anonymous posts and replies', exact: true });
@@ -56,8 +77,14 @@ module.exports = async function (page, ctx, base, engine) {
   await page.emulateMedia({ colorScheme: 'light' });
   await button('Done', dialog).click();
   await button('Edit profile').click();
-  await page.getByRole('dialog', { name: 'Edit profile' }).waitFor();
-  const editor = page.locator('m-dialog.profile-editor[open]');
+  const editor = page.getByRole('dialog', { name: 'Edit profile' });
+  await editor.waitFor();
+  const profilePage = await page.evaluate(() => ({ url: location.href, scroll: scrollY }));
+  await button('Cancel', editor).click();
+  await editor.waitFor({ state: 'hidden' });
+  await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Edit profile');
+  assert.deepEqual(await page.evaluate(() => ({ url: location.href, scroll: scrollY })), profilePage);
+  await button('Edit profile').click();
   const friends = editor.getByRole('gridcell', { name: 'Friends', exact: true });
   await friends.focus();
   await page.keyboard.press('Space');
@@ -120,7 +147,7 @@ module.exports = async function (page, ctx, base, engine) {
   );
   await audit('Profile editing');
   await layout('profile-crop');
-  // A failed save keeps the editor and its draft. Escape and Tab stay inside the kit's dialog while editing.
+  // A failed save keeps the editor and its draft. Escape and Tab stay inside the dialog while editing.
   await page.evaluate(() => {
     const prototype = SubtleCrypto.prototype;
     const encrypt = prototype.encrypt;
@@ -149,10 +176,10 @@ module.exports = async function (page, ctx, base, engine) {
   await page.goBack();
   await button('Edit profile').waitFor();
   await page.goForward();
-  await button('All cities').waitFor();
+  await button('Choose a town').waitFor();
   await ctx.grantPermissions(['geolocation'], { origin: new URL(base).origin });
   await ctx.setGeolocation({ latitude: 47.60657, longitude: -122.33299 });
-  await button('All cities').click();
+  await button('Choose a town').click();
   await button('Use my location', dialog).click();
   await dialog.locator('p[aria-live]').filter({hasText:/WA, US/}).waitFor();
   const gpsLabel=await dialog.locator('p[aria-live]').innerText();
@@ -176,6 +203,15 @@ module.exports = async function (page, ctx, base, engine) {
   await dialog.waitFor({ state: 'hidden' });
   await settle();
   assert.equal(await state((s) => s.nearby.radiusMiles), 15);
+  await page.getByRole('heading', {name:'No posts to show within 15 miles'}).waitFor();
+  await button('Write a post',page.locator('#posts')).click();
+  await dialog.getByText('Seattle, WA, US', {exact:true}).waitFor();
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({state:'hidden'});
+  await button('Widen to 30 miles').click();
+  await page.getByText('Within 30 miles', {exact:true}).waitFor();
+  await settle();
+  assert.equal(await state(s=>s.nearby.center.label),'Seattle, WA, US');
   await page.locator('.place-heading').click();
   await button('All cities', dialog).click();
   await button('Apply area', dialog).click();
@@ -197,12 +233,30 @@ module.exports = async function (page, ctx, base, engine) {
   await Promise.race([groupHeading.waitFor({timeout:65000}),dialog.getByRole('alert').waitFor({timeout:65000}).then(async()=>{throw new Error(await dialog.getByRole('alert').innerText())})]);
   await settle();
   await page.locator('#compose').click();
+  const composerIdentity = page.getByRole('switch', {name:'Anonymous mode'});
+  assert.equal(await composerIdentity.isChecked(),false);
+  await composerIdentity.check();
   await page.locator('#headline').fill('Group-only invitation');
   await page.locator('#body').fill('Bring your favorite book.');
   await page.locator('#send').click();
   const card = page.locator('article').filter({ hasText: 'Group-only invitation' });
   await card.waitFor({ timeout: 65000 });
-  assert(await state((s) => !s.posts[0].profile), 'Anonymous post exposed a profile');
+  const groupPostId = await card.getAttribute('data-post-id');
+  const tabs = page.getByRole('navigation', {name:'Neighborhood'});
+  await button('Nearby',tabs).click();
+  await button('Choose a town').waitFor();
+  await page.goBack();
+  await groupHeading.waitFor();
+  await card.waitFor();
+  assert.equal(await button('Groups',tabs).getAttribute('aria-current'),'page');
+  await page.goForward();
+  await button('Choose a town').waitFor();
+  assert.equal(await card.count(),0);
+  await page.goBack();
+  await groupHeading.waitFor();
+  await card.waitFor();
+  await button('Upvote', card).waitFor({ timeout: 65000 });
+  assert(await state(s => !s.posts.find(post => post.id === groupPostId).profile), 'Anonymous post exposed a profile');
   assert.equal(await card.locator('.avatar').count(), 0);
   assert.equal(await card.getByRole('button', { name: 'Anonymous neighbor', exact: true }).count(), 0);
   assert.equal(await card.getByRole('button', { name: 'Message', exact: true }).count(), 0);
@@ -227,7 +281,8 @@ module.exports = async function (page, ctx, base, engine) {
   await page.locator('#compose').click();
   await page.locator('#headline').fill('Signed profile in the group');
   await page.locator('#body').fill('See you at book club.');
-  await page.locator('#posting-identity').selectOption('named');
+  assert.equal(await composerIdentity.isChecked(),false);
+  assert.equal(await page.locator('#public-byline strong').innerText(),'Library neighbor');
   assert.equal(await state(s => s.username), 'bookclub@neighborhood.test');
   assert(await page.locator('#send').isEnabled(), 'The claimed username is available when posting by name');
   await page.locator('#send').click();
@@ -242,29 +297,33 @@ module.exports = async function (page, ctx, base, engine) {
   await page.getByRole('tab',{name:'Local',exact:true}).click();
   await button('Choose a town').click();
   await button('Seattle, WA, US',dialog).click();
+  await dialog.waitFor({state:'hidden'});
   await button('Seattle, WA, US').waitFor();
   assert.equal(await state(s=>s.groupLocality.city),'Seattle');
-  const groupSearch = page.locator('m-search input:visible');
+  const groupSearch = page.getByRole('searchbox',{name:'Search groups'});
   await groupSearch.fill('No matching name');
   await page.getByRole('heading', { name: 'No matching groups' }).waitFor();
   await groupSearch.fill('book');
-  await button('Open',page.locator('.group-row').filter({hasText:name})).click();
+  await button('Open',page.getByRole('region',{name,exact:true})).click();
   await settle();
   await ctx.setOffline(true);
   await page.locator('#compose').click();await page.locator('#headline').fill('Queued group-only post');
   await page.locator('#body').fill('Deliver this to the group after reconnecting.');await page.locator('#send').click();
-  await page.locator('.queued').filter({hasText:'Queued group-only post'}).waitFor();
+  const groupQueue = page.getByRole('article').filter({has:page.getByRole('heading',{name:'Queued group-only post',exact:true})});
+  await groupQueue.getByText('Waiting to send',{exact:true}).waitFor();
   await button('Back to nearby').click();
   await page.locator('.place-heading').waitFor();
-  assert.equal(await page.locator('.queued').filter({hasText:'Queued group-only post'}).count(),0);
+  assert.equal(await groupQueue.count(),0);
   await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'Groups',exact:true}).click();
-  await button('Open',page.locator('.group-row').filter({hasText:name})).click();
+  await button('Open',page.getByRole('region',{name,exact:true})).click();
   await card.waitFor(); // Previously opened group restored without a network request.
   await button('Back to nearby').click();
   await ctx.setOffline(false);
-  await page.waitForFunction(async()=>!(await(await import('/app/store.js')).load()).outbox.length,null,{timeout:65000});
-  assert.equal(await page.locator('article').filter({hasText:'Queued group-only post'}).count(),0);
   await page.locator('.place-heading').waitFor();
+  const network = await page.evaluateHandle(() => import('/app/network.js'));
+  await page.waitForFunction(home => home.profile.outbox.length === 0, network, {timeout:65000});
+  await network.dispose();
+  assert.equal(await page.locator('article').filter({hasText:'Queued group-only post'}).count(),0);
   await settle();
   assert.equal(await card.count(), 0);
   await ctx.setOffline(true);

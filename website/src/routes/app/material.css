@@ -1,14 +1,4 @@
-.mtrl-button {
-  min-height: 48px;
-  height: auto;
-  padding-block: 8px;
-  white-space: normal;
-  transition-property: border-radius, transform;
-}
-
-.mtrl-button svg { width: 18px; flex-shrink: 0 }
-.mtrl-button--outlined { border-color: var(--mtrl-sys-color-outline) }
-.mtrl-button:focus-visible, .mtrl-icon-button:focus-visible {
+.mtrl-icon-button:focus-visible {
   outline: 2px solid var(--plum);
   outline-offset: 2px;
 }
@@ -16,55 +6,6 @@
 .mtrl-icon-button[aria-pressed="true"] {
   background: var(--accent);
   color: var(--mtrl-sys-color-on-primary-container);
-}
-.tools .mtrl-button { padding-inline: .5rem }
-.bar-start .mtrl-button { padding-inline: .75rem }
-
-.app-nav {
-  position: fixed;
-  z-index: 4;
-  inset: auto 0 0;
-  border-block-start: 1px solid var(--line);
-  background: var(--wash);
-}
-
-@media (min-width: 900px) {
-  :root {
-    --rail-width: 208px;
-    --rail-inset: max(0px, calc((100% - 76rem) / 2));
-  }
-  body:has(.app-nav) { padding-inline: calc(var(--rail-inset) + var(--rail-width)) var(--rail-inset) }
-  .app-nav {
-    inset: 0 auto 0 var(--rail-inset);
-    width: var(--rail-width);
-    padding-block-start: max(1rem, env(safe-area-inset-top));
-    border-block-start: 0;
-    border-inline-end: 1px solid var(--line);
-    background: var(--mtrl-sys-color-surface-container-low);
-  }
-  .app-nav > * { height: 100%; }
-  .app-nav m-navigation-rail { --mtrl-sys-color-surface: var(--mtrl-sys-color-surface-container-low); }
-  .app-nav m-navigation-rail::part(navigation-rail) { inline-size: 100%; }
-}
-
-.app-nav :is(m-navigation-bar,m-navigation-rail)::part(label),
-.app-nav :is(m-navigation-bar,m-navigation-rail)::part(item),
-.app-nav :is(m-navigation-bar,m-navigation-rail)::part(icon) { transition: none }
-.app-nav :is(m-navigation-bar,m-navigation-rail)::part(item):focus-visible {
-  outline: 2px solid var(--plum);
-  outline-offset: -3px;
-}
-
-.dm-tabs { margin: .625rem 0 1rem; border-block-end: 1px solid var(--line) }
-.dm-tabs .mtrl-tab { position: relative; min-width: 0; min-height: 48px; padding-inline: .5rem; border-radius: 0 }
-/* Material reserves the button pseudo-elements for its touch target and state layer. */
-.dm-tabs [aria-selected="true"] {
-  color: var(--plum);
-  font-weight: 650;
-  background-image: linear-gradient(var(--plum), var(--plum));
-  background-size: min(3rem, 60%) 3px;
-  background-position: center bottom;
-  background-repeat: no-repeat;
 }
 
 #options section { padding-block: 1rem; border-block-end: 1px solid var(--line) }
@@ -77,9 +18,9 @@
 .privacy-switch .hint { grid-column: 1/-1; margin: 0 }
 
 @media (prefers-reduced-motion: reduce) {
-  :is(.mtrl-button, .mtrl-icon-button),
-  :is(.mtrl-button, .mtrl-icon-button)::before,
-  :is(.mtrl-button, .mtrl-icon-button)::after {
+  .mtrl-icon-button,
+  .mtrl-icon-button::before,
+  .mtrl-icon-button::after {
     transition: none;
     animation: none;
   }
@@ -87,31 +28,30 @@
 
 @media (pointer: coarse) { #refresh { display: none } }
 
-.profile-editor:not([open])::part(dialog) { display: none }
-
-.profile-editor[open]::part(dialog) {
-  display: flex;
-  flex-direction: column;
+html:has(.profile-editor:modal, #editor:modal) { overflow: hidden; }
+html:has(.reserveScrollbar:modal) { scrollbar-gutter: stable; }
+.profile-editor {
+  inset: 0;
   width: min(34rem, calc(100% - 3rem));
-  height: fit-content;
-  max-block-size: calc(100dvh - 3rem);
+  max-height: calc(100dvh - 3rem);
   margin: auto;
-  border-radius: var(--mtrl-sys-shape-corner-extra-large);
+  padding: 0;
+  overflow: hidden;
 }
-
-.profile-editor::part(content) {
+.profile-editor[open] { display: flex; flex-direction: column; }
+.profile-editor > header, .profile-editor > footer { flex: none; padding: 1rem 1.5rem; }
+.profile-editor > header { border-bottom: 1px solid var(--line); }
+.profile-editor > header h2 { margin: 0; }
+.profile-editor > footer { border-top: 1px solid var(--line); }
+.profile-editor > form {
   flex: 1 1 auto;
   min-block-size: 0;
+  padding: 1rem 1.5rem;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--mtrl-sys-color-outline) transparent;
-  padding-block: .25rem 1.25rem;
 }
-
-.profile-editor::part(header), .profile-editor::part(footer) { flex: none }
-.profile-editor::part(header-close) { display: none }
-.profile-editor::part(footer) { display: block }
 .profile-editor form > label { display: block; margin-block: 0 .875rem; font: var(--type-label); color: var(--ink) }
 .profile-editor-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .5rem }
 .profile-error { margin: 0 0 .5rem; color: var(--mtrl-sys-color-error) }
@@ -207,22 +147,27 @@
 .profile-intentions::part(label) { font: var(--type-label); color: var(--ink) }
 
 @media (max-width: 599px) {
-  .profile-editor[open]::part(dialog) {
-    inset: 0;
-    margin: 0;
+  .profile-editor {
     width: 100%;
-    max-inline-size: none;
+    max-width: none;
     height: 100dvh;
-    max-block-size: none;
+    max-height: none;
+    margin: 0;
     border-radius: 0;
   }
-  .profile-editor::part(header) { padding-block-start: calc(1rem + env(safe-area-inset-top)) }
-  .profile-editor::part(footer) { padding-block-end: calc(.75rem + env(safe-area-inset-bottom)) }
+  .profile-editor > header { padding-top: calc(1rem + env(safe-area-inset-top)); }
+  .profile-editor > footer { padding-bottom: calc(.75rem + env(safe-area-inset-bottom)); }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .profile-editor::part(dialog),
-  .profile-editor::part(header),
-  .profile-editor::part(content),
-  .profile-editor::part(footer) { transition: none }
+@media (prefers-reduced-motion: no-preference) {
+  .profile-editor[open], .profile-editor[open]::backdrop {
+    opacity: 1;
+    transition: opacity 140ms ease-out, transform 140ms ease-out;
+  }
+  .profile-editor[open].closing, .profile-editor[open].closing::backdrop { opacity: 0; }
+  .profile-editor[open].closing { transform: translateY(.4rem); }
+  @starting-style {
+    .profile-editor[open], .profile-editor[open]::backdrop { opacity: 0; }
+    .profile-editor[open] { transform: translateY(.4rem); }
+  }
 }

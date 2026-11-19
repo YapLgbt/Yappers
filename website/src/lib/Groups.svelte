@@ -1,8 +1,9 @@
 <script lang="ts">
+  import { pageMotion } from './pageMotion';
   import ActionButton from './ActionButton.svelte';
   import { onMount } from 'svelte';
   import { Tabs } from 'bits-ui';
-  import { Checkbox, Chip, Chips, Search, Select, SelectOption, TextField } from 'material/svelte';
+  import AppIcon from './AppIcon.svelte';
   import Sheet from './Sheet.svelte';
   import {
     topics,
@@ -17,7 +18,9 @@
     openGroup,
   }: { client: Community; profile: Profile; openGroup: (id: string | null) => Promise<void> } =
     $props();
+  const tabs = ['joined', 'local', 'world'];
   const formId = $props.id();
+  let searchInput: HTMLInputElement;
   let tab = $state('joined'),
     query = $state(''),
     browseCategory = $state(''),
@@ -60,7 +63,13 @@
   const showCategories = $derived(tab !== 'joined' && directory.length >= 3 && categories.length > 1);
   const selectedCategory = $derived(showCategories && categories.includes(browseCategory) ? browseCategory : '');
   const groups = $derived(directory.filter(group => !selectedCategory || group.category === selectedCategory));
+  let userChoseTab = $state(false), directoryLoading = $state(true), directoryFailed = $state(false);
+  let mounted = false;
+  const hasCachedGroups = $derived(!!profile.groupDirectory?.length || !!Object.keys(joined).length);
+  const awaitingDirectory = $derived(!profile.groupDirectory?.length &&
+    (tab !== 'joined' || (!userChoseTab && !profile.recoveredGroups?.length)));
   function setTab(next: string) {
+    userChoseTab = true;
     tab = next;
     browseCategory = '';
   }
@@ -68,18 +77,35 @@
     query = '';
     setTab('world');
   }
+  function showAvailableGroups() {
+    if (userChoseTab || Object.keys(joined).length || profile.recoveredGroups?.length) return;
+    const available = profile.groupDirectory || [];
+    if (available.length) tab = available.some(group => group.locality) ? 'local' : 'world';
+  }
+  async function loadDirectory() {
+    directoryLoading = true;
+    directoryFailed = false;
+    try {
+      await client.listGroups();
+      if (mounted) showAvailableGroups();
+    } catch {
+      directoryFailed = true;
+    } finally {
+      directoryLoading = false;
+    }
+  }
   onMount(() => {
-    client
-      .listGroups()
-      .catch(() => (error = 'Showing saved groups. Reconnect to update the directory.'));
-
+    mounted = true;
+    showAvailableGroups();
+    void loadDirectory();
+    return () => { mounted = false; };
   });
   async function choose(id: string) {
     busy = true;
     error = '';
     try {
       if (!joined[id]) await client.joinGroup(id);
-      await openGroup(id);
+      if (mounted) await openGroup(id);
     } catch (e) {
       error = errorMessage(e);
     } finally {
@@ -101,7 +127,7 @@
     try {
       const id = await client.joinGroup(null, details);
       close();
-      await openGroup(id);
+      if (mounted) await openGroup(id);
     } catch (e) {
       formError = errorMessage(e);
     } finally {
@@ -128,23 +154,18 @@
     }}
   >
     {#snippet children(close)}<form id={formId} class="group-form" onsubmit={(e) => create(e, close)}>
-        <TextField variant="outlined" label="Group name" bind:value={name} required maxlength={60} disabled={busy} />
-        <TextField variant="outlined" type="multiline" label="Description" bind:value={description}
-          required maxlength={300} disabled={busy} />
-        <Select variant="outlined" label="Topic" bind:value={category} disabled={busy}>
-          {#each topics as topic (topic)}
-            <SelectOption value={topic}>{topic}</SelectOption>
-          {/each}
-        </Select>
-        <div class="local-checkbox">
-          <Checkbox bind:checked={local} disabled={busy}>City or town group</Checkbox>
-        </div>
+        <label>Group name<input required maxlength="60" bind:value={name} disabled={busy} /></label>
+        <label>Description<textarea rows="3" required maxlength="300" bind:value={description} disabled={busy}></textarea></label>
+        <label>Topic<select bind:value={category} disabled={busy}>
+          {#each topics as topic (topic)}<option value={topic}>{topic}</option>{/each}
+        </select></label>
+        <label class="local-checkbox"><input type="checkbox" bind:checked={local} disabled={busy}/> City or town group</label>
         {#if local}
-          <TextField variant="outlined" label="City or town" aria-label="City or town"
-            bind:value={city} required maxlength={60} disabled={busy} />
-          <TextField variant="outlined" label="Region" bind:value={region} maxlength={60} disabled={busy} />
-          <TextField variant="outlined" label="Country code" bind:value={country} required
-            pattern={'[A-Za-z]{2}'} maxlength={2} placeholder="US" disabled={busy} />
+          <label>City or town<input bind:value={city} required maxlength="60" disabled={busy}/></label>
+          <div class="region-fields">
+            <label>Region<input bind:value={region} maxlength="60" disabled={busy}/></label>
+            <label>Country code<input bind:value={country} required pattern={'[A-Za-z]{2}'} maxlength="2" placeholder="US" disabled={busy}/></label>
+          </div>
         {/if}
       </form>
     {/snippet}
@@ -157,21 +178,17 @@
   </Sheet>
 </div>
 <Tabs.Root bind:value={() => tab, setTab}
-  ><Tabs.List class="dm-tabs mtrl-tabs mtrl-tabs--primary" aria-label="Group directory"
-    ><Tabs.Trigger class="mtrl-button mtrl-tab mtrl-tab--text-only" value="joined">Joined</Tabs.Trigger><Tabs.Trigger class="mtrl-button mtrl-tab mtrl-tab--text-only" value="local"
+  ><Tabs.List class="dm-tabs" aria-label="Group directory"
+    ><Tabs.Trigger class="btn" value="joined">Joined</Tabs.Trigger><Tabs.Trigger class="btn" value="local"
       >Local</Tabs.Trigger
-    ><Tabs.Trigger class="mtrl-button mtrl-tab mtrl-tab--text-only" value="world">Worldwide</Tabs.Trigger></Tabs.List
+    ><Tabs.Trigger class="btn" value="world">Worldwide</Tabs.Trigger></Tabs.List
   >
-  <Search
-    class="directory-search"
-    aria-label="Search groups"
-    placeholder="Search by group or town"
-    noExpandOnFocus
-    fullWidth
-    value={query}
-    oninput={({ detail }) => { query = detail.value; browseCategory = ''; }}
-  />
-  {#each ['joined', 'local', 'world'] as value}<Tabs.Content {value}
+  <label class="directory-search">
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>
+    <input type="search" bind:this={searchInput} aria-label="Search groups" placeholder="Search by group or town" bind:value={query} oninput={() => browseCategory = ''} />
+  </label>
+  <div use:pageMotion={tabs.indexOf(tab)}>
+  {#each tabs as value}<Tabs.Content {value}
       >{#if tab === value}
         {#if tab==='local'}
           <div class="town-filter">
@@ -197,11 +214,11 @@
           </div>
         {/if}
         {#if showCategories}
-          <Chips class="group-categories" label="Category" selection="single" selectionRequired value={selectedCategory || 'all'}
-            onchange={({ detail }) => { browseCategory = typeof detail.value === 'string' ? detail.value : ''; }}>
-            <Chip value="all" variant="filter">All</Chip>
-            {#each categories as value (value)}<Chip {value} variant="filter">{value}</Chip>{/each}
-          </Chips>
+          <div class="category-options" role="group" aria-label="Category">
+            {#each ['', ...categories] as option (option)}
+              <button aria-pressed={selectedCategory === option} onclick={() => browseCategory = option}>{option || 'All'}</button>
+            {/each}
+          </div>
         {/if}
         {#if tab === 'joined' && !query && profile.recoveredGroups?.some((g) => !joined[g.id])}<h2>
             From your backup
@@ -216,51 +233,91 @@
               >
             </div>{/each}
         {/if}
-        {#each groups as group (group.id)}<section class="group-row">
-            <div>
-              <h2>{group.name}</h2>
-              <p>{group.description}</p>
-              <small
-                >{group.locality
-                  ? [group.locality.city, group.locality.region, group.locality.country]
-                      .filter(Boolean)
-                      .join(', ')
-                  : 'Worldwide'} · {group.category}</small
-              >
+        {#each groups as group (group.id)}
+          <section class="directory-entry" aria-label={group.name}>
+            <div class="place">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                {#if group.locality}<path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/>
+                {:else}<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/>{/if}
+              </svg>
+              {group.locality ? townLabel(group.locality) : 'Worldwide'}
             </div>
-            <ActionButton variant="tonal" disabled={busy} onclick={() => choose(group.id)}
-              >{joined[group.id] ? 'Open' : 'Join'}</ActionButton
-            >
+            <div class="group-copy"><h2>{group.name}</h2><p>{group.description}</p>
+              <span class="topic">{group.category}</span>
+            </div>
+            <ActionButton variant={joined[group.id] ? 'outlined' : 'tonal'} disabled={busy} onclick={() => choose(group.id)}>
+              {joined[group.id] ? 'Open' : 'Join'}<AppIcon name={joined[group.id] ? 'arrowRight' : 'plus'}/>
+            </ActionButton>
           </section>
-        {:else}<div class="dm-empty">
-            <h2>
-              {query
-                ? 'No matching groups'
-                : tab === 'joined'
-                  ? 'No joined groups yet'
-                  : 'No groups here yet'}
-            </h2>
-            {#if tab !== 'world' && !query}<ActionButton onclick={browseWorldwide}>Browse worldwide groups</ActionButton>{/if}
-          </div>{/each}
+        {:else}
+          {#if awaitingDirectory && directoryLoading}
+            <p class="directory-state" role="status">Loading groups…</p>
+          {:else if !(awaitingDirectory && directoryFailed)}
+            <div class="dm-empty">
+              <h2>{query ? 'No matching groups' : tab === 'joined' ? 'No joined groups yet' : 'No groups here yet'}</h2>
+              {#if query}<ActionButton onclick={() => { query = ''; browseCategory = ''; searchInput.focus(); }}>Clear search</ActionButton>{/if}
+              {#if tab !== 'world' && !query}<ActionButton onclick={browseWorldwide}>Browse worldwide groups</ActionButton>{/if}
+            </div>
+          {/if}
+        {/each}
         {#if tab === 'local' && !query && directory.length > 0 && directory.length < 3}
           <ActionButton class="worldwide-link" onclick={browseWorldwide}>Browse worldwide groups</ActionButton>
         {/if}
       {/if}</Tabs.Content
-    >{/each}</Tabs.Root
+    >{/each}
+  </div></Tabs.Root
 >
+{#if directoryFailed}
+  <div class="directory-state">
+    <p role="status">{hasCachedGroups ? 'Showing saved groups. Reconnect to update the directory.' : 'Couldn’t load the group directory.'}</p>
+    <ActionButton variant="outlined" onclick={loadDirectory}>Try again</ActionButton>
+  </div>
+{/if}
 {#if error}<p role="status">{error}</p>{/if}
 
 <style>
+  .directory-state { margin: 1rem 0; color: var(--quiet); font: var(--type-small); }
+  .directory-state p { margin: 0 0 .5rem; }
   .group-form {
     display: grid;
     gap: 1rem;
     margin-block-start: .75rem;
   }
 
-  /* Keep the floating-label motion while switching theme colors immediately. */
-  .group-form :global(:is(m-text-field, m-select))::part(label) {
-    transition-property: transform, left;
+  .group-form label { display: grid; gap: .4rem; font: var(--type-label); }
+  .group-form :is(input,select,textarea) { margin: 0; }
+  .group-form .local-checkbox { display: flex; align-items: center; gap: .6rem; min-height: 44px; cursor: pointer; }
+  .local-checkbox input { width: 1.2rem; height: 1.2rem; min-height: 0; accent-color: var(--plum); }
+  .region-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: .75rem; }
+  .directory-search { display: flex; position: relative; align-items: center; margin-top: 1rem; }
+  .directory-search svg { position: absolute; left: .875rem; color: var(--quiet); pointer-events: none; }
+  .directory-search input {
+    appearance: none;
+    width: 100%;
+    min-height: 2.875rem;
+    margin: 0;
+    padding: .625rem .875rem .625rem 2.65rem;
+    border: 1px solid var(--line);
+    border-radius: .65rem;
+    background: var(--mtrl-sys-color-surface-container-lowest);
+    color: var(--ink);
+    font: var(--type-body);
   }
+  .directory-search input::placeholder { color: var(--quiet); opacity: 1; }
+  .directory-search input:focus-visible { outline: 2px solid var(--plum); outline-offset: 1px; }
+  .category-options { display: flex; flex-wrap: wrap; gap: .375rem; margin-block: .5rem; }
+  .category-options button { color: var(--quiet); padding: .45rem .65rem; min-height: 44px; border-radius: .5rem; }
+  .category-options button[aria-pressed=true] { background: var(--accent); color: var(--ink); }
+  .directory-entry { display: grid; grid-template-columns: 1fr auto; gap: .45rem 1rem; padding-block: 1.25rem; border-block-end: 1px solid var(--line); }
+  .place { display: flex; align-items: center; gap: .4rem; grid-column: 1/-1; color: var(--plum); font: var(--type-label); overflow-wrap: anywhere; }
+  .place svg { flex: none; }
+  .group-copy { min-width: 0; overflow-wrap: anywhere; }
+  .group-copy h2 { margin: 0; font: var(--type-post-title); }
+  .group-copy p { margin: .4rem 0; line-height: 1.5; }
+  .group-copy .topic { color: var(--quiet); font: var(--type-small); }
+  .directory-entry :global(.btn) { align-self: start; }
+  .directory-entry :global(.btn svg) { width: 16px; height: 16px; }
+  @media (max-width: 24rem) { .directory-entry { gap: .5rem; } .directory-entry :global(.btn svg) { display: none; } }
 
   .group-form-error {
     margin: 0 auto 0 0;
@@ -289,11 +346,6 @@
 
   .town-search {
     margin-block-end: .75rem;
-  }
-
-  /* Switch the search surface and foreground together with the device theme. */
-  :global(m-search.directory-search)::part(container) {
-    transition-property: border-radius, height;
   }
 
   .place-list {

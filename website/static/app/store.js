@@ -30,6 +30,7 @@ async function deviceKey() {
 async function read(key) {
   const record = await get('state');
   if (!record) return null;
+  key ??= await deviceKey();
   const bytes = await crypto.subtle.decrypt({name:'AES-GCM', iv:record.iv}, key, record.cipher);
   return JSON.parse(new TextDecoder().decode(bytes));
 }
@@ -44,12 +45,12 @@ export function update(change) {
   });
 }
 export function load() {
-  return navigator.locks.request(lockName, async () => read(await deviceKey()));
+  return navigator.locks.request(lockName, () => read());
 }
 
 export function clearDevice(check) {
   return navigator.locks.request(lockName, async () => {
-    check(await read(await deviceKey()));
+    check(await read());
     await records('readwrite', store => store.clear());
   });
 }

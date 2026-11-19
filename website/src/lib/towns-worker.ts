@@ -6,10 +6,13 @@ const normalize = (s: string) =>
 let directory: Promise<{ rows: string[]; labels: string[] }> | undefined;
 async function load() {
   const response = await fetch('/app/towns.tsv.gz');
-  if (!response.ok || !response.body) throw new Error();
-  const text = await new Response(
-    response.body.pipeThrough(new DecompressionStream('gzip')),
-  ).text();
+  if (!response.ok) throw new Error();
+  const data = await response.blob();
+  // Some hosts serve the file with Content-Encoding: gzip, so fetch already decoded it.
+  const header = new Uint8Array(await data.slice(0, 2).arrayBuffer());
+  const text = header[0] === 0x1f && header[1] === 0x8b
+    ? await new Response(data.stream().pipeThrough(new DecompressionStream('gzip'))).text()
+    : await data.text();
   const rows = text.trimEnd().split('\n');
   const labels = rows.map((row) => normalize(row.split('\t', 3).filter(Boolean).join(', ')));
   return { rows, labels };

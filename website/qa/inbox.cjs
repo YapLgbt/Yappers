@@ -56,6 +56,12 @@ module.exports = async function verifyInbox(page, ctx, fixture, engine) {
       assert.equal(await card.getByRole('button',{name:'Message',exact:true}).count(),0);
       await card.getByRole('button',{name:'Native reader',exact:true}).click();
       await page.getByRole('dialog').getByRole('button',{name:'Message Native reader',exact:true}).click();
+      await page.getByRole('button',{name:'Back to inbox',exact:true}).click();
+      await page.getByRole('button',{name:'Done',exact:true}).click();
+      await card.waitFor();
+      await page.goForward();
+      await page.getByRole('tab',{name:'Conversations'}).waitFor();
+      await page.goForward();
     }
     await page.getByLabel('Message',{exact:true}).fill(first);
     await page.getByRole('button',{name:'Send',exact:true}).click();

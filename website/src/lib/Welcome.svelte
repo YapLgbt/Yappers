@@ -8,7 +8,9 @@
   import type {Community} from './community';
   import { tick } from 'svelte';
   import { errorMessage, type RecoveryMode } from './community';
+  import { pageMotion } from './pageMotion';
   import { suggestName } from './names';
+  const steps = ['intro', 'returning', 'restore', 'name', 'username', 'backup'];
   let { client, step = $bindable(), create, enter, recovery }: {
     client:Community|null; step: WelcomeStep; create: (alias: string,invitation?:string) => Promise<void>; enter: () => Promise<void>;
     recovery: (mode: RecoveryMode) => void;
@@ -36,16 +38,15 @@
   let field: HTMLInputElement, heading: HTMLHeadingElement;
   async function go(next: WelcomeStep) {
     step = next; message = ''; nameError = ''; failed = false;
-    if (next === 'name' && !alias) alias = suggestName('');
     await tick();
     if (next) (next === 'name' ? field : heading).focus();
   }
   async function join(event: SubmitEvent) {
     event.preventDefault();
     if (busy) return;
-    const name = alias.trim() || suggestName('');
+    const name = alias.trim();
     if (name.length < 2) {
-      nameError = 'Use at least two characters, or leave the name blank.';
+      nameError = name ? 'Use at least two characters for your display name.' : 'Choose a display name to continue.';
       await tick();
       field.focus();
       return;
@@ -69,7 +70,7 @@
 {#if step === 'intro'}
   <a class="welcome-brand" href="/" aria-label="Yap home"><img src="/assets/yap-wordmark.svg" width="1745" height="773" alt="Yap"></a>
 {/if}
-<section class="welcome-content"><h1 class:sr-only={step === 'intro'} id="welcome-title" bind:this={heading} tabindex="-1">{step === "restore" ? "Restore your account" : step === "username" ? "Choose a username" : step === "backup" ? "Keep your account" : step === "name" ? "What should neighbors call you?" : "Welcome to Yap"}</h1>
+<section class="welcome-content" use:pageMotion={step ? steps.indexOf(step) : null}><h1 class:sr-only={step === 'intro'} id="welcome-title" bind:this={heading} tabindex="-1">{step === "restore" ? "Restore your account" : step === "username" ? "Choose a username" : step === "backup" ? "Keep your account" : step === "name" ? "What should neighbors call you?" : "Welcome to Yap"}</h1>
 <div id="welcome-intro" hidden={step !== "intro"}><p>Yap is a neighborhood for queer conversation. Join yap.lgbt to share a plan, ask a question or find your people.</p>
 <div class="welcome-primary-actions">
   <ActionButton type="button" variant="filled" onclick={() => go("name")} id="welcome-create">Create an account</ActionButton>
@@ -86,13 +87,13 @@
 <div id="welcome-returning" hidden={step !== "returning"}><p>Your account is already on this device. You can post by name or anonymously in your neighborhood.</p>
 <ActionButton type="button" variant="filled" onclick={() => go("backup")} id="guide-continue">Continue with my account</ActionButton>
 <ActionButton type="button" onclick={() => go(null)} id="guide-exit">Return to neighborhood</ActionButton></div>
-<form class="task-form" id="welcome-name" hidden={step !== "name"} onsubmit={join}>
+<form class="task-form" id="welcome-name" novalidate hidden={step !== "name"} onsubmit={join}>
   <p id="welcome-name-help">Use a name you’re comfortable posting with. You can also post anonymously.</p>
   <div class="form-field">
-    <label for="welcome-alias">Display name (optional)</label>
-    <input id="welcome-alias" bind:value={alias} bind:this={field} maxlength="30" autocomplete="nickname" readonly={busy} aria-invalid={nameError ? true : undefined} aria-describedby={nameError ? 'welcome-alias-error welcome-name-help' : 'welcome-name-help'} oninput={() => nameError = ''}>
+    <label for="welcome-alias">Display name (required)</label>
+    <input id="welcome-alias" bind:value={alias} bind:this={field} required minlength="2" maxlength="30" autocomplete="nickname" readonly={busy} aria-invalid={nameError ? true : undefined} aria-describedby={nameError ? 'welcome-alias-error welcome-name-help' : 'welcome-name-help'} oninput={() => nameError = ''}>
     {#if nameError}<p class="form-error" id="welcome-alias-error">{nameError}</p>{/if}
-    <div class="form-actions"><ActionButton onclick={() => { alias = suggestName(alias); nameError = ''; field.focus(); field.select(); }} id="suggest-name" type="button" disabled={busy}>Suggest another name</ActionButton></div>
+    <div class="form-actions"><ActionButton onclick={() => { alias = suggestName(alias); nameError = ''; field.focus(); field.select(); }} id="suggest-name" type="button" disabled={busy}>Suggest a name</ActionButton></div>
   </div>
   <details class="home-invitation"><summary>Have an invitation to another home?</summary>
     <div class="form-field">

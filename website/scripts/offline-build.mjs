@@ -33,6 +33,13 @@ const materialNotices = await Promise.all(['LICENSE', 'NOTICE'].map(name =>
 ));
 await writeFile(join(dist, 'app', 'material-notices.txt'), materialNotices.join('\n'));
 
+const kitPackages = ['@skeletonlabs/skeleton', '@skeletonlabs/skeleton-common', '@skeletonlabs/skeleton-svelte', 'tailwindcss'];
+const kitNotices = await Promise.all(kitPackages.map(async name => {
+  const license = await readFile(new URL('../node_modules/' + name + '/LICENSE', import.meta.url), 'utf8');
+  return name + '\n' + license;
+}));
+await writeFile(join(dist, 'app', 'skeleton-notices.txt'), kitNotices.join('\n'));
+
 async function tree(path) {
   const entries = await readdir(path, { withFileTypes: true });
   const files = await Promise.all(entries.map(entry => {

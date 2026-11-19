@@ -1,8 +1,11 @@
 <script lang="ts">
+  import { deliveryDisclosure } from './deliveryDisclosure';
+  import { pageMotion } from './pageMotion';
   import ActionButton from './ActionButton.svelte';
   import AppIcon from './AppIcon.svelte';
+  import Avatar from './Avatar.svelte';
   import ContentMenu from './ContentMenu.svelte';
-  import { tick } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import { Tabs } from 'bits-ui';
   import { inboxFor, type Community, type Profile, type Contact } from './community';
 
@@ -14,7 +17,14 @@
   let selected = $derived(contact && !profile.blocks.some(b => b.peer === contact?.peer) &&
     !mailbox.requests.includes(contact.peer) ? contact : null);
   let lines = $derived(mailbox.messages.filter(message => message.peer === selected?.peer));
-  let tab = $state('chats'), busy = $state(false), error = $state('');
+  let tab = $state('chats'), busyPeer = $state(''), error = $state('');
+  let viewVersion = 0;
+  onDestroy(() => { viewVersion++; });
+  const mailboxReady = $derived(!!profile.directState || !!profile.directAvailable);
+  let sending = $state<Record<string, boolean>>({}), sendErrors = $state<Record<string, string>>({});
+  let currentError = $derived((selected && sendErrors[selected.peer]) || error);
+  let feedback = $derived(currentError || status || (profile.directState?.delivery_paused ? 'Delivery paused. Refresh to retry.' :
+    profile.directState?.unreadable ? 'Some messages couldn’t be opened on this device.' : ''));
   let drafts = $state<Record<string,string>>({});
   let heading = $state<HTMLHeadingElement>();
   let scrollbox = $state<HTMLDivElement>();
@@ -31,7 +41,12 @@
     lastPeer = peer; lastId = id;
   });
 
+  function setFolder(next: string) {
+    if (next !== tab) { viewVersion++; error = ''; }
+    tab = next;
+  }
   async function show(person: Contact | null) {
+    viewVersion++;
     contact = person;changedContact(person); error = ''; tab = 'chats';
     await tick(); (person ? heading : document.querySelector<HTMLElement>('.dm-tabs [role=tab]'))?.focus();
   }
@@ -40,46 +55,58 @@
       mailbox.messages.findLast(message => message.peer === peer)?.label || 'Neighbor ' + peer.slice(0,6);
   }
   async function send(person: Contact) {
-    if (busy) return;
+    if (busyPeer === person.peer || sending[person.peer]) return;
     const body = drafts[person.peer]?.trim();
     if (!body) return;
-    busy = true; error = '';
+    sending[person.peer] = true;
+    delete sendErrors[person.peer];
     try {
       await client.sendMessage(person, body);
       drafts[person.peer] = '';
       void refresh();
     } catch (reason) {
       const detail = String(reason);
-      error = client.profile?.mailboxElsewhere ? client.otherMessagingDevice : /no available message keys|has not enabled messaging/.test(detail)
+      sendErrors[person.peer] = client.profile?.mailboxElsewhere ? client.otherMessagingDevice : /no available message keys|has not enabled messaging/.test(detail)
         ? 'Ask them to open Yap once, then try sending again.'
         : /too many new conversations/.test(detail) ? 'Try starting this conversation again in an hour.'
         : /queue or label too long/.test(detail) ? 'Your message queue is full. Reconnect and try again.'
         : 'Couldn’t send. Your draft is here. Reconnect and try again.';
-    } finally { busy = false; }
+    } finally { delete sending[person.peer]; }
   }
   async function accept(peer: string) {
-    busy = true; error = '';
+    const version = viewVersion;
+    busyPeer = peer; error = '';
     try {
       await client.approveMessage(peer);
       await refresh();
-      await show({peer,label:labelFor(peer)});
-    } catch { error = client.profile?.mailboxElsewhere ? client.otherMessagingDevice : 'Couldn’t accept this request. Reconnect and try again.'; }
-    finally { busy = false; }
+      if (version === viewVersion && !contact && tab === 'requests') await show({peer,label:labelFor(peer)});
+    } catch {
+      if (version === viewVersion && !contact) error = client.profile?.mailboxElsewhere ? client.otherMessagingDevice : 'Couldn’t accept this request. Reconnect and try again.';
+    } finally { busyPeer = ''; }
   }
   async function blockPerson(person: Contact) {
     if (!window.confirm('Block '+person.label+'? This hides their posts and stops messages between you.')) return;
-    busy = true; error = '';
-    try { await block(person); await show(null); }
-    catch { error = 'Couldn’t save this block. Try again.'; }
-    finally { busy = false; }
+    const version = viewVersion, originalPeer = contact?.peer;
+    busyPeer = person.peer; error = '';
+    try {
+      await block(person);
+      if (version !== viewVersion || contact?.peer !== originalPeer) return;
+      if (originalPeer) await show(null);
+      else document.querySelector<HTMLElement>('.dm-tabs [aria-selected=true]')?.focus();
+    } catch {
+      if (version === viewVersion && contact?.peer === originalPeer) error = 'Couldn’t save this block. Try again.';
+    } finally { busyPeer = ''; }
   }
 </script>
 
 {#if selected}
-  <div class="dm-top"><ActionButton onclick={() => show(null)}>Back to inbox</ActionButton>
-    <ActionButton disabled={busy} onclick={() => selected && blockPerson(selected)}>Block</ActionButton></div>
-  <h2 class="dm-title" tabindex="-1" bind:this={heading}>{selected.label}</h2>
-  <p class="dm-meta">End-to-end encrypted</p>
+  <div class="dm-top"><ActionButton onclick={() => show(null)}><AppIcon name="arrowLeft"/>Back to inbox</ActionButton>
+    <ActionButton disabled={!!busyPeer} onclick={() => selected && blockPerson(selected)}>Block</ActionButton></div>
+  <div class="recipient">
+    <Avatar label={selected.label}/>
+    <div><h1 class="dm-title" tabindex="-1" bind:this={heading}>{selected.label}</h1>
+      <p class="dm-meta">End-to-end encrypted</p></div>
+  </div>
   <div class="dm-history" data-scroll-history role="log" aria-label="Messages" aria-relevant="additions" bind:this={scrollbox}>
     {#each lines as message (message.id)}
       <div class="dm-line" class:outgoing={message.outgoing}>
@@ -91,42 +118,81 @@
         {/if}</div>
         {#if message.outgoing}<small>{message.status === 'sent' ? 'Sent' : message.status === 'queued' ? 'Waiting to send' : 'Couldn’t deliver'}</small>{/if}
       </div>
-    {:else}<p class="dm-meta">Send your first message to {selected.label}.</p>{/each}
+    {:else}
+      {#if mailboxReady}<p class="dm-meta">Send your first message to {selected.label}.</p>
+      {:else if !feedback}<p class="dm-meta" role="status">Loading inbox…</p>{/if}
+    {/each}
   </div>
+  {#if feedback}
+    <div class="dm-feedback-anchor">
+      <span class="sr-only" role="status">{feedback}</span>
+      <details class="delivery-feedback" use:deliveryDisclosure={() => document.getElementById('dm-body')?.focus({preventScroll: true})}>
+        <summary>{currentError ? 'Message needs attention' : status.startsWith('Offline inbox') ? 'Offline inbox' : 'Inbox status'}</summary>
+        <p>{feedback}</p>
+      </details>
+    </div>
+  {/if}
   <form class="dm-compose" onsubmit={event => {event.preventDefault(); if (selected) void send(selected);}}>
-    <label for="dm-body">Message</label>
-    <textarea id="dm-body" rows="2" maxlength="1000" value={drafts[selected.peer] || ''} readonly={busy}
+    <label class="sr-only" for="dm-body">Message</label>
+    <textarea placeholder="Write a message…" id="dm-body" rows="2" maxlength="1000" value={drafts[selected.peer] || ''} readonly={busyPeer === selected.peer || sending[selected.peer]}
       oninput={event => { if (selected) drafts[selected.peer] = event.currentTarget.value; }}></textarea>
-    <ActionButton variant="filled" disabled={busy || !profile.directAvailable || !drafts[selected.peer]?.trim()}>Send</ActionButton>
+    <ActionButton variant="filled" disabled={busyPeer === selected.peer || sending[selected.peer] || !profile.directAvailable || !drafts[selected.peer]?.trim()}>{sending[selected.peer] ? 'Sending…' : 'Send'}</ActionButton>
   </form>
 {:else}
-  <Tabs.Root bind:value={tab}>
-    <Tabs.List class="dm-tabs mtrl-tabs mtrl-tabs--primary" aria-label="Inbox folders">
-      <Tabs.Trigger class="mtrl-button mtrl-tab mtrl-tab--text-only" value="chats">Conversations</Tabs.Trigger>
-      <Tabs.Trigger class="mtrl-button mtrl-tab mtrl-tab--text-only" value="requests">Requests{mailbox.requests.length ? ' ('+mailbox.requests.length+')' : ''}</Tabs.Trigger>
+  <Tabs.Root bind:value={() => tab, setFolder}>
+    <Tabs.List class="dm-tabs" aria-label="Inbox folders">
+      <Tabs.Trigger class="btn" value="chats">Conversations</Tabs.Trigger>
+      <Tabs.Trigger class="btn" value="requests">Requests{mailbox.requests.length ? ' ('+mailbox.requests.length+')' : ''}</Tabs.Trigger>
     </Tabs.List>
+    <div use:pageMotion={tab === 'chats' ? 0 : 1}>
     <Tabs.Content value="chats">
       {#each mailbox.threads as thread (thread.peer)}
         <button class="dm-thread" onclick={() => show({peer:thread.peer,label:thread.label})}>
-          <strong>{thread.label}</strong><span>{thread.outgoing ? 'You: ' : ''}{thread.body}</span>
+          <Avatar label={thread.label}/>
+          <span class="conversation"><strong>{thread.label}</strong><span>{thread.outgoing ? 'You: ' : ''}{thread.body}</span></span>
+          <AppIcon name="arrowRight"/>
         </button>
       {:else}
-        {#if !profile.mailboxElsewhere}<section class="dm-empty"><span class="empty-icon"><AppIcon name="nearby" /></span><h2 tabindex="-1" bind:this={heading}>No conversations yet</h2>
+        {#if mailboxReady && !profile.mailboxElsewhere}<section class="dm-empty"><span class="empty-icon"><AppIcon name="nearby" /></span><h2 tabindex="-1" bind:this={heading}>No conversations yet</h2>
           <p>Select a neighbor’s name on a post or reply, then choose Message on their profile.</p>
           <ActionButton onclick={browse}>Browse posts</ActionButton></section>{/if}
       {/each}
     </Tabs.Content>
     <Tabs.Content value="requests">
       {#each mailbox.requests as peer (peer)}
-        <div class="dm-request"><strong>{labelFor(peer)}</strong><div class="actions">
+        <div class="dm-request"><div class="requester"><Avatar label={labelFor(peer)}/><strong>{labelFor(peer)}</strong></div><div class="actions">
+          <ActionButton variant="tonal" disabled={!!busyPeer || !profile.directAvailable} onclick={() => accept(peer)}>Accept</ActionButton>
+          <ActionButton disabled={!!busyPeer} onclick={() => blockPerson({peer,label:labelFor(peer)})}>Block</ActionButton>
           <ActionButton onclick={() => report('account',peer,'')}>Report account</ActionButton>
-          <ActionButton disabled={busy || !profile.directAvailable} onclick={() => accept(peer)}>Accept</ActionButton>
-          <ActionButton disabled={busy} onclick={() => blockPerson({peer,label:labelFor(peer)})}>Block</ActionButton>
         </div></div>
-      {:else}{#if !profile.mailboxElsewhere}<section class="dm-empty"><span class="empty-icon"><AppIcon name="nearby" /></span><h2>No message requests</h2><p>Messages that need your approval will appear here.</p></section>{/if}{/each}
+      {:else}{#if mailboxReady && !profile.mailboxElsewhere}<section class="dm-empty"><h2>No message requests</h2><p>Messages that need your approval will appear here.</p></section>{/if}{/each}
     </Tabs.Content>
+    </div>
   </Tabs.Root>
 {/if}
-{#if error || status || profile.directState?.delivery_paused || profile.directState?.unreadable}
-  <p class="dm-feedback" role="status">{error || status || (profile.directState?.delivery_paused ? 'Delivery paused. Refresh to retry.' : 'Some messages couldn’t be opened on this device.')}</p>
-{/if}
+{#if !selected && feedback}<p class="dm-feedback" role="status">{feedback}</p>
+{:else if !selected && !mailboxReady && !feedback}<p class="dm-feedback" role="status">Loading inbox…</p>{/if}
+
+
+<style>
+  .dm-thread { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: .85rem; padding: 1rem .35rem; }
+  .dm-thread .conversation { display: grid; min-width: 0; gap: .16rem; }
+  .conversation strong { color: var(--ink); font: var(--type-label); overflow: hidden; text-overflow: ellipsis; }
+  .conversation span { font: var(--type-small); }
+  .dm-thread :global(> svg) { width: 17px; color: var(--quiet); }
+  .dm-thread :global(.avatar) { color: var(--mtrl-sys-color-on-primary-container); }
+  .recipient, .requester { display: flex; gap: .75rem; align-items: center; }
+  .recipient { padding: .5rem 0 .85rem; border-bottom: 1px solid var(--line); }
+  .recipient > div { min-width: 0; }
+  .recipient .dm-title { margin: 0; font: var(--type-post-title); }
+  .recipient .dm-meta { margin: .15rem 0 0; }
+  .dm-empty h2 { font: var(--type-post-title); }
+  .dm-empty .empty-icon { width: 3.2rem; height: 3.2rem; border-radius: 36% 44% 39% 27%; }
+  .dm-request { gap: .75rem; }
+  .dm-request .actions { gap: .3rem; }
+  @media (prefers-reduced-motion: no-preference) {
+    .dm-thread :global(> svg) { transition: transform 140ms ease-out; }
+    .dm-thread:focus-visible :global(> svg) { transform: translateX(3px); }
+    @media (hover: hover) { .dm-thread:hover :global(> svg) { transform: translateX(3px); } }
+  }
+</style>

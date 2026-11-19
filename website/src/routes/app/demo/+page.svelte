@@ -4,9 +4,11 @@
   import {page} from '$app/state';
   import {pushState,replaceState} from '$app/navigation';
   import { Tabs } from 'bits-ui';
+  import { trackFeed } from '../../../lib/feedMotion.svelte';
+  import { pageMotion } from '../../../lib/pageMotion';
   import AppHead from '../../../lib/AppHead.svelte';
   import FeedPost from '../../../lib/FeedPost.svelte';
-  import Sheet from '../../../lib/Sheet.svelte';
+  import Composer, { type WrittenAction } from '../../../lib/Composer.svelte';
   import type { Post, Profile } from '../../../lib/community';
   let ready=$state(false);
   onMount(()=>{ready=true});
@@ -49,9 +51,7 @@
     saved = $state<string[]>([]),
     hidden = $state<string[]>([]),
     tab = $state('nearby');
-  let draft = $state(''),
-    headline = $state(''),
-    replyTo = $state<Post | null>(null);
+  let composer = $state<Composer>();
   let profile = $derived<Profile>({
     alias: 'You',
     join: { community: 'preview' },
@@ -63,42 +63,39 @@
     outbox: [],
   });
   const reading=$derived((page.state as {sample?:{id:string; comments:boolean}}).sample);
+  let feedList = $state<HTMLDivElement>();
+  const shown = $derived(posts.filter(post => (!reading || post.id === reading.id) &&
+    !hidden.includes(post.id) && (tab === 'nearby' || saved.includes(post.id))));
+  trackFeed(() => feedList, () => ready && !reading ? tab : null, () => shown);
   function openThread(post:Post,comments:boolean){
-    replaceState('',{sampleScroll:window.scrollY});
+    replaceState('', {sampleScroll: window.scrollY, sampleTrigger: (comments ? 'comments-' : 'read-') + post.id});
     pushState('',{sample:{id:post.id,comments}});
   }
   $effect(()=>{
-    const state=page.state as {sample?:{id:string;comments:boolean};sampleScroll?:number};
+    const state=page.state as {sample?:{id:string;comments:boolean};sampleScroll?:number; sampleTrigger?:string};
     void tick().then(()=>{
       if(page.state!==state)return;
       if(state.sample) {
         const target=document.getElementById(state.sample.comments?'thread-comments':'demo-thread');
         target?.focus({preventScroll:true});target?.scrollIntoView();
-      } else if(state.sampleScroll!==undefined)window.scrollTo(0,state.sampleScroll);
+      } else if (state.sampleScroll !== undefined) {
+        if (state.sampleTrigger) document.getElementById(state.sampleTrigger)?.focus({preventScroll: true});
+        window.scrollTo(0, state.sampleScroll);
+      }
     });
   });
-  let replyDialog: HTMLDialogElement;
-  function reply(post: Post) {
-    replyTo = post;
-    draft = '';
-    replyDialog.showModal();
-  }
-  function sendReply(e: SubmitEvent) {
-    e.preventDefault();
-    if (!draft.trim()) return;
-    posts = posts.map((p) =>
-      p.id === replyTo?.id
-        ? {
-            ...p,
-            replies: [
-              ...p.replies,
-              { id: crypto.randomUUID(), mine: true, author: 'You', body: draft.trim() },
-            ],
-          }
-        : p,
-    );
-    replyDialog.close();
-    draft = '';
+  function addSample(action: WrittenAction) {
+    const id = crypto.randomUUID();
+    const byYou = { id, mine: true, author: action.displayName, body: action.body };
+    if (action.kind === 'reply') {
+      posts = posts.map(post => post.id === action.parent
+        ? { ...post, replies: [...post.replies, byYou] }
+        : post);
+    } else {
+      posts = [{ ...byYou, headline: action.headline, topic: action.topic, replies: [] }, ...posts];
+      tab = 'nearby';
+    }
+    return id;
   }
   async function vote(post: Post, direction: number) {
     const value = post.vote === direction ? 0 : direction;
@@ -111,8 +108,7 @@
   }
 </script>
 
-<AppHead />
-<svelte:head><title>Local demo · Yap</title></svelte:head>
+<AppHead title="Local demo · Yap" />
 <header class="app-header">
   <div class="bar">
     <a class="quiet" href="/app/">Back to Yap</a>
@@ -123,63 +119,33 @@
   <div class="heading" class:thread-heading={!!reading}>
     {#if reading}<ActionButton onclick={()=>history.back()}>Back to demo</ActionButton><h1 id="demo-thread" tabindex="-1">Conversation</h1>
     {:else}<h1>Local demo</h1>
-    <Sheet
-      title="Write a sample post"
-      label="Post"
-      prepare={() => {
-        draft = '';
-        headline = '';
-      }}
-      >{#snippet children(close)}
-        <form
-          onsubmit={(e) => {
-            e.preventDefault();
-            if (!headline.trim() || !draft.trim()) return;
-            posts = [
-              {
-                id: crypto.randomUUID(),
-                author: 'You',
-                mine: true,
-                headline: headline.trim(),
-                topic: 'Chatter',
-                body: draft.trim(),
-                replies: [],
-              },
-              ...posts,
-            ];
-            tab = 'nearby';
-            close();
-          }}
-        >
-          <label>Headline<input bind:value={headline} maxlength="80" required /></label><label
-            >Post<textarea bind:value={draft} maxlength="500" required></textarea></label
-          >
-          <ActionButton variant="filled">Add to demo</ActionButton>
-        </form>{/snippet}</Sheet
-    >
+    <ActionButton variant="filled" onclick={event => composer?.open(null, event.currentTarget)}>Post</ActionButton>
   {/if}</div>
   <p class="hint">Sample conversations. Your changes stay in this preview until you leave.</p>
   <Tabs.Root bind:value={tab}
-    ><Tabs.List hidden={!!reading} class="dm-tabs mtrl-tabs mtrl-tabs--primary" aria-label="Demo feeds"
-      ><Tabs.Trigger class="mtrl-button mtrl-tab mtrl-tab--text-only" value="nearby">Nearby</Tabs.Trigger><Tabs.Trigger class="mtrl-button mtrl-tab mtrl-tab--text-only" value="saved"
+    ><Tabs.List hidden={!!reading} class="dm-tabs" aria-label="Demo feeds"
+      ><Tabs.Trigger class="btn" value="nearby">Nearby</Tabs.Trigger><Tabs.Trigger class="btn" value="saved"
         >Saved</Tabs.Trigger
       ></Tabs.List
     >
+    <div use:pageMotion={(tab === 'nearby' ? 0 : 2) + Number(!!reading)}>
     {#each ['nearby', 'saved'] as value}<Tabs.Content {value}
         >{#if value === tab}
-          {#each posts.filter((p) => (!reading || p.id===reading.id) && !hidden.includes(p.id) && (value === 'nearby' || saved.includes(p.id))) as post (post.id)}
+          <div class="demo-posts" bind:this={feedList}>
+          {#each shown as post (post.id)}
             <FeedPost
               {post}
               {profile}
               preview {openThread} detail={!!reading}
               {vote}
-              {reply}
+              reply={(post, trigger) => composer?.open(post, trigger)}
               {hide}
               mute={(p) => hide(p.id)}
-              save={(p) =>
-                (saved = saved.includes(p.id)
+              save={(p) => {
+                saved = saved.includes(p.id)
                   ? saved.filter((id) => id !== p.id)
-                  : [...saved, p.id])}
+                  : [...saved, p.id];
+              }}
               remove={(id) => {
                 hide(id);
                 posts = posts.map((p) => ({ ...p, replies: p.replies.filter((r) => r.id !== id) }));
@@ -189,18 +155,16 @@
           {:else}<p>
               {value === 'saved' ? 'Save a sample post to find it here.' : 'No posts here yet.'}
             </p>{/each}
+          </div>
         {/if}</Tabs.Content
       >{/each}
+    </div>
   </Tabs.Root>
 </main>
-<dialog bind:this={replyDialog} aria-labelledby="demo-reply-title">
-  <form onsubmit={sendReply}>
-    <div class="dialog-title">
-      <h2 id="demo-reply-title">Write a reply</h2>
-      <ActionButton type="button" onclick={() => replyDialog.close()}>Close</ActionButton>
-    </div>
-    <label>Reply<textarea bind:value={draft} required maxlength="500"></textarea></label><ActionButton
-      variant="filled">Add reply</ActionButton
-    >
-  </form>
-</dialog>
+<Composer bind:this={composer} {profile} destination="Local demo" queue={addSample}
+  showReply={async (_parent, id) => {
+    await tick();
+    const reply = document.getElementById('reply-' + id);
+    reply?.focus({ preventScroll: true });
+    reply?.scrollIntoView({ block: 'nearest' });
+  }} />

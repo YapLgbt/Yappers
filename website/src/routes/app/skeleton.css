@@ -1,0 +1,80 @@
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@import "@skeletonlabs/skeleton";
+@import "@skeletonlabs/skeleton-svelte";
+
+@source "../../lib";
+@source ".";
+
+/* Set the theme on the document so dialogs portaled to body inherit it too. */
+:root:has([data-theme="yap"]) {
+  --typo-base--font-family: var(--sans);
+  --typo-heading--font-family: var(--serif);
+  /* Keep text and surface colors in sync when the system theme changes. */
+  --default-transition-property: transform;
+  --radius-base: .625rem;
+  --radius-container: 1rem;
+
+  --color-primary-50: #f5edff;
+  --color-primary-100: #e8d9ff;
+  --color-primary-200: #d7b5ff;
+  --color-primary-300: #c7a0ee;
+  --color-primary-400: #b085da;
+  --color-primary-500: #9166b7;
+  --color-primary-600: #7955a0;
+  --color-primary-700: #694394;
+  --color-primary-800: #503568;
+  --color-primary-900: #352048;
+  --color-primary-950: #2d1749;
+
+  --color-surface-50: #fcf8ff;
+  --color-surface-100: #f7f0fc;
+  --color-surface-200: #f0e7f8;
+  --color-surface-300: #ddd0e9;
+  --color-surface-400: #bcaec9;
+  --color-surface-500: #95869e;
+  --color-surface-600: #796a85;
+  --color-surface-700: #695b76;
+  --color-surface-800: #40324c;
+  --color-surface-900: #2a2033;
+  --color-surface-950: #1b1522;
+
+  --color-root-bg-light: var(--color-surface-50);
+  --color-root-bg-dark: var(--color-surface-950);
+  --color-brand-light: var(--color-primary-700);
+  --color-brand-contrast-light: white;
+  --color-brand-dark: var(--color-primary-200);
+  --color-brand-contrast-dark: var(--color-primary-900);
+}
+
+.btn[data-variant] {
+  min-block-size: 44px;
+  padding-inline: .875rem;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--plum);
+  font: var(--type-label);
+  white-space: normal;
+  text-align: center;
+  transition: none;
+}
+.btn[data-variant] > svg { flex: none; inline-size: 18px; block-size: 18px }
+.btn[data-variant="filled"] { @apply preset-filled-brand; }
+.btn[data-variant="danger"] { background: var(--mtrl-sys-color-error); color: var(--mtrl-sys-color-on-error) }
+.btn[data-variant="tonal"] { background: var(--accent); color: var(--mtrl-sys-color-on-primary-container) }
+.btn[data-variant="outlined"] { border-color: var(--mtrl-sys-color-outline); color: var(--ink) }
+.btn[data-variant]:focus-visible { outline: 2px solid var(--plum); outline-offset: 2px }
+.btn[data-variant]:disabled { opacity: .5; cursor: default }
+
+@media (hover: hover) {
+  .btn[data-variant]:enabled:hover, a.btn[data-variant]:hover { filter: none }
+  .btn[data-variant="text"]:enabled:hover, .btn[data-variant="outlined"]:enabled:hover, a.btn[data-variant="outlined"]:hover {
+    background-color: var(--wash);
+  }
+  .btn[data-variant="filled"]:enabled:hover {
+    background-color: color-mix(in srgb, light-dark(var(--color-brand-light), var(--color-brand-dark)) 90%, var(--ink));
+  }
+  .btn[data-variant="danger"]:enabled:hover { background-color: color-mix(in srgb, var(--mtrl-sys-color-error) 90%, var(--ink)) }
+  .btn[data-variant="tonal"]:enabled:hover { background-color: color-mix(in srgb, var(--accent) 90%, var(--plum)) }
+}
