@@ -176,7 +176,7 @@ final class YapTabBarController: UITabBarController, UITabBarControllerDelegate,
 
     private func openPost(_ route: ApplePostRoute, in destination: Destination) {
         guard let navigation = stacks[destination], selectedViewController === navigation,
-              navigation.viewControllers.count == 1, navigation.transitionCoordinator == nil else { return }
+              navigation.viewControllers.count == 1 || route.opensInboxReply, navigation.transitionCoordinator == nil else { return }
         let content = session.makePost(tab: destination.rawValue, route: route, onOpenInbox: { [weak self] page, contact in
             self?.openInbox(page, contact: contact, in: destination)
         }, onClose: { [weak navigation] in

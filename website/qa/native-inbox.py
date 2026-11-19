@@ -4,8 +4,10 @@ import json
 from pathlib import Path
 import secrets
 import sys
+import time
 
-join = json.loads(Path(sys.argv[1]).read_text())["join"]
+enrollment = json.loads(Path(sys.argv[1]).read_text())
+join = enrollment.get("join", enrollment)
 assert join["serverAddr"]["id"] != "114f92b50e66dd84a14e0ff9b857b0c254565609b00b0cb9ef85f29e864efe5b"
 library = Path("build/rust/debug") / ("libyappers_netkit.dylib" if sys.platform == "darwin" else "libyappers_netkit.so")
 lib = ctypes.CDLL(str(library.resolve()))
@@ -41,8 +43,26 @@ def step(kind, **args):
     state = request("direct", state=state, action={"kind": kind, **args})["state"]
 
 
+def reply_to(parent, body, byline):
+    event = request("prepare", action={"kind": "reply", "parent": parent,
+                    "body": body, "displayName": byline})["event"]
+    request("submit", event=event)
+
+
 try:
     request("feed")
+    if sys.argv[2:] == ["--iphone-activity"]:
+        assert join["networkMode"] == "local"
+        for _ in range(600):
+            parent = next((post["id"] for post in request("feed")["posts"]
+                           if post["body"] == "iPhone Inbox activity check"), None)
+            if parent:
+                reply_to(parent, "Meet you by the library steps", "Anonymous neighbor")
+                break
+            time.sleep(1)
+        else:
+            raise TimeoutError("The iPhone never published its test post")
+        sys.exit(0)
     request("social", op={"kind": "claimUsername", "name": "native_reader"})
     request("social", op={"kind":"setProfile","expected":0,"name":"Native reader",
                           "profile":{"photo":sys.argv[2] if len(sys.argv)>2 else "","bio":"","identity":"","interests":"","pronouns":"","hereFor":[]}})
@@ -57,9 +77,7 @@ try:
         if command["kind"] == "reply":
             parent = command.get("parent") or next(
                 p["id"] for p in request("feed")["posts"] if p["headline"] == command["headline"])
-            event = request("prepare", action={"kind":"reply","parent":parent,
-                            "body":"Following up on your post","displayName":"Native reader"})["event"]
-            request("submit", event=event)
+            reply_to(parent, "Following up on your post", "Native reader")
         if command["kind"] == "send":
             step("prepare", peer=command["peer"], label="Library neighbor", name="Native reader", body=command["body"])
         step("sync")

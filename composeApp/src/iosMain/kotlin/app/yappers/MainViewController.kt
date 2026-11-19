@@ -102,6 +102,7 @@ class AppleRefresh internal constructor(private val token: ULong, private val jo
 private fun isForeground() = UIApplication.sharedApplication.applicationState == UIApplicationState.UIApplicationStateActive
 
 class ApplePostRoute internal constructor(post: Post, internal val destination: PostDestination) {
+    val opensInboxReply = destination.replyAnchor != null
     val title = "Post by " + if (isAnonymous(post.author, post.visibility)) "Anonymous neighbor"
         else post.username?.takeUnless { it.isBlank() } ?: post.author.ifBlank { "Neighbor" }
 }
