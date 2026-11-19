@@ -36,3 +36,6 @@ __pycache__/
 *.keystore
 *.mobileprovision
 *.deletion-guard
+
+/androidApp/google-services.json
+/deploy/push/node_modules/

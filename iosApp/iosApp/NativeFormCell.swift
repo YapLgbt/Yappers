@@ -137,12 +137,12 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
             content.textProperties.numberOfLines = 0
             content.secondaryTextProperties.numberOfLines = 0
             content.secondaryTextProperties.color = .secondaryLabel
-            if kind == "conversation" {
+            if kind == "conversation" || kind == "activity" {
                 if previous?.value != next.value {
                     avatar = Self.inboxPhoto(next.value)
                 }
                 let diameter: CGFloat = 44
-                content.image = avatar ?? UIImage(systemName: "person.crop.circle.fill",
+                content.image = avatar ?? UIImage(systemName: next.symbol.isEmpty ? "person.crop.circle.fill" : next.symbol,
                     withConfiguration: UIImage.SymbolConfiguration(pointSize: 40, weight: .regular))
                 let size = CGSize(width: diameter, height: diameter)
                 content.imageProperties.reservedLayoutSize = size
@@ -152,12 +152,22 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
                 content.textToSecondaryTextVerticalPadding = 3
                 content.secondaryTextProperties.numberOfLines = 2
                 content.textProperties.font = .preferredFont(forTextStyle: .headline)
+                if !next.caption.isEmpty {
+                    let detail = NSMutableAttributedString(string: next.detail, attributes: [
+                        .font: UIFont.preferredFont(forTextStyle: .subheadline), .foregroundColor: UIColor.label])
+                    if !next.detail.isEmpty { detail.append(NSAttributedString(string: "\n")) }
+                    detail.append(NSAttributedString(string: next.caption, attributes: [
+                        .font: UIFont.preferredFont(forTextStyle: .footnote),
+                        .foregroundColor: next.checked ? YapTabBarController.actionTint : UIColor.secondaryLabel]))
+                    content.secondaryAttributedText = detail
+                    content.secondaryTextProperties.numberOfLines = 0
+                }
             } else {
                 content.image = next.symbol.isEmpty ? nil : UIImage(systemName: next.symbol)
             }
             content.textProperties.color = !next.enabled ? .tertiaryLabel : next.destructive ? .systemRed : kind == "action" ? YapTabBarController.actionTint : .label
             contentConfiguration = content
-            accessoryType = (kind == "disclosure" || kind == "conversation") ? .disclosureIndicator : kind == "choice" && next.checked ? .checkmark : .none
+            accessoryType = (kind == "disclosure" || kind == "conversation" || kind == "activity") ? .disclosureIndicator : kind == "choice" && next.checked ? .checkmark : .none
             if kind == "toggle" {
                 toggle.isOn = next.checked
                 toggle.isEnabled = next.enabled
@@ -168,7 +178,7 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
             } else {
                 isAccessibilityElement = true
                 accessibilityLabel = next.title
-                accessibilityValue = next.detail.isEmpty ? nil : next.detail
+                accessibilityValue = [next.detail, next.caption].filter { !$0.isEmpty }.joined(separator: ", ")
                 accessibilityTraits = kind == "text" ? .staticText : .button
                 if !next.enabled { accessibilityTraits.insert(.notEnabled) }
                 if kind == "choice" && next.checked { accessibilityTraits.insert(.selected) }
@@ -282,7 +292,7 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
         case "multiline": editor.becomeFirstResponder()
         case "search": search.searchTextField.becomeFirstResponder()
         case "toggle": row.toggle(selected: !row.checked)
-        case "action", "disclosure", "choice", "conversation": row.tap()
+        case "action", "disclosure", "choice", "conversation", "activity": row.tap()
         default: break
         }
     }

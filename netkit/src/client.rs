@@ -470,6 +470,7 @@ impl Client {
                             | ClaimUsername { .. }
                             | SetProfile { .. }
                             | Profiles { .. }
+                            | SetPush { .. } | OpenPush { .. } | NotificationThread { .. } | NotificationInbox | ReadNotification { .. } | MuteNotifications { .. } | DismissRequest { .. }
                             | PrivacyStatus
                             | SetPrivacy { .. }
                             | Approve { .. }

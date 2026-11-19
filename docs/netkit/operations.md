@@ -142,3 +142,17 @@ The Fly standby holds the single durable commit ledger on its persistent volume.
 Protocol 6 starts with fresh public application state. Fly uses `/data/v6` and the dedicated service uses `/var/lib/yap-iroh-replica/v6`. Keep the logical home signing key, granted standby transport identity, grant, peer policy and published source archives. Rotate the public join token in the primary, standby, peer and HTTPS enrollment together. Set the manifest join protocol to 6. Start the new authority with an empty ledger and bootstrap it from a fresh dedicated database before starting the primary supervisor. Export a protected backup from the new ledger after verifying both roles.
 
 The previous volume paths contain the retired generation. A rollback pairs the previous service binaries and enrollment with those paths. Keep a single running primary for each logical identity. The new signing domain prevents a queued event from the retired generation being accepted after re-enrollment.
+
+## Inbox delivery
+
+The home stores read positions, thread mutes, device subscriptions and pending delivery leases inside its committed SQLite image. The public feed replica never registers devices. Both HA members use the same Web Push key and run the delivery worker with the providers configured for that logical home. The worker sends a generic alert and a random route. Opening the route authenticates the account and installation and checks current visibility.
+
+For a standalone home, install Node and run `npm ci --omit=dev --prefix deploy/push`. Set `YAP_PUSH_WORKER` to the absolute path of `deploy/push/send.cjs`. Set `YAP_PUSH_PROVIDERS` to a comma-separated list of the configured providers. Restart the service after changing its environment.
+
+| Provider | Configuration |
+| --- | --- |
+| Web Push (`web`) | Set `YAP_WEB_PUSH_KEY` to the public VAPID key and `YAP_WEB_PUSH_PRIVATE_FILE` to the owner-readable private-key file. The Fly standby reads these from the volume at `$YAP_SERVICE_STATE/push/{public,private}`. Keep the same key across releases. |
+| Android (`fcm`) | Build with `YAP_FIREBASE_ANDROID_CONFIG` pointing to the Firebase Android configuration for `app.yappers.android`. Set `YAP_FCM_CREDENTIALS` on the home to a service-account file authorized for FCM v1 in that project. |
+| Apple (`apns`) | Enable Push Notifications for the signing team's `app.yappers.prototype` App ID and provisioning profile. Set `YAP_APPLE_TEAM_ID`, `YAP_APNS_KEY_ID`, `YAP_APNS_KEY_FILE` and `YAP_APNS_TOPIC` on the home. Set `YAP_APNS_SANDBOX=1` for development builds. TestFlight and distribution builds use production APNs. |
+
+An installation opts in through **Inbox → Device notifications**. The three categories are replies, messages and message requests. On iOS, Web Push is available to the installed Home Screen web app. Test native distribution builds by closing Yap, sending a reply from a second account, opening the OS alert and checking the thread and badge. Repeat with an accepted message and a held request on the registered messaging installation.

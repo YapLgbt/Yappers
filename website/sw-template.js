@@ -30,3 +30,28 @@ self.addEventListener('fetch', event => {
     return (await cache.match(target)) || fetch(request);
   })());
 });
+
+self.addEventListener('push', event => {
+  let data;
+  try {data=event.data?.json();} catch {return;}
+  if (!/^[a-f0-9]{64}$/.test(data?.route) || !/^\d+$/.test(data?.revision)) return;
+  event.waitUntil((async()=>{
+    const existing=await self.registration.getNotifications({tag:data.route});
+    if(existing.some(n=>Number(n.data?.revision)>=Number(data.revision))) return;
+    await self.registration.showNotification('Yap',{
+      body:'You have an Inbox update.', icon:'/app/icon-192.png',
+      tag:data.route, data:{route:data.route, revision:data.revision}
+    });
+  })());
+});
+self.addEventListener('notificationclick', event=>{
+  const route=event.notification.data?.route;
+  event.notification.close();
+  if(!/^[a-f0-9]{64}$/.test(route)) return;
+  event.waitUntil((async()=>{
+    const windows=await self.clients.matchAll({type:'window',includeUncontrolled:true});
+    const page=windows.find(w=>new URL(w.url).pathname==='/app/');
+    if(page){await page.focus();page.postMessage({type:'yap-open-inbox',route});}
+    else await self.clients.openWindow('/app/#inbox='+route);
+  })());
+});

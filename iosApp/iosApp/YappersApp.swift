@@ -1,9 +1,58 @@
 import BackgroundTasks
 import OSLog
 import SwiftUI
+import UserNotifications
 import Yappers
 
-private final class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
+private final class AppleInboxPush: NSObject, PushRegistration {
+    let provider = "apns"
+    private(set) var currentToken: String?
+    private var completion: ((String?, String?) -> Void)?
+
+    func requestToken(completion: @escaping (String?, String?) -> Void) {
+        DispatchQueue.main.async {
+            self.completion = completion
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { allowed, _ in
+                DispatchQueue.main.async {
+                    if allowed { UIApplication.shared.registerForRemoteNotifications() }
+                    else { self.finish(token: nil, error: "Allow notifications for Yap in Settings.") }
+                }
+            }
+        }
+    }
+
+    func finish(token: String?, error: String?) {
+        currentToken = token
+        let callback = completion
+        completion = nil
+        callback?(token, error)
+    }
+}
+
+private final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate, ObservableObject {
+    private let inboxPush = AppleInboxPush()
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        inboxPush.finish(token: deviceToken.map { String(format: "%02x", $0) }.joined(), error: nil)
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        inboxPush.finish(token: nil, error: "Couldn’t register for notifications. Try again.")
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        if let route = response.notification.request.content.userInfo["route"] as? String {
+            InboxPush.shared.open(route: route)
+        }
+        completionHandler()
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list])
+    }
+
     private let identifier = "app.yappers.prototype.refresh"
     private let logger = Logger(subsystem: "app.yappers.prototype", category: "BackgroundSync")
     private static var resetMarker: String {
@@ -46,6 +95,14 @@ private final class AppDelegate: NSObject, UIApplicationDelegate, ObservableObje
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        InboxPush.shared.registration = inboxPush
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.getNotificationSettings { settings in
+            if settings.authorizationStatus == .authorized {
+                DispatchQueue.main.async { application.registerForRemoteNotifications() }
+            }
+        }
         let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: .main) { [self] task in
             guard !reviewingReset else { task.setTaskCompleted(success: true); return }
             schedule()

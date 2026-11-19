@@ -73,13 +73,13 @@ internal class AppContentState(storage: LocalStorage) {
     var feedReset by mutableIntStateOf(0)
 }
 
-internal class PostDestination(val id: Long, val atComments: Boolean, val group: String?, val live: Boolean)
+internal class PostDestination(val id: Long, val atComments: Boolean, val group: String?, val live: Boolean, val replyAnchor:String? = null)
 
 internal class PlatformNavigation(
     val activeTab: () -> String,
     val selectTab: (String) -> Unit,
     val setRootBars: (tabs: Boolean, toolbar: Boolean) -> Unit = { _, _ -> },
-    val updateToolbar: ((Boolean, String?, () -> Unit, () -> Unit) -> Unit)? = null,
+    val updateToolbar: ((Boolean, String?, Int, () -> Unit, () -> Unit) -> Unit)? = null,
     val openInbox: (InboxPage, MessageContact?) -> Unit,
     val inboxPage: InboxPage? = null,
     val openGuide: (() -> Unit)? = null,
@@ -154,6 +154,8 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
     var postDraft by retain(identityScope, connection.activeGroup?.id) { mutableStateOf<PostDraft?>(null) }
     var shownAuthor by remember(connection.messagingScope) { mutableStateOf<SharedAuthor?>(null) }
     var selectedId by retain(identityScope, connection.activeGroup?.id) { mutableStateOf<Long?>(null) }
+    var changingPush by remember(identityScope) { mutableStateOf(false) }
+    var inboxThread by retain(identityScope) { mutableStateOf<PostDestination?>(null) }
     var openAtComments by retain(identityScope, connection.activeGroup?.id) { mutableStateOf(false) }
     fun openConversation(id: Long, atComments: Boolean = false) {
         if (platformNavigation != null) {
@@ -166,7 +168,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
     }
     fun closeConversation() {
         if (nativePost != null) platformNavigation?.closePost?.invoke()
-        else selectedId = null
+        else if(inboxThread!=null) inboxThread=null else selectedId = null
     }
     var deleteTarget by remember { mutableStateOf<String?>(null) }
     var hidePostId by remember { mutableStateOf<Long?>(null) }
@@ -265,6 +267,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
             revisitGuide -> revisitGuide = false
             editingProfile -> editingProfile = false
             privacyOpen -> privacyOpen = false
+            inboxThread != null -> inboxThread = null
             dmContact != null -> dmContact = null
             inbox && mailSection != InboxPage.Messages -> mailSection = InboxPage.Messages
             inbox -> inbox = false
@@ -284,6 +287,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
             if (mailSection != InboxPage.Messages) add(MaterialPage.Mail(mailSection))
             dmContact?.let { add(MaterialPage.Mail(InboxPage.Conversation, it)) }
         }
+        inboxThread?.let { add(MaterialPage.Thread(it.id,true)) }
         if (privacyOpen) add(MaterialPage.Privacy)
         if (editingProfile) add(MaterialPage.EditProfile)
         if (revisitGuide) add(MaterialPage.Guide)
@@ -299,7 +303,37 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
     val usernameStatus = networking?.welcomeUsername?.collectAsState()?.value ?: WelcomeUsername.Unchecked
     val verifyUsername = offerBackup || installationWelcome && networking?.offersDefaultHome == true &&
         (connection.awaitingDefault || connection.homeLabel == AppBrand.domain)
+    suspend fun openInboxThread(item: InboxItem) {
+        val controller=checkNotNull(networking)
+        val (post, through)=controller.openActivityThread(item)
+        val route=PostDestination(post.id,true,controller.state.value.activeGroup?.id,true,item.first)
+        if(platformNavigation!=null) platformNavigation.openPost(post,route)
+        else { inbox=true; dmContact=null; inboxThread=route }
+        if(item.unread>0 && through>0) controller.readNotification("reply",item.copy(through=through))
+    }
     val welcoming = networking != null && (firstVisit || offerBackup || revisitGuide || installationWelcome)
+    val incomingPush by InboxPush.routes.collectAsState()
+    val canRoute = platformNavigation==null || (platformNavigation.post==null && inboxPage==null && platformNavigation.activeTab()==tab && platformNavigation.updateToolbar!=null)
+    LaunchedEffect(incomingPush,canRoute,welcoming,connection.ownershipReady,connection.online) {
+        val token=incomingPush ?: return@LaunchedEffect
+        if(!canRoute || welcoming || networking==null || !connection.ownershipReady || !connection.online || !InboxPush.take(token)) return@LaunchedEffect
+        act {
+            val resolved=networking.resolvePush(token)
+            if(resolved==null){
+                if(platformNavigation!=null) platformNavigation.openInbox(InboxPage.Messages,null) else inbox=true
+                inform("This Inbox item is no longer available.")
+            } else {
+                val (kind,item)=resolved
+                if(kind=="reply") openInboxThread(item)
+                else {
+                    val person=if(kind=="message") MessageContact(item.target,connection.messages.lastOrNull { it.peer==item.target }?.label ?: "Neighbor") else null
+                    val section=if(person==null) InboxPage.Requests else InboxPage.Conversation
+                    if(platformNavigation!=null) platformNavigation.openInbox(section,person)
+                    else {inbox=true;mailSection=if(person==null) InboxPage.Requests else InboxPage.Messages;dmContact=person}
+                }
+            }
+        }
+    }
     if (platformNavigation != null && inboxPage != null && (welcoming || !platformNavigation.matchesInboxScope(connection))) {
         LaunchedEffect(Unit) { platformNavigation.closeInboxStack() }
         return
@@ -372,13 +406,16 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
             val showPrivacy = if (page == null) privacyOpen || inboxPage == InboxPage.Privacy else page == MaterialPage.Privacy
             val currentContact = if (page == null) dmContact else mail?.contact
             val thread = page as? MaterialPage.Thread
-            val threadId = if (page == null) nativePost?.id ?: selectedId else thread?.id
+            val threadId = if (page == null) nativePost?.id ?: inboxThread?.id ?: selectedId else thread?.id
             val selected = state.posts.firstOrNull { it.id == threadId && !it.hidden &&
                 (nativePost == null || (nativePost.group == connection.activeGroup?.id && nativePost.live == live)) }
             @Composable
             fun ThreadContent(post: Post, dedicated: Boolean) {
+                if (nativePost?.replyAnchor != null || inboxThread?.replyAnchor != null) {
+                    DisposableEffect(post.remoteId) { onDispose { networking?.closeInboxThread(post.remoteId) } }
+                }
                 Conversation(post, state.alias, namedIdentity, anonymous, ::chooseIdentity, live, backLabel = tab,
-                    openAtComments = thread?.atComments ?: nativePost?.atComments ?: openAtComments, onBack = ::closeConversation,
+                    replyAnchor = nativePost?.replyAnchor ?: inboxThread?.replyAnchor, openAtComments = thread?.atComments ?: nativePost?.atComments ?: openAtComments, onBack = ::closeConversation,
                     needsUsername = live && connection.needsUsername, usernameControl = { UsernameControl(connection, networking) },
                     editorUsernameClaim = editorUsernameClaim,
                     onReply = { body, anonymous ->
@@ -483,8 +520,8 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                 if (updateToolbar != null) {
                                     val refresh by rememberUpdatedState { refreshContent() }
                                     val accessibleRefresh = refreshLabel.takeIf { canRefresh && !refreshing }
-                                    LaunchedEffect(updateToolbar, connection.awaitingDefault, accessibleRefresh) {
-                                        updateToolbar(!connection.awaitingDefault, accessibleRefresh, { postDraft = PostDraft() }, { refresh() })
+                                    LaunchedEffect(updateToolbar, connection.awaitingDefault, accessibleRefresh, connection.privacy.notifications.count) {
+                                        updateToolbar(!connection.awaitingDefault, accessibleRefresh, connection.privacy.notifications.count, { postDraft = PostDraft() }, { refresh() })
                                     }
                                 }
                                 if (materialNavigation != null && !detail) {
@@ -496,7 +533,10 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                         }) },
                                         navigationIcon = {
                                             FilledTonalIconButton(onClick = { inbox = true; dmContact = null }, modifier = Modifier.padding(start = 8.dp)) {
-                                                LineIcon("inbox", "Inbox", tint = LocalContentColor.current)
+                                                val count=connection.privacy.notifications.count
+                                                BadgedBox(badge={if(count>0) Badge {Text(count.toString())}}) {
+                                                    LineIcon("inbox", if(count>0) "Inbox, $count unread" else "Inbox", tint=LocalContentColor.current)
+                                                }
                                             }
                                         },
                                         windowInsets = WindowInsets(0)
@@ -507,7 +547,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                 ) {
                                     Box(Modifier.weight(1f).padding(start = 12.dp)) {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
-                                            if (!showInbox && !showPrivacy) TextButton(onClick = { inbox = true; dmContact = null }) { Text("Inbox") }
+                                            if (!showInbox && !showPrivacy) TextButton(onClick = { inbox = true; dmContact = null }) { Text(if(connection.privacy.notifications.count>0) "Inbox (${connection.privacy.notifications.count})" else "Inbox") }
                                             if (desktop && canRefresh) IconButton(enabled = !refreshing, onClick = ::refreshContent) {
                                                 LineIcon("refresh", refreshLabel)
                                             }
@@ -553,6 +593,19 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                                     if (materialNavigation != null) mailSection = section
                                                     else platformNavigation?.openInbox?.invoke(section, null)
                                                 },
+                                                onActivity={item->act {openInboxThread(item)}},
+                                                onRead={item->act {networking?.readNotification("message",item)}},
+                                                pushBusy = changingPush,
+                                                onPush = { categories ->
+                                                    if (!changingPush) {
+                                                        changingPush = true
+                                                        act {
+                                                            try { networking?.setPushCategories(categories) }
+                                                            finally { changingPush = false }
+                                                        }
+                                                    }
+                                                },
+                                                onDismissRequest={peer->act {networking?.dismissRequest(peer)}},
                                                 onApprove = { peer -> act { networking?.approveContact(peer); networking?.sync() } },
                                                 onSelect = { contact ->
                                                     if (contact != null && platformNavigation != null) platformNavigation.openInbox(InboxPage.Conversation, contact)
@@ -1000,7 +1053,7 @@ private data class CommentReveal(val previousIds: Set<Long>, val body: String)
 
 @Composable
 private fun Conversation(post: Post, alias: String, namedIdentity: String, anonymous: Boolean,
-                         chooseIdentity: (Boolean) -> Unit, networked: Boolean, backLabel: String, openAtComments: Boolean, onBack: () -> Unit, onReply: suspend (String, Boolean) -> Boolean,
+                         chooseIdentity: (Boolean) -> Unit, networked: Boolean, backLabel: String, openAtComments: Boolean, replyAnchor:String?, onBack: () -> Unit, onReply: suspend (String, Boolean) -> Boolean,
                          onReport: ((ReportTarget) -> Unit)?, onVote: (Int) -> Unit, onSave: () -> Unit, onMute: () -> Unit, onHide: () -> Unit, onDelete: (String) -> Unit, onAuthor: () -> Unit,
                          needsUsername: Boolean, usernameControl: @Composable () -> Unit, editorUsernameClaim: EditorUsernameClaim?, replyActionsEnabled: Boolean,
                          onReplyActions: (Reply) -> Unit, onReplyAuthor: (Reply) -> Unit, dedicated: Boolean,
@@ -1011,7 +1064,7 @@ private fun Conversation(post: Post, alias: String, namedIdentity: String, anony
     var replyFocused by remember(post.id) { mutableStateOf(false) }
     var reveal by remember(post.id) { mutableStateOf<CommentReveal?>(null) }
     val commentFocus = remember { FocusRequester() }
-    val list = rememberLazyListState(initialFirstVisibleItemIndex = if (openAtComments) 1 else 0)
+    val list = rememberLazyListState(initialFirstVisibleItemIndex = post.replies.indexOfFirst { replyAnchor!=null && it.remoteId==replyAnchor }.let { if(it>=0) it+2 else if(openAtComments) 1 else 0 })
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)

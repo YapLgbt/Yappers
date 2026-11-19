@@ -189,8 +189,37 @@ impl Store {
                 }
                 serde_json::Value::Object(profiles)
             }
+            SocialOp::SetPush {provider,subscription,categories} => self.set_push(owner,device,&provider,subscription,categories)?,
+            SocialOp::OpenPush {route} => self.push_route(owner,device,&route)?,
+            SocialOp::NotificationThread { target,anchor } => self.activity_thread(owner,&target,&anchor)?,
+            SocialOp::NotificationInbox => self.notification_inbox(owner,device)?,
+            SocialOp::ReadNotification { category, target, through } => {
+                self.read_notification(owner,device,&category,&target,through)?;
+                json!({})
+            }
+            SocialOp::MuteNotifications { target, muted } => {
+                ensure!(target.len()==64 && hex::decode(&target).is_ok(),"invalid thread");
+                if muted {
+                    self.db.execute("INSERT OR IGNORE INTO inbox_mutes VALUES(?,?)", [owner,&target])?;
+                } else {
+                    self.db.execute("DELETE FROM inbox_mutes WHERE owner=? AND target=?", [owner,&target])?;
+                }
+                json!({})
+            }
+            SocialOp::DismissRequest { peer } => {
+                valid_peer(&peer,owner)?;
+                ensure!(self.db.query_row("SELECT EXISTS(SELECT 1 FROM dm_devices WHERE owner=? AND device=?)",
+                    [owner,device],|r| r.get::<_,bool>(0))?,"open this account's messaging installation");
+                self.db.execute("UPDATE dm_mail SET packet=NULL WHERE recipient=? AND sender=? AND held=1", [owner,&peer])?;
+                json!({})
+            }
             SocialOp::PrivacyStatus => {
                 let mut result = self.privacy_status(owner)?;
+                result["notifications"] = self.notification_inbox(owner,device)?;
+                result["requests"] = json!(result["notifications"]["requests"].as_array().unwrap().iter()
+                    .map(|r|&r["target"]).collect::<Vec<_>>());
+                result["pushCapabilities"] = crate::push::capabilities();
+                result["pushCategories"] = self.push_categories(owner,device)?;
                 result["currentProfile"] =
                     serde_json::to_value(self.current_profile(home, owner)?)?;
                 if let Some(domain) = crate::usernames::domain(home) {
@@ -214,6 +243,8 @@ impl Store {
                 valid_peer(&peer, owner)?;
                 ensure!(!self.unavailable(owner, &peer)?, "contact unavailable");
                 let tx = self.db.transaction()?;
+                ensure!(!tx.query_row("SELECT EXISTS(SELECT 1 FROM dm_devices WHERE owner=? AND device<>?)",
+                    [owner,device],|r|r.get::<_,bool>(0))?, "open this account’s messaging installation");
                 crate::privacy::approve(&tx, owner, &peer)?;
                 tx.commit()?;
                 json!({})
@@ -248,6 +279,10 @@ impl Store {
                     "INSERT OR IGNORE INTO user_blocks(owner,peer,handle,label) VALUES(?,?,?,?)",
                     params![owner, peer, new_secret(), label],
                 )?;
+                tx.execute("INSERT INTO inbox_reads(owner,kind,target,through)
+                    SELECT recipient,'message',sender,MAX(seq) FROM dm_mail WHERE
+                    (recipient=?1 AND sender=?2) OR (recipient=?2 AND sender=?1) GROUP BY recipient,sender
+                    ON CONFLICT(owner,kind,target) DO UPDATE SET through=MAX(through,excluded.through)", [owner,&peer])?;
                 tx.execute("UPDATE dm_mail SET packet=NULL WHERE (sender=?1 AND recipient=?2) OR (sender=?2 AND recipient=?1)",[owner,&peer])?;
                 tx.execute("DELETE FROM dm_approved WHERE (owner=?1 AND peer=?2) OR (owner=?2 AND peer=?1)",[owner,&peer])?;
                 let id: String = tx.query_row(
@@ -436,11 +471,12 @@ impl Store {
                 )?;
                 self.db.execute("UPDATE dm_mail SET packet=NULL WHERE recipient=? AND seq<=? AND held=0 AND packet IS NOT NULL",params![owner,after])?;
                 let mut incoming = Vec::new();
-                let mut query=self.db.prepare("SELECT seq,packet,sender FROM dm_mail WHERE recipient=? AND seq>? AND held=0 AND packet IS NOT NULL AND created>=? ORDER BY seq LIMIT ?")?;
+                let mut query=self.db.prepare("SELECT seq,packet,sender,created FROM dm_mail WHERE recipient=? AND seq>? AND held=0 AND packet IS NOT NULL AND created>=? ORDER BY seq LIMIT ?")?;
                 let mut rows = query.query(params![owner, after, now() - 30 * 86400, MAIL_PAGE])?;
                 while let Some(r) = rows.next()? {
                     incoming.push(Incoming {
                         cursor: r.get(0)?,
+                        received: r.get(3)?,
                         age: crate::privacy::peer_age(&self.db, &r.get::<_, String>(2)?)?,
                         letter: serde_json::from_str(&r.get::<_, String>(1)?)?,
                     });

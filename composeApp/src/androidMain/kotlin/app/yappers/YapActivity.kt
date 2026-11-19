@@ -1,9 +1,15 @@
 package app.yappers
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
+import com.google.firebase.messaging.FirebaseMessaging
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.*
 
@@ -16,6 +22,15 @@ class YapActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (AndroidPush.configured(this)) {
+            InboxPush.registration = AndroidPush(this)
+            lifecycleScope.launch {
+                yap.controller.state.map { it.privacy.pushCategories.isNotEmpty() }.distinctUntilChanged().collect { enabled ->
+                    FirebaseMessaging.getInstance().isAutoInitEnabled = enabled
+                }
+            }
+        }
+        acceptInboxIntent(intent)
         enableEdgeToEdge()
         val files = AndroidFiles(this)
         val nearby = AndroidNearby(this)
@@ -31,6 +46,24 @@ class YapActivity : ComponentActivity() {
                     })
             }
         }
+    }
+
+    private fun acceptInboxIntent(intent: Intent) {
+        if (intent.action == AndroidInboxService.OPEN) {
+            intent.getStringExtra("route")?.let(InboxPush::open)
+            intent.removeExtra("route")
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        acceptInboxIntent(intent)
+    }
+
+    override fun onDestroy() {
+        if ((InboxPush.registration as? AndroidPush)?.activity === this) InboxPush.registration = null
+        super.onDestroy()
     }
 
     override fun onStart() {

@@ -1,0 +1,57 @@
+name: iOS Inbox
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, codex/inbox-notifications]
+    paths: ['iosApp/**', 'composeApp/**', 'netkit/**', '.github/workflows/inbox-ios.yml']
+jobs:
+  inbox:
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.gradle/caches
+            ~/.konan
+            build/rust
+          key: ios-inbox-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'gradle/wrapper/gradle-wrapper.properties', 'composeApp/build.gradle.kts') }}
+      - name: Install simulator build tools
+        run: |
+          command -v xcodegen || brew install xcodegen
+          rustup show active-toolchain
+      - name: Boot iPhone simulator
+        run: |
+          set -eu
+          device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for group in reversed(list(json.load(sys.stdin)["devices"].values())) for d in group if d["name"].startswith("iPhone")))')
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device" -b
+          echo "YAP_SIMULATOR=$device" >> "$GITHUB_ENV"
+      - name: Compile disposable home and peer
+        run: |
+          cargo build --locked -p yappers-backend
+          cargo test --locked -p yappers-netkit --features server --test portability --no-run
+      - name: Build iPhone app and UI tests
+        run: |
+          (cd iosApp && xcodegen generate)
+          xcodebuild -project iosApp/Yappers.xcodeproj -scheme Yappers -configuration Debug -destination "platform=iOS Simulator,id=$YAP_SIMULATOR" -derivedDataPath build/ios build-for-testing
+      - name: Test Inbox on iPhone
+        run: NETKIT_TEST_SCOPE=messaging scripts/test-netkit-ios.sh "$YAP_SIMULATOR"
+      - name: Package simulator build
+        run: ditto -c -k --keepParent build/ios/Build/Products/Debug-iphonesimulator/Yap.app Yap-iOS-Simulator.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Yap-iOS-Simulator
+          path: Yap-iOS-Simulator.zip
+          retention-days: 7

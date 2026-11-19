@@ -574,7 +574,23 @@ final class YappersUITests: XCTestCase {
         enter(invitation, into: field, app: app)
         app.buttons["Join instance"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["updated-community-feed"].firstMatch.waitForExistence(timeout: 30))
-        app.buttons["Inbox"].tap()
+        app.buttons["Post"].tap()
+        writePost("iPhone Inbox activity check", app: app)
+        app.buttons["Dismiss keyboard"].tap()
+        app.buttons["Post to community"].tap()
+        let unreadInbox = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Inbox,'")).firstMatch
+        XCTAssertTrue(unreadInbox.waitForExistence(timeout: 60))
+        unreadInbox.tap()
+        let activity = app.cells.matching(NSPredicate(format: "label CONTAINS 'replied' AND value CONTAINS 'Meet you by the library steps'")).firstMatch
+        XCTAssertTrue(activity.waitForExistence(timeout: 10))
+        let caption = try XCTUnwrap(activity.value as? String)
+        XCTAssertTrue(caption.contains("A little hello") && caption.contains("1 new reply"))
+        XCTAssertNotNil(caption.range(of: #"Just now|\d+m"#, options: .regularExpression))
+        capture("Unread reply in Activity", app: app)
+        activity.tap()
+        XCTAssertTrue(app.staticTexts["Meet you by the library steps"].waitForExistence(timeout: 10))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        if !app.buttons["Inbox settings"].waitForExistence(timeout: 3) { app.buttons["Inbox"].tap() }
         app.buttons["Inbox settings"].tap()
         let privacy = app.buttons["Privacy"]
         reveal(privacy, in: app); privacy.tap()

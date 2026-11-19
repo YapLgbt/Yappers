@@ -10,7 +10,21 @@ android {
         applicationId = "app.yappers.android"
         minSdk = 28
         targetSdk = 36
-        versionCode = 2
+        versionCode = 3
+        val config = providers.environmentVariable("YAP_FIREBASE_ANDROID_CONFIG").orNull?.let(::file)
+            ?: file("google-services.json")
+        if (config.exists()) {
+            val root = groovy.json.JsonSlurper().parse(config) as Map<*, *>
+            val project = root["project_info"] as Map<*, *>
+            val client = (root["client"] as List<Map<*, *>>).single {
+                val info = it["client_info"] as Map<*, *>
+                (info["android_client_info"] as Map<*, *>)["package_name"] == applicationId
+            }
+            resValue("string", "google_app_id", (client["client_info"] as Map<*, *>)["mobilesdk_app_id"].toString())
+            resValue("string", "gcm_defaultSenderId", project["project_number"].toString())
+            resValue("string", "project_id", project["project_id"].toString())
+            resValue("string", "google_api_key", (client["api_key"] as List<Map<*, *>>).first()["current_key"].toString())
+        }
         versionName = "0.1.0"
         ndk.abiFilters += listOf("arm64-v8a", "x86_64")
     }

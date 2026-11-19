@@ -9,12 +9,14 @@ mkdir -p build iosApp/.generated
 NETKIT_FIXTURE=$(mktemp -d "$NETKIT_ROOT/build/netkit-ios-fixture.XXXXXX")
 NETKIT_SERVER_PID=''
 NETKIT_MAIL_PID=''
+NETKIT_ACTIVITY_PID=''
 NETKIT_PREVIOUS_APPEARANCE=''
 NETKIT_PREVIOUS_CONTENT_SIZE=''
 cleanup() {
   if [ -n "$NETKIT_PREVIOUS_APPEARANCE" ]; then xcrun simctl ui "$NETKIT_DEVICE" appearance "$NETKIT_PREVIOUS_APPEARANCE" >/dev/null 2>&1 || true; fi
   if [ -n "$NETKIT_PREVIOUS_CONTENT_SIZE" ]; then xcrun simctl ui "$NETKIT_DEVICE" content_size "$NETKIT_PREVIOUS_CONTENT_SIZE" >/dev/null 2>&1 || true; fi
   printf '{"skip":true}\n' > "$NETKIT_ROOT/iosApp/.generated/NetkitTestJoin.json"
+  if [ -n "$NETKIT_ACTIVITY_PID" ]; then kill "$NETKIT_ACTIVITY_PID" 2>/dev/null || true; fi
   if [ -n "$NETKIT_MAIL_PID" ]; then kill "$NETKIT_MAIL_PID" 2>/dev/null || true; fi
   if [ -n "$NETKIT_SERVER_PID" ]; then
     kill -INT "$NETKIT_SERVER_PID" 2>/dev/null || true
@@ -72,7 +74,7 @@ elif [ "${NETKIT_TEST_SCOPE:-all}" = recovery ]; then
   NETKIT_TEST_ARGS=(-only-testing:YappersUITests/YappersUITests/testNativeAccountBackupAndMove)
 elif [ "${NETKIT_TEST_SCOPE:-all}" = messaging ]; then
   NETKIT_TEST_ARGS=(-only-testing:YappersUITests/YappersUITests/testEncryptedConversation -only-testing:YappersUITests/YappersUITests/testBlockAndUnblockFromInbox)
-  YAP_IOS_FIXTURE="$NETKIT_FIXTURE" "$NETKIT_CARGO" test --locked --workspace ios_messaging_fixture -- --ignored > "$NETKIT_FIXTURE/messaging.log" 2>&1 &
+  YAP_IOS_FIXTURE="$NETKIT_FIXTURE" "$NETKIT_CARGO" test --locked -p yappers-netkit --features server --test portability ios_messaging_fixture -- --ignored > "$NETKIT_FIXTURE/messaging.log" 2>&1 &
   NETKIT_MAIL_PID=$!
   for _ in $(seq 1 120); do
     [ -f "$NETKIT_FIXTURE/dm-peer-ready" ] && break
@@ -80,6 +82,9 @@ elif [ "${NETKIT_TEST_SCOPE:-all}" = messaging ]; then
     sleep 1
   done
   test -f "$NETKIT_FIXTURE/dm-peer-ready"
+  "$NETKIT_CARGO" build --locked -p yappers-netkit
+  python3 website/qa/native-inbox.py "$NETKIT_FIXTURE/join-a.json" --iphone-activity &
+  NETKIT_ACTIVITY_PID=$!
 elif [ "${NETKIT_TEST_SCOPE:-all}" != groups ]; then
   # Seed a project-owned image so photo-picker coverage works on a clean simulator.
   xcrun simctl addmedia "$NETKIT_DEVICE" "$NETKIT_ROOT/iosApp/iosApp/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
@@ -91,6 +96,8 @@ xcodebuild -project iosApp/Yappers.xcodeproj -scheme Yappers -configuration Debu
   "${NETKIT_TEST_ARGS[@]}" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO test
 if [ "${NETKIT_TEST_SCOPE:-all}" = welcome ] || [ "${NETKIT_TEST_SCOPE:-all}" = recovery ]; then exit 0; fi
 if [ "${NETKIT_TEST_SCOPE:-all}" = messaging ]; then
+  wait "$NETKIT_ACTIVITY_PID"
+  NETKIT_ACTIVITY_PID=''
   wait "$NETKIT_MAIL_PID"
   NETKIT_MAIL_PID=''
   exit 0
