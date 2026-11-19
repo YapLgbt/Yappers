@@ -112,6 +112,8 @@ pub enum Target {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Incoming {
     pub cursor: i64,
+    #[serde(default)]
+    pub received: i64,
     pub letter: Signed<Letter>,
     #[serde(default)]
     pub age: u8,

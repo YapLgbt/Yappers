@@ -19,7 +19,7 @@ export interface Post extends Author {
 export interface BlockedAccount { scope?:string; event: string; label: string; peer?: string; handle?: string; byAccount?: boolean }
 type AuthoredEvent = {id:string;payload:{action:{kind:string;headline?:string;body?:string}}};
 export interface InboxItem {target:string; through:number; unread:number; created:number; last?:string}
-export interface ActivityItem extends InboxItem {scope:string; title:string; first:string}
+export interface ActivityItem extends InboxItem {scope:string; title:string; first:string; byline?:string; preview?:string; anonymous?:boolean; photo?:string|null}
 export interface NotificationInbox {activity:ActivityItem[]; messages:InboxItem[]; requests:InboxItem[]}
 export function inboxCount(profile:Profile|null) {
   const inbox=profile?.notifications;
@@ -122,6 +122,7 @@ export const errorMessage = (error: unknown) => error instanceof Error ? error.m
 
 export interface Contact { peer: string; label: string }
 export interface DirectMessage extends Contact {
+  timestamp?: number;
   id: string;
   body: string;
   outgoing: boolean;

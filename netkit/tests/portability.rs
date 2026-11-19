@@ -979,6 +979,11 @@ async fn account_inbox_groups_replies_and_monotonically_reconciles_reads() -> an
     assert_eq!(row["first"],first_id);
     assert_eq!(row["unread"],1);
     assert!(row.get("actor").is_none());
+    assert_eq!(row["byline"],"Anonymous neighbor");
+    assert_eq!(row["preview"],"Hello");
+    assert_eq!(row["anonymous"],true);
+    assert!(row["photo"].is_null());
+    assert!(row["created"].as_i64().unwrap() > 0);
     let second=bob.prepare(reply())?.event;
     let second_id=second.id.clone();
     bob.submit(second).await?;

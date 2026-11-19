@@ -471,11 +471,12 @@ impl Store {
                 )?;
                 self.db.execute("UPDATE dm_mail SET packet=NULL WHERE recipient=? AND seq<=? AND held=0 AND packet IS NOT NULL",params![owner,after])?;
                 let mut incoming = Vec::new();
-                let mut query=self.db.prepare("SELECT seq,packet,sender FROM dm_mail WHERE recipient=? AND seq>? AND held=0 AND packet IS NOT NULL AND created>=? ORDER BY seq LIMIT ?")?;
+                let mut query=self.db.prepare("SELECT seq,packet,sender,created FROM dm_mail WHERE recipient=? AND seq>? AND held=0 AND packet IS NOT NULL AND created>=? ORDER BY seq LIMIT ?")?;
                 let mut rows = query.query(params![owner, after, now() - 30 * 86400, MAIL_PAGE])?;
                 while let Some(r) = rows.next()? {
                     incoming.push(Incoming {
                         cursor: r.get(0)?,
+                        received: r.get(3)?,
                         age: crate::privacy::peer_age(&self.db, &r.get::<_, String>(2)?)?,
                         letter: serde_json::from_str(&r.get::<_, String>(1)?)?,
                     });

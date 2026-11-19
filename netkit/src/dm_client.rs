@@ -47,6 +47,8 @@ struct Message {
     body: String,
     outgoing: bool,
     #[serde(default)]
+    timestamp: i64,
+    #[serde(default)]
     age: u8,
     status: String,
 }
@@ -93,7 +95,7 @@ impl PrivateState {
         }
         self.messages.push(line);
     }
-    fn receive(&mut self, account: &mut Account, letter: &Signed<Letter>, age: u8) -> Result<()> {
+    fn receive(&mut self, account: &mut Account, letter: &Signed<Letter>, age: u8, received: i64) -> Result<()> {
         let peer = &letter.record.payload.account;
         let v = &letter.value;
         valid_peer(peer, &self.owner)?;
@@ -149,6 +151,7 @@ impl PrivateState {
             label: content.name,
             body: content.body,
             outgoing: false,
+            timestamp: received,
             age,
             status: "received".into(),
         });
@@ -250,7 +253,7 @@ impl Client {
                 for item in items {
                     ensure!(item.cursor > state.cursor, "invalid mailbox cursor");
                     if !blocked.contains(&item.letter.record.payload.account)
-                        && state.receive(&mut account, &item.letter, item.age).is_err()
+                        && state.receive(&mut account, &item.letter, item.age, item.received).is_err()
                     {
                         state.unreadable = state.unreadable.saturating_add(1);
                     }
@@ -355,6 +358,7 @@ impl Client {
                     label,
                     body: content.body,
                     outgoing: true,
+                    timestamp: crate::model::now(),
                     age: 0,
                     status: "queued".into(),
                 });

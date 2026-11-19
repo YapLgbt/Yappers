@@ -233,7 +233,7 @@
     scopedOutbox.length && (showQueuedActions || view === 'offline' || view === 'replica') ? scopedOutbox.length + ' waiting to sync' : ''
   ].filter(Boolean).join(' · ') || notice);
   let filterCount = $derived(Number(sort !== 'new') + Number(topic !== 'All'));
-  let threadPost = $derived(thread ? (posts.find(post => post.id === thread && (!replyFocus || post.replies.some(r=>r.id===replyFocus))) ?? (activityPost?.id===thread && profile?.notifications?.activity.some(row=>row.target===thread) ? activityPost : undefined)) : undefined);
+  let threadPost = $derived(thread ? (posts.find(post => post.id === thread && (!replyFocus || post.replies.some(r=>r.id===replyFocus))) ?? (activityPost?.id===thread && !profile?.hiddenPosts?.includes(thread) && !profile?.muted?.[thread] && profile?.notifications?.activity.some(row=>row.target===thread) ? activityPost : undefined)) : undefined);
   const backLabel = $derived('Back to ' + (mode === 'you' ? 'profile' : mode === 'saved' ? 'saved posts' : 'feed'));
   let waiting = $derived(!profile?.lastSync && view !== 'replica');
   let nextRadius = $derived(Math.min(250, (profile?.nearby?.radiusMiles || 25) * 2));
@@ -344,9 +344,9 @@
     await act(async()=>{await client!.queue({kind:'vote',target:post.id,value:post.vote===direction?0:direction},null,post.scope);await deliver()});
   }
   function mute(post:Post) {void act(()=>client!.muteNotifications(post.id,post.headline||post.body.slice(0,60)))}
-  let inboxFolder = $state('chats'), pendingPush = $state(''), resolvingPush = false;
+  let inboxFolder = $state('chats'), pendingPush = $state(''), resolvingPush = $state(false);
   async function handlePush(route:string) {
-    if (!client || !ready || !route || resolvingPush) return;
+    if (!client || !ready || view!=='primary' || !route || resolvingPush) return;
     resolvingPush=true; pendingPush='';
     try {
       await openInbox(); await refresh();
@@ -362,8 +362,10 @@
     } catch {notice='Reconnect and open Inbox to see this update.';}
     finally {resolvingPush=false;}
   }
-  $effect(()=>{if(ready && pendingPush) void handlePush(pendingPush);});
+  $effect(()=>{if(ready && view==='primary' && pendingPush && !resolvingPush) void handlePush(pendingPush);});
   async function openInbox() {
+    const counts=profile?.notifications;
+    inboxFolder=counts?.activity.some(item=>item.unread) && !counts.messages.some(item=>item.unread) && !counts.requests.length ? 'activity' : 'chats';
     contact = null; mode = 'inbox';
     await remember(null, 'screen');
     void refresh();

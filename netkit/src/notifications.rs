@@ -15,6 +15,10 @@ pub(crate) fn install(db: &Connection) -> Result<()> {
             PRIMARY KEY(owner,kind,target));
         CREATE TABLE IF NOT EXISTS inbox_mutes(
             owner TEXT, target TEXT, PRIMARY KEY(owner,target));
+        CREATE TABLE IF NOT EXISTS inbox_arrivals(event TEXT PRIMARY KEY, received INTEGER NOT NULL);
+        CREATE TRIGGER IF NOT EXISTS inbox_event_arrived AFTER INSERT ON events
+        WHEN json_extract(NEW.envelope,'$.event.payload.action.kind') IN ('post','postV2','reply')
+        BEGIN INSERT OR IGNORE INTO inbox_arrivals VALUES(NEW.id,unixepoch()); END;
         CREATE INDEX IF NOT EXISTS events_reply_parent
             ON events(json_extract(envelope,'$.event.payload.action.parent'));
         CREATE INDEX IF NOT EXISTS events_account_owner
@@ -53,13 +57,28 @@ impl Store {
             WHERE n.owner=?1), grouped AS (
             SELECT target,scope,title,MAX(seq) AS latest,MAX(created) AS created,SUM(unread) AS unread,
                 MIN(CASE WHEN unread THEN seq END) AS first FROM rows GROUP BY target)
-            SELECT target,scope,title,latest,created,unread,
-                (SELECT reply FROM rows WHERE seq=COALESCE(first,latest)), COALESCE(first,latest) FROM grouped ORDER BY latest DESC")?;
-        let activity = stmt.query_map([owner], |r| Ok(json!({
+            SELECT g.target,g.scope,g.title,g.latest,
+                MAX(COALESCE(ra.received,n.created),COALESCE(pa.received,0)),g.unread,
+                (SELECT reply FROM rows WHERE seq=COALESCE(g.first,g.latest)), COALESCE(g.first,g.latest),
+                n.anonymous,COALESCE(p.name,json_extract(e.envelope,'$.event.payload.action.displayName')),
+                substr(json_extract(e.envelope,'$.event.payload.action.body'),1,160),json_extract(p.profile,'$.photo'),n.reply
+            FROM grouped g JOIN rows n ON n.seq=g.latest JOIN events e ON e.id=n.reply
+            LEFT JOIN inbox_arrivals ra ON ra.event=n.reply LEFT JOIN inbox_arrivals pa ON pa.event=n.target
+            LEFT JOIN public_profiles p ON NOT n.anonymous AND p.owner=n.actor AND p.home=json_extract(e.envelope,'$.event.payload.home')
+            ORDER BY g.latest DESC")?;
+        let mut photo_bytes = 0;
+        let activity = stmt.query_map([owner], |r| {
+            let photo=r.get::<_,Option<String>>(11)?.filter(|photo| {
+                if photo_bytes + photo.len() > 128*1024 {return false}
+                photo_bytes+=photo.len(); true
+            });
+            Ok(json!({
             "target":r.get::<_,String>(0)?, "scope":r.get::<_,String>(1)?, "title":r.get::<_,String>(2)?,
             "through":r.get::<_,i64>(3)?, "created":r.get::<_,i64>(4)?, "unread":r.get::<_,i64>(5)?,
-            "first":r.get::<_,String>(6)?, "firstThrough":r.get::<_,i64>(7)?
-        })))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            "first":r.get::<_,String>(6)?, "firstThrough":r.get::<_,i64>(7)?,
+            "anonymous":r.get::<_,bool>(8)?, "byline":r.get::<_,String>(9)?,
+            "preview":r.get::<_,String>(10)?, "photo":photo, "last":r.get::<_,String>(12)?
+        }))})?.collect::<rusqlite::Result<Vec<_>>>()?;
         let mailbox = self.db.query_row(
             "SELECT EXISTS(SELECT 1 FROM dm_devices WHERE owner=? AND device=?)",
             [owner, device],

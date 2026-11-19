@@ -14,7 +14,7 @@ class FormRow(
     value: String = "", val enabled: Boolean = true, val checked: Boolean = false,
     val choices: List<FormChoice> = emptyList(), val placeholder: String = "", val limit: Int = 0,
     val symbol: String = "", val destructive: Boolean = false, val identifier: String = "",
-    val keyboard: String = "", private val fieldValue: (() -> String)? = null,
+    val keyboard: String = "", val caption: String = "", private val fieldValue: (() -> String)? = null,
     private val onChange: (String) -> Unit = {}, private val onToggle: (Boolean) -> Unit = {},
     private val onTap: () -> Unit = {},
 ) {

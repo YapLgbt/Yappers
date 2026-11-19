@@ -170,7 +170,30 @@ impl Store {
         let item = inbox[items]
             .as_array()
             .and_then(|rows| rows.iter().find(|r| r["target"] == target));
-        Ok(item.map_or(json!({}), |r| json!({"category":category,"item":r})))
+        if let Some(item) = item {
+            return Ok(json!({"category":category,"item":item}));
+        }
+        // A read receipt removes a message from the unread list. Its delivered
+        // notification can still open the conversation on the owning installation.
+        if category == "message"
+            && !crate::privacy::needs_request(
+                &self.db,
+                owner,
+                &target,
+                &crate::privacy::settings(&self.db, owner)?,
+            )?
+        {
+            let message=self.db.query_row("SELECT m.seq,m.created,m.id FROM dm_mail m JOIN dm_devices d ON d.owner=m.recipient
+                WHERE m.recipient=?1 AND d.device=?2 AND m.sender=?3 AND m.held=0 AND m.created>=?4
+                AND NOT EXISTS(SELECT 1 FROM user_blocks b WHERE (b.owner=?1 AND b.peer=?3) OR (b.owner=?3 AND b.peer=?1))
+                ORDER BY m.seq DESC LIMIT 1",params![owner,device,target,now()-30*86400],|r|Ok(json!({
+                    "target":target,"through":r.get::<_,i64>(0)?,"created":r.get::<_,i64>(1)?,"last":r.get::<_,String>(2)?,"unread":0
+                }))).optional()?;
+            if let Some(item) = message {
+                return Ok(json!({"category":category,"item":item}));
+            }
+        }
+        Ok(json!({}))
     }
     pub(crate) fn claim_push(&self) -> Result<Value> {
         let tx = self.db.unchecked_transaction()?;
@@ -313,6 +336,17 @@ mod tests {
         let messages = store.claim_push()?;
         assert_eq!(messages[0]["category"], "message");
         let message = messages[0]["route"].as_str().unwrap();
+        store.read_notification(
+            owner,
+            device,
+            "message",
+            &sender,
+            messages[0]["seq"].as_i64().unwrap(),
+        )?;
+        assert_eq!(
+            store.push_route(owner, device, message)?["item"]["unread"],
+            0
+        );
         store.db.execute(
             "INSERT INTO user_blocks VALUES(?,?,?,'Blocked account')",
             params![owner, sender, new_secret()],

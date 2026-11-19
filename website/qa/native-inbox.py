@@ -55,7 +55,9 @@ try:
     for line in sys.stdin:
         command = json.loads(line)
         if command["kind"] == "reply":
-            event = request("prepare", action={"kind":"reply","parent":command["parent"],
+            parent = command.get("parent") or next(
+                p["id"] for p in request("feed")["posts"] if p["headline"] == command["headline"])
+            event = request("prepare", action={"kind":"reply","parent":parent,
                             "body":"Following up on your post","displayName":"Native reader"})["event"]
             request("submit", event=event)
         if command["kind"] == "send":

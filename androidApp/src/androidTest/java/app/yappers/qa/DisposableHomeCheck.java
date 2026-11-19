@@ -67,6 +67,15 @@ public final class DisposableHomeCheck extends Instrumentation {
             DisposableHomeCheck.<kotlin.Unit>await(client::enterNeighborhood$Yappers_composeApp);
             DisposableHomeCheck.<kotlin.Unit>await(client::sync);
             require(client.getState().getValue().getOnline(), "Home offline");
+            getTargetContext().getSharedPreferences("installation", 0).edit().putBoolean("welcomed", true).commit();
+            InboxPush.INSTANCE.setRegistration(new PushRegistration() {
+                public String getProvider() { return "fcm"; }
+                public String getCurrentToken() { return "disposable-emulator-delivery-address"; }
+                public void requestToken(kotlin.jvm.functions.Function2<? super String, ? super String, kotlin.Unit> completion) {
+                    completion.invoke(getCurrentToken(), null);
+                }
+            });
+            DisposableHomeCheck.<kotlin.Unit>await(c -> client.setPushCategories(Collections.singleton("reply"), c));
             stage = "claim username and publish";
             DisposableHomeCheck.<kotlin.Unit>await(c -> client.publish("See you there", "Chatter", false, "Android reader", "Android meetup", new PostArea("Test town", 4020,-7300), c));
             DisposableHomeCheck.<kotlin.Unit>await(client::sync);

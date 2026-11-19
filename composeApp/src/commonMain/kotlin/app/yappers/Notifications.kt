@@ -9,7 +9,8 @@ import kotlin.coroutines.resumeWithException
 
 @Serializable
 data class InboxItem(val target: String, val through: Long, val unread: Int, val created: Long,
-                     val scope: String = "", val title: String = "", val first: String = "", val last: String = "", val firstThrough: Long = 0)
+                     val scope: String = "", val title: String = "", val first: String = "", val last: String = "", val firstThrough: Long = 0,
+                     val byline: String = "", val preview: String = "", val anonymous: Boolean = false, val photo: String? = null)
 
 @Serializable
 data class NotificationInbox(val activity: List<InboxItem> = emptyList(), val messages: List<InboxItem> = emptyList(),

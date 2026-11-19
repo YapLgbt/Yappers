@@ -268,7 +268,9 @@ function purgeDeleted(state, learned = []) {
     .map(([id,p])=>[id,{...p,replies:p.replies.filter(reply=>!known.has(reply.id))}]));
   const feedCache = Object.fromEntries(Object.entries(state.feedCache || {}).map(([key,entry])=>[key,{...entry,
     posts:entry.posts.filter(p=>!known.has(p.id)).map(p=>({...p,replies:p.replies.filter(r=>!known.has(r.id))}))}]));
-  return {...state,savedPosts,feedCache,ownedEvents:state.ownedEvents?.filter(r=>!known.has(r.event.id)||r.deletion),
+  const notifications=state.notifications && {...state.notifications,activity:state.notifications.activity.filter(item=>
+    ![item.target,item.first,item.last].some(id=>known.has(id)))};
+  return {...state,notifications,savedPosts,feedCache,ownedEvents:state.ownedEvents?.filter(r=>!known.has(r.event.id)||r.deletion),
     recoveredDrafts:state.recoveredDrafts?.filter(d=>!known.has(d.id)),deleted:[...known], posts:state.posts.filter(post=>!known.has(post.id))
     .map(post=>({...post,replies:post.replies.filter(reply=>!known.has(reply.id))})),
     outbox:state.outbox.filter(event=>!known.has(event.id)), saved:state.saved.filter(id=>!known.has(id))};
@@ -300,8 +302,12 @@ function applyInbox(state, incoming) {
   const pending = state.inboxReads || {};
   const rows = (items,kind) => items.map(item =>
     (pending[kind + '/' + item.target] || 0) >= item.through ? {...item,unread:0} : item);
-  return {...inbox,activity:rows(inbox.activity,'reply').filter(item => !state.muted?.[item.target]),
-    messages:rows(inbox.messages,'message')};
+  const blocked = new Set((state.blocks || []).map(b=>b.peer));
+  const awaitingVisibility = state.blocks?.some(b=>!b.handle) || state.pendingPrivacy?.feedDays > 0;
+  return {...inbox,activity:awaitingVisibility ? [] : rows(inbox.activity,'reply').filter(item =>
+    !state.muted?.[item.target] && !(state.hideAnonymous && item.anonymous)),
+    messages:rows(inbox.messages,'message').filter(item=>!blocked.has(item.target)),
+    requests:inbox.requests.filter(item=>!blocked.has(item.target))};
 }
 export async function readNotification(category,target,through) {
   if (!through) return;
@@ -550,7 +556,8 @@ export async function blockAccount(block) {
     if (state.blocks.some(item => item.event === block.event || (block.peer && item.peer === block.peer))) return state;
     const direct = state.directState;
     const peer = block.peer;
-    return {...state,savedPosts:{},feedCache:{}, blocks:[...state.blocks,{...block,scope:block.scope || state.activeGroup || state.join.community}],
+    const blocks=[...state.blocks,{...block,scope:block.scope || state.activeGroup || state.join.community}];
+    return {...state,savedPosts:{},feedCache:{}, blocks,notifications:applyInbox({...state,blocks},state.notifications),
       pendingApprovals:(state.pendingApprovals || []).filter(id=>id!==peer),
       approvedContacts:(state.approvedContacts || []).filter(id => id !== peer),
       revokedContacts:peer ? [...new Set([...(state.revokedContacts || []),peer])] : state.revokedContacts,
@@ -747,6 +754,7 @@ export async function setPrivacy(change) {
     return {
       ...s,
       inboxPolicy: policy,
+      notifications: applyInbox({...s,pendingPrivacy:policy,hideAnonymous:policy.hideAnonymous},s.notifications),
       pendingPrivacy: policy,
       privacyManaged: true,
       hideAnonymous: policy.hideAnonymous,

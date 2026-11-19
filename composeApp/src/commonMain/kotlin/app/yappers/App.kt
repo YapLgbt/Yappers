@@ -154,6 +154,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
     var postDraft by retain(identityScope, connection.activeGroup?.id) { mutableStateOf<PostDraft?>(null) }
     var shownAuthor by remember(connection.messagingScope) { mutableStateOf<SharedAuthor?>(null) }
     var selectedId by retain(identityScope, connection.activeGroup?.id) { mutableStateOf<Long?>(null) }
+    var changingPush by remember(identityScope) { mutableStateOf(false) }
     var inboxThread by retain(identityScope) { mutableStateOf<PostDestination?>(null) }
     var openAtComments by retain(identityScope, connection.activeGroup?.id) { mutableStateOf(false) }
     fun openConversation(id: Long, atComments: Boolean = false) {
@@ -594,7 +595,16 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                                 },
                                                 onActivity={item->act {openInboxThread(item)}},
                                                 onRead={item->act {networking?.readNotification("message",item)}},
-                                                onPush={categories->act {networking?.setPushCategories(categories)}},
+                                                pushBusy = changingPush,
+                                                onPush = { categories ->
+                                                    if (!changingPush) {
+                                                        changingPush = true
+                                                        act {
+                                                            try { networking?.setPushCategories(categories) }
+                                                            finally { changingPush = false }
+                                                        }
+                                                    }
+                                                },
                                                 onDismissRequest={peer->act {networking?.dismissRequest(peer)}},
                                                 onApprove = { peer -> act { networking?.approveContact(peer); networking?.sync() } },
                                                 onSelect = { contact ->

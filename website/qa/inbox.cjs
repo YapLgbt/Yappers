@@ -66,7 +66,43 @@ module.exports = async function verifyInbox(page, ctx, fixture, engine) {
     await page.goBack();
     await refresh();
     await page.getByRole('tab',{name:'Activity'}).click();
-    await page.getByRole('button',{name:/Inbox activity test.*Read/}).waitFor();
+    const opened=page.getByRole('button',{name:/Native reader replied.*Following up on your post.*Inbox activity test/});
+    await opened.waitFor();
+    assert.equal(await opened.locator('.new-count').count(),0);
+    await expectContactPhoto(opened);
+    assert.match(await opened.locator('time').innerText(),/^(?:Just now|\d+m)$/);
+    if (process.env.YAP_QA_SCREENSHOTS) {
+      const originalSize=page.viewportSize();
+      const original=await page.evaluate(async()=>{
+        const home=await import('/app/network.js');
+        const original=home.profile.notifications.activity;
+        const now=Math.floor(Date.now()/1000);
+        const examples=[
+          ['Mira','Sunday book swap','I’ll bring The Dispossessed. Are we still meeting by the library steps?',300,2],
+          ['Anonymous neighbor','First time at skate night','Same here! Happy to meet at the entrance and head in together.',3600,1],
+          ['Jules','Where do you buy zines?','The shop on Maple has a whole shelf of local artists.',20*86400,0],
+          ['Robin','Picnic in the park','The west entrance is step-free.',61*86400,0],
+          ['Ash','Community garden day','I have a spare pair of gloves you can borrow.',380*86400,0]
+        ];
+        await home.modify(s=>({...s,notifications:{...s.notifications,activity:examples.map(([byline,title,preview,age,unread],i)=>({
+          ...original[0],target:'preview-'+i,byline,title,preview,unread,anonymous:i===1,photo:i===1?null:'',created:now-age
+        }))}}));
+        return original;
+      });
+      try {
+        await page.setViewportSize({width:390,height:844});
+        const rows=page.locator('.activity-row');
+        await rows.filter({hasText:'Sunday book swap'}).waitFor();
+        assert.deepEqual(await rows.locator('time').allTextContents(),['5m','1h','3w','2mo','1y']);
+        await page.screenshot({path:path.join(process.env.YAP_QA_SCREENSHOTS,'activity-'+engine+'.png')});
+      } finally {
+        await page.evaluate(async original=>{
+          const home=await import('/app/network.js');
+          await home.modify(s=>({...s,notifications:{...s.notifications,activity:original}}));
+        },original);
+        await page.setViewportSize(originalSize);
+      }
+    }
     if (engine==='chrome' && process.env.YAP_TEST_PUSH_ROUTE) {
       // The recording transport supplies the same opaque payload received from a provider.
       await native({kind:'reply',parent});

@@ -37,6 +37,16 @@ data class DevicePrivacy(
     val blockedPeers get() = blocks.mapNotNull { it.peer }.toSet()
     val hasPending get() = pendingSettings || blocks.any { it.handle == null } || pendingUnblocks.isNotEmpty() || pendingApprovals.isNotEmpty()
 
+    fun visibleNotifications(deleted: Set<String>): NotificationInbox {
+        val peers = blockedPeers
+        val awaitingVisibility = blocks.any { it.handle == null } || pendingSettings && settings.feedDays > 0
+        return notifications.copy(
+            activity = notifications.activity.filterNot { awaitingVisibility || it.target in mutedThreads ||
+                settings.hideAnonymous && it.anonymous || it.target in deleted || it.first in deleted || it.last in deleted },
+            messages = notifications.messages.filterNot { it.target in peers },
+            requests = notifications.requests.filterNot { it.target in peers })
+    }
+
     fun filter(feed: FeedSnapshot): FeedSnapshot {
         val peers = blockedPeers
         val events = blocks.filter { it.byEvent }.map { it.value }.toSet()

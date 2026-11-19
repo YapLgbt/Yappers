@@ -165,13 +165,16 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         if (known.isNotEmpty()) nextArchives.keys.toList().forEach { target ->
             nextArchives[target] = nextArchives.getValue(target).purgeDeleted(known)
         }
+        val visiblePrivacy = privacy.mapValues { (_, device) ->
+            device.copy(notifications = device.visibleNotifications(known))
+        }
         // Once the atomic file is written, publish the matching memory state even if cancelled.
         withContext(NonCancellable + Dispatchers.Default) {
-            storage.writeState(json.encodeToString(NetkitDiskState(current = next, communities = nextArchives, privacy = privacy)))
+            storage.writeState(json.encodeToString(NetkitDiskState(current = next, communities = nextArchives, privacy = visiblePrivacy)))
             cache = next
             archives = nextArchives
-            policies = privacy
-            mutableState.update { it.copy(snapshot = if (switching) next.snapshot.copy(posts = emptyList()) else policy.filter(next.snapshot), pendingCount = next.outbox.size,
+            policies = visiblePrivacy
+            mutableState.update { it.copy(privacy = policy, snapshot = if (switching) next.snapshot.copy(posts = emptyList()) else policy.filter(next.snapshot), pendingCount = next.outbox.size,
                 ownedHistory = (archives.values + next).flatMap { it.ownedEvents }.distinctBy { (it["event"] as? JsonObject)?.get("id") ?: it },
                 recoveredDrafts = retainedDrafts(next)) }
         }

@@ -50,7 +50,9 @@ with tempfile.TemporaryDirectory(prefix="yap-android-qa-") as tmp:
             bootstrap.send_signal(signal.SIGINT)
             bootstrap.wait(timeout=12)
         manifest.unlink()
-        env = dict(os.environ, YAP_USERNAME_DOMAINS=home + "=neighborhood.test", YAP_REPORT_INBOX=str(fixture / "reports.sqlite"))
+        env = dict(os.environ, YAP_USERNAME_DOMAINS=home + "=neighborhood.test", YAP_REPORT_INBOX=str(fixture / "reports.sqlite"),
+                   YAP_PUSH_PROVIDERS="fcm", YAP_PUSH_WORKER=str(root / "website/qa/record-push.py"),
+                   YAP_TEST_PUSH_ROUTE=str(fixture / "push-route"))
         host = subprocess.Popen(command, stdout=log, stderr=log, env=env)
         peer = check = None
         try:
@@ -73,6 +75,25 @@ with tempfile.TemporaryDirectory(prefix="yap-android-qa-") as tmp:
             print(output, end="")
             if "INSTRUMENTATION_CODE: -1" not in output or not replied:
                 sys.exit(1)
+            print(json.dumps(dict(kind="reply", headline="Android meetup")), file=peer.stdin, flush=True)
+            peer_result(peer)
+            route_file = fixture / "push-route"
+            for _ in range(100):
+                if route_file.exists(): break
+                time.sleep(.2)
+            route = json.loads(route_file.read_text())["route"]
+            assert len(route) == 64 and all(ch in "0123456789abcdef" for ch in route)
+            subprocess.run(adb + ["shell", "am", "force-stop", "app.yappers.android"], check=True)
+            subprocess.run(adb + ["shell", "am", "start", "-n", "app.yappers.android/app.yappers.YapActivity",
+                                  "-a", "app.yappers.OPEN_INBOX", "--es", "route", route], check=True, stdout=subprocess.DEVNULL)
+            for _ in range(32):
+                dump = subprocess.check_output(adb + ["exec-out", "uiautomator", "dump", "/dev/tty"], text=True)
+                if "Following up on your post" in dump and "Android meetup" in dump:
+                    print("PASS cold Android notification intent opened its authenticated reply thread.")
+                    break
+                time.sleep(.5)
+            else:
+                raise AssertionError("Cold Android notification intent did not open the reply")
         finally:
             if check is not None and check.poll() is None:
                 check.kill()

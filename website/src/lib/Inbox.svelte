@@ -4,6 +4,7 @@
   import ActionButton from './ActionButton.svelte';
   import AppIcon from './AppIcon.svelte';
   import Avatar from './Avatar.svelte';
+  import { minuteClock } from './minuteClock';
   import ContentMenu from './ContentMenu.svelte';
   import { onDestroy, tick } from 'svelte';
   import { Tabs } from '@skeletonlabs/skeleton-svelte';
@@ -16,6 +17,7 @@
   } = $props();
   let mailbox = $derived(inboxFor(profile));
   const photos = $derived(inboxPhotos(profile));
+  const activity = $derived((profile.notifications?.activity||[]).filter(item=>!profile.muted?.[item.target] && !profile.hiddenPosts?.includes(item.target)));
   let selected = $derived(contact && !profile.blocks.some(b => b.peer === contact?.peer) &&
     !mailbox.requests.includes(contact.peer) ? contact : null);
   let lines = $derived(mailbox.messages.filter(message => message.peer === selected?.peer));
@@ -57,6 +59,21 @@
     try {await client.setPushCategories(enabled.includes(kind)?enabled.filter(k=>k!==kind):[...enabled,kind]);}
     catch(failure){error=failure instanceof Error?failure.message:'Couldn’t change notifications.';}
     finally{changingPush=false;}
+  }
+  function elapsed(timestamp:number, now:number) {
+    const seconds=Math.max(0,now/1000-timestamp);
+    if(seconds<45) return {short:'Just now',spoken:'Just now'};
+    const units = [
+      [60,'m','minute',3600], [3600,'h','hour',86400], [86400,'d','day',14*86400],
+      [7*86400,'w','week',56*86400], [365.25*86400/12,'mo','month',365.25*86400],
+      [365.25*86400,'y','year',Infinity]
+    ] as const;
+    for (const [size,suffix,name,limit] of units) {
+      if (seconds+size/2>=limit) continue;
+      const count=Math.max(1,Math.round(seconds/size));
+      return {short:count+suffix,spoken:count+' '+name+(count===1?'':'s')+' ago'};
+    }
+    return {short:'',spoken:''};
   }
   function setFolder(next: string) {
     if (next !== tab) { viewVersion++; error = ''; }
@@ -115,6 +132,12 @@
     } finally { busyPeer = ''; }
   }
 </script>
+{#snippet timestamp(value:number)}
+  {@const age=elapsed(value,$minuteClock)}
+  <time datetime={new Date(value*1000).toISOString()}
+    aria-label={age.spoken}>{age.short}</time>
+{/snippet}
+
 
 {#if selected}
   <div class="dm-top"><ActionButton onclick={() => show(null)}><AppIcon name="arrowLeft"/>Back to inbox</ActionButton>
@@ -165,19 +188,36 @@
     </Tabs.List>
     <div use:pageMotion={tab === 'chats' ? 0 : 1}>
     <Tabs.Content value="activity">
-      {#each (profile.notifications?.activity||[]).filter(item=>!profile.muted?.[item.target]) as item (item.target)}
-        <button class="dm-thread" onclick={()=>openActivity(item)}>
-          <AppIcon name="conversation"/><span class="conversation"><strong>{item.title}</strong>
-            <span>{item.unread ? item.unread+(item.unread===1?' new reply':' new replies') : 'Read'}</span></span><AppIcon name="arrowRight"/>
-        </button>
-      {:else}<section class="dm-empty"><h2>No replies yet</h2><p>Replies to your posts will appear here.</p></section>{/each}
+      {#each [true,false] as unread}
+        {@const rows=activity.filter(item=>Boolean(item.unread)===unread)}
+        {#if rows.length}
+          <section class="activity-section" aria-label={unread?'Unread replies':'Earlier replies'}>
+            {#if activity.some(item=>item.unread) && activity.some(item=>!item.unread)}<h2>{unread?'Unread':'Earlier'}</h2>{/if}
+            {#each rows as item (item.target)}
+              <button class="activity-row" class:unread onclick={()=>openActivity(item)}>
+                {#if item.anonymous || !item.byline}
+                  <span class="reply-emblem"><AppIcon name="conversation"/></span>
+                {:else}<Avatar label={item.byline} photo={item.photo??undefined}/>{/if}
+                <span class="activity-copy">
+                  <span class="activity-head"><span><strong>{item.byline || 'A neighbor'}</strong> replied</span>
+                    {#if item.created}{@render timestamp(item.created)}{/if}</span>
+                  {#if item.preview}<span class="activity-preview">{item.preview}</span>{/if}
+                  <span class="activity-context"><AppIcon name="conversation"/><span>{item.title}</span>
+                    {#if item.unread}<span class="new-count">{item.unread===1?'1 new reply':item.unread+' new replies'}</span>{/if}</span>
+                </span>
+              </button>
+            {/each}
+          </section>
+        {/if}
+      {/each}
+      {#if !activity.length}<section class="dm-empty"><span class="empty-icon"><AppIcon name="conversation"/></span><h2>No replies yet</h2><p>When someone replies to one of your posts, you’ll see their reply here.</p></section>{/if}
     </Tabs.Content>
     <Tabs.Content value="chats">
-      {#if mailbox.requests.length}<button class="dm-thread" onclick={()=>setFolder('requests')}><strong>Message requests ({mailbox.requests.length})</strong><AppIcon name="arrowRight"/></button>{/if}
+      {#if mailbox.requests.length}<button class="dm-thread" onclick={()=>setFolder('requests')}><span class="reply-emblem"><AppIcon name="conversation"/></span><span class="conversation"><span class="thread-meta"><strong>Message requests ({mailbox.requests.length})</strong>{#if profile.notifications?.requests[0]?.created}{@render timestamp(profile.notifications.requests[0].created)}{/if}</span><span>{mailbox.requests.slice(0,2).map(labelFor).join(', ')}</span></span><AppIcon name="arrowRight"/></button>{/if}
       {#each mailbox.threads as thread (thread.peer)}
         <button class="dm-thread" onclick={() => show({peer:thread.peer,label:thread.label})}>
           <Avatar label={thread.label} photo={photos.get(thread.peer)}/>
-          <span class="conversation"><strong>{thread.label}</strong>{#if profile.notifications?.messages.some(row=>row.target===thread.peer && row.unread)}<small>Unread</small>{/if}<span>{thread.outgoing ? 'You: ' : ''}{thread.body}</span></span>
+          <span class="conversation"><span class="thread-meta"><strong>{thread.label}</strong>{#if thread.timestamp}{@render timestamp(thread.timestamp)}{/if}</span>{#if profile.notifications?.messages.some(row=>row.target===thread.peer && row.unread)}<small>Unread</small>{/if}<span>{thread.outgoing ? 'You: ' : ''}{thread.body}</span></span>
           <AppIcon name="arrowRight"/>
         </button>
       {:else}
@@ -189,7 +229,9 @@
     <Tabs.Content value="requests">
       <ActionButton onclick={()=>setFolder('chats')}>Back to messages</ActionButton>
       {#each mailbox.requests as peer (peer)}
-        <div class="dm-request"><div class="requester"><Avatar label={labelFor(peer)} photo={photos.get(peer)}/><strong>{labelFor(peer)}</strong></div><div class="actions">
+        {@const request=profile.notifications?.requests.find(row=>row.target===peer)}
+        <div class="dm-request"><div class="requester"><Avatar label={labelFor(peer)} photo={photos.get(peer)}/><div><strong>{labelFor(peer)}</strong><div class="request-meta">Wants to message you
+            {#if request?.created} · {@render timestamp(request.created)}{/if}</div></div></div><div class="actions">
           <ActionButton variant="tonal" disabled={!!busyPeer || !profile.directAvailable} onclick={() => accept(peer)}>Accept</ActionButton>
           <ActionButton disabled={!!busyPeer} onclick={() => blockPerson({peer,label:labelFor(peer)})}>Block</ActionButton>
           <ActionButton disabled={!!busyPeer} onclick={async()=>{try{await client.dismissRequest(peer)}catch{error='Couldn’t dismiss the request. Try again.'}}}>Dismiss</ActionButton>
@@ -214,6 +256,24 @@
 
 
 <style>
+  .activity-section h2 { font:var(--type-label); color:var(--quiet); margin:1.25rem 0 .1rem; }
+  .activity-row { display:flex; align-items:flex-start; width:100%; gap:.8rem; padding:1.1rem .3rem; text-align:start; border-bottom:1px solid var(--line); }
+  .activity-row:focus-visible { outline:2px solid var(--plum); outline-offset:-2px; }
+  .activity-row :global(.avatar), .reply-emblem { width:2.6rem; height:2.6rem; flex:none; }
+  .reply-emblem { display:grid; place-items:center; border-radius:50%; color:var(--plum); background:var(--wash); }
+  .activity-copy { display:grid; flex:1; min-width:0; gap:.32rem; }
+  .activity-head, .dm-thread .thread-meta { display:flex; align-items:baseline; justify-content:space-between; gap:.5rem; }
+  .activity-head { font:var(--type-small); color:var(--quiet); }
+  .activity-head strong { font:var(--type-label); color:var(--ink); overflow-wrap:anywhere; }
+  time { font:var(--type-small); font-variant-numeric:tabular-nums; color:var(--quiet); white-space:nowrap; flex:none; }
+  .activity-preview { color:var(--ink); display:-webkit-box; -webkit-box-orient:vertical; line-clamp:2; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; }
+  .activity-context { display:flex; flex-wrap:wrap; align-items:center; gap:.35rem; font:var(--type-small); color:var(--quiet); }
+  .activity-context :global(svg) { width:.9rem; height:.9rem; flex:none; }
+  .activity-context > span:first-of-type { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
+  .new-count { color:var(--plum); display:inline-flex; align-items:center; gap:.35rem; }
+  .new-count::before { content:''; width:.4rem; height:.4rem; border-radius:50%; background:currentColor; }
+  @media (hover:hover) { .activity-row:hover { background:var(--menu-surface); } }
+
   .push-option {display:flex;align-items:center;gap:.6rem;min-height:2.75rem;}
   .dm-thread { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: .85rem; padding: 1rem .35rem; }
   .dm-thread .conversation { display: grid; min-width: 0; gap: .16rem; }
@@ -221,6 +281,7 @@
   .conversation span { font: var(--type-small); }
   .dm-thread :global(> svg) { width: 17px; color: var(--quiet); }
   .dm-thread :global(.avatar) { color: var(--on-accent); }
+  .request-meta { color:var(--quiet); font:var(--type-small); }
   .recipient, .requester { display: flex; gap: .75rem; align-items: center; }
   .recipient { padding: .5rem 0 .85rem; border-bottom: 1px solid var(--line); }
   .recipient > div { min-width: 0; }
