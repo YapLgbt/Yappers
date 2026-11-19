@@ -64,6 +64,8 @@ const stop=()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnec
       await page.emulateMedia({colorScheme:'dark',reducedMotion:'reduce'});
       const print = page.locator('.welcome-art .cloth');
       await print.locator('img').evaluate(image => image.decode());
+      assert.deepEqual(await print.boundingBox(), await page.locator('#welcome').boundingBox(),
+        'The Estuary should fill the welcome screen edge to edge');
       if (await print.locator('canvas').isVisible()) {
         const first = await print.screenshot();
         assert.ok(first.equals(await print.screenshot()), 'The Welcome print stays still with system Reduce Motion enabled');
@@ -417,7 +419,9 @@ const stop=()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnec
   await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'You',exact:true}).click(); await page.locator('#settings').click(); await page.locator('#refresh-preferences').click(); await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'Nearby',exact:true}).click();
   await page.getByRole('heading',{name:title+' offline',exact:true}).waitFor({timeout:65000});
   await page.setViewportSize({width:1100,height:780});await page.emulateMedia({colorScheme:'dark'});
-  await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'You',exact:true}).click(); await page.locator('#settings').click();await page.getByRole('switch', { name: 'Hide anonymous posts and replies', exact: true }).check();
+  await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'You',exact:true}).click(); await page.locator('#settings').click();
+  await page.getByText('Hide anonymous posts and replies', {exact:true}).click();
+  assert(await page.getByRole('switch', {name:'Hide anonymous posts and replies'}).isChecked());
   await page.getByRole('button',{name:'Done',exact:true}).click(); await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'Nearby',exact:true}).click();
   // Own posts remain visible just as in the native app.
   assert.equal(await card.count(),1);

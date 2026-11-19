@@ -164,6 +164,6 @@
   .town-credit { margin-block-end: 0; }
   .place-list {
     scrollbar-width: thin;
-    scrollbar-color: var(--mtrl-sys-color-outline) transparent;
+    scrollbar-color: var(--outline) transparent;
   }
 </style>

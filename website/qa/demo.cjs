@@ -21,6 +21,16 @@ module.exports = async function verifyDemo(browser, base) {
     allowScripts();
     await page.locator('#neighborhood:not([inert])').waitFor();
     const card = page.locator('article').first();
+    for (const direction of ['Upvote', 'Downvote']) {
+      const vote = card.getByRole('button', {name: direction});
+      await vote.click();
+      await card.getByRole('button', {name: direction, pressed: true}).waitFor();
+      const button = await vote.boundingBox(), mark = await vote.locator('svg').boundingBox();
+      assert(button.width >= 44 && button.height >= 44, 'Votes need a full tap target');
+      assert(mark.width < button.width && mark.height < button.height);
+      assert.equal(await vote.evaluate(el => getComputedStyle(el).backgroundColor), 'rgba(0, 0, 0, 0)',
+        'The selected highlight should cover only the vote icon');
+    }
     await card.getByRole('button', {name: 'Save', exact: true}).click();
     await card.getByRole('button', {name: 'Saved', exact: true}).waitFor();
     await page.getByRole('button', {name: 'Post', exact: true}).click();

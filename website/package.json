@@ -27,13 +27,6 @@
   },
   "dependencies": {
     "@skeletonlabs/skeleton": "5.0.5",
-    "@skeletonlabs/skeleton-svelte": "5.0.5",
-    "bits-ui": "2.21.0",
-    "material": "3.15.1"
-  },
-  "overrides": {
-    "runed": {
-      "@sveltejs/kit": "$@sveltejs/kit"
-    }
+    "@skeletonlabs/skeleton-svelte": "5.0.5"
   }
 }

@@ -1,13 +1,16 @@
 <script lang="ts">
-  import { Switch } from 'material/svelte';
+  import { Switch } from '@skeletonlabs/skeleton-svelte';
   let { id, label, hint, checked, change }: {
     id:string; label:string; hint?:string; checked:boolean; change:(next:boolean)=>void;
   } = $props();
 </script>
 
-<div class="privacy-switch">
-  <label for={id}>{label}</label>
-  <Switch {id} ariaLabel={label} {checked}
-    onchange={(event: CustomEvent<{checked:boolean}>) => change(event.detail.checked)}/>
-  {#if hint}<p class="hint">{hint}</p>{/if}
+<div>
+  <Switch class="privacy-switch" ids={{ hiddenInput: id }} {checked}
+    onCheckedChange={({ checked }) => change(checked)}>
+    <Switch.Label>{label}</Switch.Label>
+    <Switch.Control><Switch.Thumb /></Switch.Control>
+    <Switch.HiddenInput role="switch" aria-describedby={hint ? id + '-hint' : undefined} />
+  </Switch>
+  {#if hint}<p class="hint" id={id + '-hint'}>{hint}</p>{/if}
 </div>

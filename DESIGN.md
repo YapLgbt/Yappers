@@ -21,7 +21,7 @@ The light theme uses plum actions on pale lavender. The dark theme uses lilac ac
 | iPhone | UIKit owns the tab bar, navigation stacks, menus, sheets and text editing. Inline form rows share the page background. Individual inputs can use a rounded system fill. Present the system photo picker before the crop editor. |
 | Android | Compose Material 3 provides the compact navigation bar, adaptive navigation rail, app bars and snackbars. Detail screens use a leading Up action and system Back. Editors keep actions reachable above the system keyboard. Use the Android photo picker for profile images and adaptive launcher icon layers for the Yap wordmark. |
 | Mac | Use Compose Material controls. A sidebar replaces bottom navigation at 900 dp. Wide windows can show a thread beside its feed. |
-| PWA | Use the Yap theme for Skeleton components, with native HTML controls for text entry and selection. Keep navigation destinations stable as the bottom bar becomes a sidebar. Keep keyboard focus inside open dialogs and return it to the trigger on dismissal. |
+| PWA | Use Skeleton as the only web UI kit. Apply the Yap theme to its components, with native HTML controls for text entry and selection. Keep navigation destinations stable as the bottom bar becomes a sidebar. Keep keyboard focus inside open dialogs and return it to the trigger on dismissal. |
 
 On Android, use the Material expressive motion scheme and rounded Material Symbols for navigation and in-content actions. Reserve solid plum for primary actions and selected controls. Use tonal surfaces for supporting actions and settings rows, and a scalloped symbol for empty destinations. Writing and reading share the same Geist Serif styles.
 

@@ -94,12 +94,13 @@
     const state = page.state as {yap?:Screen};
     if (!ready || state === lastHistory) return;
     const first = lastHistory === undefined;
-    lastHistory = state;
     if (first && !state.yap) {
       if (profile?.activeGroup) destination = 'groups';
       replaceState('', {yap:snapshot()});
       return;
     }
+    // The initial history entry resolves asynchronously. Preserve focus when it arrives.
+    lastHistory = state;
     void restoreScreen(state, first);
   });
   async function restoreScreen(state: {yap?:Screen}, first: boolean) {
@@ -213,6 +214,7 @@
   ].filter(Boolean).join(' · ') || notice);
   let filterCount = $derived(Number(sort !== 'new') + Number(topic !== 'All'));
   let threadPost = $derived(thread ? posts.find(post => post.id === thread) : undefined);
+  const backLabel = $derived('Back to ' + (mode === 'you' ? 'profile' : mode === 'saved' ? 'saved posts' : 'feed'));
   let waiting = $derived(!profile?.lastSync && view !== 'replica');
   let nextRadius = $derived(Math.min(250, (profile?.nearby?.radiusMiles || 25) * 2));
   let widening = $state(false);
@@ -377,7 +379,7 @@
     window.addEventListener('offline', () => { view = 'offline'; connection = 'Offline'; },opts);
     document.addEventListener('visibilitychange', () => { if (!document.hidden && ready) void refresh(); },opts);
     const timer = setInterval(() => {
-      if (ready && navigator.onLine && !document.hidden && !document.querySelector('dialog[open], [role=dialog][data-state=open]')) void refresh();
+      if (ready && navigator.onLine && !document.hidden && !document.querySelector('dialog[open]')) void refresh();
     },60000);
     const inboxTimer = setInterval(() => { if (ready && mode === 'inbox' && !document.hidden && navigator.onLine && !busy) void refresh(); },10000);
     return () => { listeners.abort(); clearInterval(timer); clearInterval(inboxTimer); client?.updates.removeEventListener('change',readProfile); };
@@ -387,12 +389,12 @@
 <header class="app-header" hidden={step === "intro"} class:enrolled={ready && step === null}><div class="bar">
   <div class="bar-start" hidden={step !== null}>
     {#if mode !== 'inbox'}<ActionButton id="inbox-tab" disabled={!ready} onclick={openInbox}>Inbox</ActionButton>{/if}
-    <button id="refresh" class="icon-action mtrl-icon-button mtrl-icon-button--standard" aria-label="Refresh" disabled={busy} onclick={refreshOrBoot}><AppIcon name="refresh" /></button>
+    <button id="refresh" class="btn-icon icon-action" aria-label="Refresh" disabled={busy} onclick={refreshOrBoot}><AppIcon name="refresh" /></button>
   </div>
   <a href="/" class="brand" aria-label="Yap home"><img src="/assets/yap-wordmark.svg" width="72" height="36" alt="yap"></a>
   <div class="bar-end" hidden={step !== null}>
     <span id="connection" class="sr-only" role="status">{connection}</span>
-    {#if mode !== 'inbox' && mode !== 'groups'}<ActionButton id="compose" variant="filled" disabled={!ready || groupChanges > 0} onclick={event => composer?.open(null, event.currentTarget)}><AppIcon name="post" />Post</ActionButton>{/if}
+    {#if mode !== 'inbox' && mode !== 'groups' && (!thread || wideReading.current)}<ActionButton id="compose" variant="filled" disabled={!ready || groupChanges > 0} onclick={event => composer?.open(null, event.currentTarget)}><AppIcon name="post" />Post</ActionButton>{/if}
   </div>
 </div>
 {#if ready && step === null}
@@ -412,7 +414,7 @@
     <ProfileSummary name={profile.alias} username={profile.username} details={profile.publicProfile} own>
       {#if !profile.username}<ActionButton onclick={() => username?.open()}>Choose a username</ActionButton>{/if}
     </ProfileSummary>
-    <div class="profile-actions">{#if client}<ProfileEdit {client} {profile}/>{/if}<ActionButton id="settings" variant="tonal" onclick={(event) => preferences?.open(false, event.currentTarget)}>Preferences</ActionButton>
+    <div class="profile-actions">{#if client}<ProfileEdit {client} {profile}/>{/if}<ActionButton id="settings" onclick={(event) => preferences?.open(false, event.currentTarget)}>Preferences</ActionButton>
       {#if client}<AccountData {client} {profile}/>{/if}</div>
     <h2 class="section-title">Your posts</h2>
   {:else if mode !== 'groups' && (mode !== 'inbox' || !contact)}
@@ -473,7 +475,7 @@
               </ActionButton>
             </div>
           {:else}
-            <span class="empty-icon"><AppIcon name={mode === 'saved' ? 'saved' : 'nearby'} /></span>
+            <span class="empty-icon"><AppIcon name={mode === 'saved' ? 'saved' : 'conversation'} /></span>
             <h2>{mode === 'saved' ? 'No saved posts yet' : mode === 'you' ? 'No posts yet' : waiting ? 'Waiting for the neighborhood' : 'No posts yet'}</h2>
             <p>{mode === 'saved' ? 'Tap the bookmark on a post to save it here.' : mode === 'you' ? 'Your posts will appear here.' : waiting ? 'Connect to your home to load the feed.' : profile.hideAnonymous || profile.blocks.length ? 'No posts match your current preferences.' : 'Start a conversation in your neighborhood.'}</p>
             {#if mode === 'saved'}<ActionButton variant="tonal" onclick={() => navigate('feed')}>Explore nearby</ActionButton>
@@ -488,8 +490,8 @@
   {#if thread}
     <section id="thread-pane" class="thread-pane" aria-labelledby="thread-heading">
       <div class="heading thread-heading">
+        <ActionButton aria-label={backLabel} onclick={()=>history.back()}><AppIcon name="arrowLeft" /><span>{backLabel}</span></ActionButton>
         <h1 id="thread-heading" tabindex="-1">Conversation</h1>
-        <ActionButton onclick={()=>history.back()}>Back to {mode === 'you' ? 'profile' : mode === 'saved' ? 'saved posts' : 'feed'}</ActionButton>
       </div>
       {#if threadPost && profile}
         {#key thread}

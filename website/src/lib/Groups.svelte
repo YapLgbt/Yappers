@@ -2,7 +2,7 @@
   import { pageMotion } from './pageMotion';
   import ActionButton from './ActionButton.svelte';
   import { onMount } from 'svelte';
-  import { Tabs } from 'bits-ui';
+  import { Tabs } from '@skeletonlabs/skeleton-svelte';
   import AppIcon from './AppIcon.svelte';
   import Sheet from './Sheet.svelte';
   import PrivateGroups from './PrivateGroups.svelte';
@@ -141,9 +141,10 @@
 {#if showingPrivate}
   <PrivateGroups {client} alias={profile.alias} onBack={() => showingPrivate = false} />
 {:else}
-<div class="heading">
+<div class="heading directory-heading">
   <h1>Groups</h1>
-  <ActionButton variant="tonal" onclick={() => showingPrivate = true}>Private groups</ActionButton>
+  <div class="actions">
+  <ActionButton onclick={() => showingPrivate = true}>Private groups</ActionButton>
   <Sheet
     title="Create a group"
     label="New group"
@@ -182,8 +183,9 @@
       </div>
     {/snippet}
   </Sheet>
+  </div>
 </div>
-<Tabs.Root bind:value={() => tab, setTab}
+<Tabs value={tab} onValueChange={({ value }) => setTab(value)}
   ><Tabs.List class="dm-tabs" aria-label="Group directory"
     ><Tabs.Trigger class="btn" value="joined">Joined</Tabs.Trigger><Tabs.Trigger class="btn" value="local"
       >Local</Tabs.Trigger
@@ -271,7 +273,7 @@
         {/if}
       {/if}</Tabs.Content
     >{/each}
-  </div></Tabs.Root
+  </div></Tabs
 >
 {#if directoryFailed}
   <div class="directory-state">
@@ -284,6 +286,8 @@
 {/if}
 
 <style>
+  .directory-heading { flex-wrap: wrap; }
+  .directory-heading > h1 { flex: 1 0 max-content; }
   .directory-state { margin: 1rem 0; color: var(--quiet); font: var(--type-small); }
   .directory-state p { margin: 0 0 .5rem; }
   .group-form {
@@ -307,7 +311,7 @@
     padding: .625rem .875rem .625rem 2.65rem;
     border: 1px solid var(--line);
     border-radius: .65rem;
-    background: var(--mtrl-sys-color-surface-container-lowest);
+    background: var(--crop-surface);
     color: var(--ink);
     font: var(--type-body);
   }
@@ -329,7 +333,7 @@
 
   .group-form-error {
     margin: 0 auto 0 0;
-    color: var(--mtrl-sys-color-error);
+    color: var(--error);
   }
 
   .group-actions {
@@ -358,6 +362,6 @@
 
   .place-list {
     scrollbar-width: thin;
-    scrollbar-color: var(--mtrl-sys-color-outline) transparent;
+    scrollbar-color: var(--outline) transparent;
   }
 </style>

@@ -284,10 +284,10 @@
   #body { flex: 1; min-height: 8.5rem; font: var(--type-post-body); resize: vertical }
   #editor :is(#headline, #body)::placeholder { color: var(--quiet); opacity: .85 }
   #editor :is(#headline, #body):focus-visible { outline: 0; box-shadow: inset 0 -1px var(--plum) }
-  #editor :is(#headline, #body)[aria-invalid=true] { box-shadow: inset 0 -1px var(--mtrl-sys-color-error) }
+  #editor :is(#headline, #body)[aria-invalid=true] { box-shadow: inset 0 -1px var(--error) }
   .field-support { display: flex; gap: .5rem; color: var(--quiet); font: var(--type-caption) }
   .field-count { margin-inline-start: auto; font-variant-numeric: tabular-nums }
-  .field-error { color: var(--mtrl-sys-color-error); font: var(--type-small) }
+  .field-error { color: var(--error); font: var(--type-small) }
   .composer-options { border-block-start: 1px solid var(--line); margin-block-start: 1rem; padding-block-start: .5rem }
   .composer-signature {
     flex: none;
@@ -334,7 +334,7 @@
     border-radius: 50%;
     background: currentColor;
   }
-  .anon-choice input:checked { color: var(--mtrl-sys-color-on-primary); background: var(--plum); border-color: var(--plum) }
+  .anon-choice input:checked { color: var(--on-plum); background: var(--plum); border-color: var(--plum) }
   .anon-choice input:checked::before { justify-self: end }
   .anon-choice input:focus-visible { outline: 2px solid var(--plum); outline-offset: 2px }
   .anon-choice:has(:disabled) { opacity: .6; cursor: default }

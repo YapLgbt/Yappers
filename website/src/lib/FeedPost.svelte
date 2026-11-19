@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { minuteClock } from './minuteClock';
   import { tick } from 'svelte';
   import ActionButton from './ActionButton.svelte';
   import ContentMenu from './ContentMenu.svelte';
@@ -46,6 +47,10 @@
   }
   let timestamp = $derived(post.acceptedAt || post.createdAt);
   let date = $derived(timestamp ? new Date(timestamp * 1000) : null);
+  let ageMinutes = $derived(timestamp ? Math.max(0, Math.floor(($minuteClock / 1000 - timestamp) / 60)) : 0);
+  let timeLabel = $derived(ageMinutes < 1 ? 'Just now' : ageMinutes < 60 ? ageMinutes + 'm ago'
+    : ageMinutes < 1440 ? Math.floor(ageMinutes / 60) + 'h ago'
+    : date?.toLocaleDateString(undefined, {month: 'short', day: 'numeric'}));
   let canMessage = $derived(!!message && !!profile.directAvailable && !replica && !post.mine &&
     !!post.visibility?.peer && !isAnonymous(post));
 </script>
@@ -68,7 +73,7 @@
   {/if}
   <div class="post-meta">
     <span class="post-topic">{post.topic}</span>{#if post.area}{' · '}{post.area.label}{/if}
-    {#if date}{' · '}<time datetime={date.toISOString()} title={date.toLocaleString()}>{date.toLocaleDateString(undefined,{month:'short',day:'numeric'})}</time>{/if}
+    {#if date}{' · '}<time datetime={date.toISOString()} title={date.toLocaleString()}>{timeLabel}</time>{/if}
   </div>
   <div class="post-actions">
     {#if post.pending}<span class="pending-post-label" role="status">Waiting to send</span>{:else}
@@ -78,7 +83,7 @@
         if (detail) document.getElementById('thread-comments')?.focus();
         else if (openThread) openThread(post, true);
         else expanded = !expanded;
-      }}><AppIcon name="nearby" />{comments.length}</button>
+      }}><span class="reply-count"><AppIcon name="conversation" />{comments.length}</span></button>
     {#if !replica}
       <div class="vote-pair">
         <button type="button" aria-label="Upvote" title="Upvote" aria-pressed={post.vote === 1} disabled={voting} onclick={() => cast(1)}><AppIcon name="up" /></button>

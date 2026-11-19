@@ -1,16 +1,10 @@
-<script module lang="ts">
-  const initials = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-</script>
-
 <script lang="ts">
   let {
     photo = '',
-    label,
     large = false,
   }: { photo?: string; label: string; large?: boolean } = $props();
   let canvas = $state<HTMLCanvasElement>(),
     loaded = $state(false);
-  const initial = $derived(initials.segment(label.trim()).containing(0)?.segment.toLocaleUpperCase() || '');
   $effect(() => {
     const target = canvas,
       encoded = photo;
@@ -36,11 +30,11 @@
   });
 </script>
 
-<span class="avatar" class:large aria-hidden="true"
-  >{#if !loaded}{initial}{/if}<canvas
-    hidden={!loaded}
-    width="96"
-    height="96"
-    bind:this={canvas}
-  ></canvas></span
->
+<span class="avatar" class:large aria-hidden="true">
+  {#if !loaded}<img src="/app/default-avatar.png" alt="" />{/if}
+  <canvas hidden={!loaded} width="96" height="96" bind:this={canvas}></canvas>
+</span>
+
+<style>
+  img { width: 100%; height: 100%; border-radius: inherit }
+</style>

@@ -82,7 +82,7 @@
 </script>
 
 <Sheet
-  triggerVariant={restoreOnly ? 'text' : 'tonal'}
+  triggerVariant="text"
   label={restoreOnly ? 'Restore a full backup' : 'Account data'}
   title={mode === 'export'
     ? 'Save a full backup'
@@ -220,7 +220,7 @@
 
 <style>
   .account-overview h3 { margin-block: .5rem 0; }
-  .account-disclosure { border-block-start: 1px solid var(--mtrl-sys-color-outline-variant); }
+  .account-disclosure { border-block-start: 1px solid var(--line); }
   .restore-consequence { font: var(--type-small); }
   .account-actions { justify-content: flex-end; }
   .action-feedback { margin: 0 0 .5rem; }

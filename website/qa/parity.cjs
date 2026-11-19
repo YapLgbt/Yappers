@@ -85,10 +85,10 @@ module.exports = async function (page, ctx, base, engine) {
   await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Edit profile');
   assert.deepEqual(await page.evaluate(() => ({ url: location.href, scroll: scrollY })), profilePage);
   await button('Edit profile').click();
-  const friends = editor.getByRole('gridcell', { name: 'Friends', exact: true });
+  const friends = editor.getByRole('button', { name: 'Friends', exact: true });
   await friends.focus();
   await page.keyboard.press('Space');
-  assert.equal(await friends.getAttribute('aria-selected'), 'true');
+  assert.equal(await friends.getAttribute('aria-pressed'), 'true');
   await editor.getByLabel('Pronouns').fill('they/them');
   await editor.getByLabel('Bio', { exact: true }).fill('Book club regular');
   await editor
@@ -141,10 +141,7 @@ module.exports = async function (page, ctx, base, engine) {
   }
   await button('Cancel', editor).focus();
   await page.keyboard.press('Shift+Tab');
-  assert(
-    await friends.evaluate((chip) => chip.getRootNode().activeElement === chip),
-    'Focus escaped the profile dialog',
-  );
+  await friends.and(page.locator(':focus')).waitFor();
   await audit('Profile editing');
   await layout('profile-crop');
   // A failed save keeps the editor and its draft. Escape and Tab stay inside the dialog while editing.
@@ -218,6 +215,11 @@ module.exports = async function (page, ctx, base, engine) {
   await dialog.waitFor({ state: 'hidden' });
   await settle();
   await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'Groups',exact:true}).click();
+  await page.setViewportSize({width:320,height:840});
+  const title = page.getByRole('heading', { name: 'Groups', exact: true });
+  assert(await title.evaluate(el => el.offsetHeight < parseFloat(getComputedStyle(el).lineHeight) * 1.5),
+    'The directory title must fit on one line on a small phone');
+  await page.setViewportSize({width:390,height:844});
   await button('New group').click();
   await audit('Create group');
   const name = 'QA book group';
@@ -365,14 +367,10 @@ module.exports = async function (page, ctx, base, engine) {
   await page.getByRole('heading', { name, exact: true }).waitFor();
   await page.getByRole('tab', { name: 'Local' }).focus();
   await page.keyboard.press('ArrowRight');
-  assert.equal(
-    await page.getByRole('tab', { name: 'Worldwide' }).getAttribute('aria-selected'),
-    'true',
-  );
+  await page.getByRole('tab', { name: 'Worldwide', selected: true }).waitFor();
   await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'You',exact:true}).click();
   await button('Preferences').click();
-  await page.getByRole('combobox', { name: 'Minimum account age for posts' }).press('ArrowDown');
-  await page.getByRole('option', { name: '7 days', exact: true }).click();
+  await page.getByRole('combobox', { name: 'Minimum account age for posts' }).selectOption({ label: '7 days' });
   await page.waitForFunction(
     async () => {
       const s = await (await import('/app/store.js')).load();

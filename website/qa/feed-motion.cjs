@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 module.exports = async function verifyFeedMotion(browser, base) {
   const context = await browser.newContext({viewport: {width: 390, height: 844}, reducedMotion: 'no-preference', serviceWorkers: 'block'});
   const source = `
-    const post = id => ({id, author:'Neighbor', topic:'Chatter', headline:'Post '+id, body:'In the neighborhood.', replies:[]});
+    const post = id => ({id, author:'Neighbor', acceptedAt: Math.floor(Date.now()/1000)-600, topic:'Chatter', headline:'Post '+id, body:'In the neighborhood.', replies:[]});
     export let profile = {alias:'Robin', username:'robin@town.test', join:{community:'fixture'},
       posts:Array.from({length:18}, (_, index) => post(String(index))), lastSync:1,
       blocks:[], saved:[], pendingUnblocks:[], outbox:[]};
@@ -22,6 +22,8 @@ module.exports = async function verifyFeedMotion(browser, base) {
     await page.route('**/app/network.js*', route => route.fulfill({contentType:'application/javascript', body:source}));
     await page.goto(base);
     await page.locator('#posts[data-feed-state=primary] article').first().waitFor();
+    assert.equal(await page.locator('#posts article time').first().textContent(), '10m ago');
+    assert.equal(await page.locator('#feed-heading:focus').count(), 0, 'Initial load should preserve browser focus');
     const animationIds = () => page.evaluate(() => document.getAnimations().filter(a => a.id === 'feed-update').length);
     assert.equal(await animationIds(), 0, 'Initial load should be still');
     const update = (kind,id) => page.evaluate(async ([kind,id]) => {
@@ -56,6 +58,7 @@ module.exports = async function verifyFeedMotion(browser, base) {
     assert(await opener.evaluate(el => el === document.activeElement), 'Incoming post took keyboard focus');
     await opener.press('Enter');
     await page.locator('#thread-heading:focus').waitFor();
+    assert(await page.locator('#compose').isHidden(), 'Single-pane conversations have their own reply action');
     await update('insert','while-reading-thread');
     await page.getByRole('button',{name:'Inbox',exact:true}).click();
     await page.getByRole('button',{name:'Done',exact:true}).click();
@@ -82,7 +85,11 @@ module.exports = async function verifyFeedMotion(browser, base) {
     assert(Math.abs(await position()-desktop) <= 1, 'Desktop reading position changed');
     const removeMenu = row.getByRole('button',{name:'Post options'});
     await removeMenu.press('Enter');
-    await page.getByRole('menuitem',{name:'Hide on this device'}).press('Enter');
+    const menu = page.getByRole('menu');
+    await menu.locator('[data-highlighted]').waitFor();
+    await menu.press('h');
+    await page.getByRole('menuitem', {name:'Hide on this device'}).and(page.locator('[data-highlighted]')).waitFor();
+    await menu.press('Enter');
     await row.waitFor({state:'detached'});
     await page.locator('#read-10:focus').waitFor();
     const pinned = page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'Nearby'});

@@ -6,7 +6,7 @@
   import Avatar from './Avatar.svelte';
   import ContentMenu from './ContentMenu.svelte';
   import { onDestroy, tick } from 'svelte';
-  import { Tabs } from 'bits-ui';
+  import { Tabs } from '@skeletonlabs/skeleton-svelte';
   import { inboxFor, type Community, type Profile, type Contact } from './community';
 
   let { profile, client, contact = $bindable(null), status, refresh, browse, block, report, changedContact }: {
@@ -139,7 +139,7 @@
     <ActionButton variant="filled" disabled={busyPeer === selected.peer || sending[selected.peer] || !profile.directAvailable || !drafts[selected.peer]?.trim()}>{sending[selected.peer] ? 'Sending…' : 'Send'}</ActionButton>
   </form>
 {:else}
-  <Tabs.Root bind:value={() => tab, setFolder}>
+  <Tabs value={tab} onValueChange={({ value }) => setFolder(value)}>
     <Tabs.List class="dm-tabs" aria-label="Inbox folders">
       <Tabs.Trigger class="btn" value="chats">Conversations</Tabs.Trigger>
       <Tabs.Trigger class="btn" value="requests">Requests{mailbox.requests.length ? ' ('+mailbox.requests.length+')' : ''}</Tabs.Trigger>
@@ -153,7 +153,7 @@
           <AppIcon name="arrowRight"/>
         </button>
       {:else}
-        {#if mailboxReady && !profile.mailboxElsewhere}<section class="dm-empty"><span class="empty-icon"><AppIcon name="nearby" /></span><h2 tabindex="-1" bind:this={heading}>No conversations yet</h2>
+        {#if mailboxReady && !profile.mailboxElsewhere}<section class="dm-empty"><span class="empty-icon"><AppIcon name="conversation" /></span><h2 tabindex="-1" bind:this={heading}>No conversations yet</h2>
           <p>Select a neighbor’s name on a post or reply, then choose Message on their profile.</p>
           <ActionButton onclick={browse}>Browse posts</ActionButton></section>{/if}
       {/each}
@@ -168,7 +168,7 @@
       {:else}{#if mailboxReady && !profile.mailboxElsewhere}<section class="dm-empty"><h2>No message requests</h2><p>Messages that need your approval will appear here.</p></section>{/if}{/each}
     </Tabs.Content>
     </div>
-  </Tabs.Root>
+  </Tabs>
 {/if}
 {#if !selected && feedback}<p class="dm-feedback" role="status">{feedback}</p>
 {:else if !selected && !mailboxReady && !feedback}<p class="dm-feedback" role="status">Loading inbox…</p>{/if}
@@ -180,7 +180,7 @@
   .conversation strong { color: var(--ink); font: var(--type-label); overflow: hidden; text-overflow: ellipsis; }
   .conversation span { font: var(--type-small); }
   .dm-thread :global(> svg) { width: 17px; color: var(--quiet); }
-  .dm-thread :global(.avatar) { color: var(--mtrl-sys-color-on-primary-container); }
+  .dm-thread :global(.avatar) { color: var(--on-accent); }
   .recipient, .requester { display: flex; gap: .75rem; align-items: center; }
   .recipient { padding: .5rem 0 .85rem; border-bottom: 1px solid var(--line); }
   .recipient > div { min-width: 0; }

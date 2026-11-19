@@ -61,9 +61,9 @@
 }
 .btn[data-variant] > svg { flex: none; inline-size: 18px; block-size: 18px }
 .btn[data-variant="filled"] { @apply preset-filled-brand; }
-.btn[data-variant="danger"] { background: var(--mtrl-sys-color-error); color: var(--mtrl-sys-color-on-error) }
-.btn[data-variant="tonal"] { background: var(--accent); color: var(--mtrl-sys-color-on-primary-container) }
-.btn[data-variant="outlined"] { border-color: var(--mtrl-sys-color-outline); color: var(--ink) }
+.btn[data-variant="danger"] { background: var(--error); color: var(--on-error) }
+.btn[data-variant="tonal"] { background: var(--accent); color: var(--on-accent) }
+.btn[data-variant="outlined"] { border-color: var(--outline); color: var(--ink) }
 .btn[data-variant]:focus-visible { outline: 2px solid var(--plum); outline-offset: 2px }
 .btn[data-variant]:disabled { opacity: .5; cursor: default }
 
@@ -75,6 +75,6 @@
   .btn[data-variant="filled"]:enabled:hover {
     background-color: color-mix(in srgb, light-dark(var(--color-brand-light), var(--color-brand-dark)) 90%, var(--ink));
   }
-  .btn[data-variant="danger"]:enabled:hover { background-color: color-mix(in srgb, var(--mtrl-sys-color-error) 90%, var(--ink)) }
+  .btn[data-variant="danger"]:enabled:hover { background-color: color-mix(in srgb, var(--error) 90%, var(--ink)) }
   .btn[data-variant="tonal"]:enabled:hover { background-color: color-mix(in srgb, var(--accent) 90%, var(--plum)) }
 }

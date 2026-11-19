@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { Dialog } from 'bits-ui';
   import type { Snippet } from 'svelte';
   let {
     label,
@@ -28,45 +27,44 @@
     disabled?: boolean;
     opener?: Snippet;
   } = $props();
-  let open = $state(false),
-    trigger = $state<HTMLButtonElement | null>(null);
-  function change(next: boolean) {
-    if (!next && (busy || canDismiss?.() === false)) return;
-    if (next) prepare?.();
-    else dismiss?.();
-    open = next;
+  const titleId = $props.id();
+  let open = $state(false);
+  let dialog = $state<HTMLDialogElement>();
+  let trigger: HTMLButtonElement;
+
+  function present(element: HTMLDialogElement) { element.showModal(); }
+
+  function show() {
+    prepare?.();
+    trigger.focus({ preventScroll: true });
+    open = true;
   }
 
   function close() {
-    dismiss?.();
+    dialog?.close();
     open = false;
+    dismiss?.();
+    trigger.focus({ preventScroll: true });
   }
 </script>
 
-<Dialog.Root bind:open={() => open, change}>
-  <Dialog.Trigger bind:ref={trigger} class={triggerClass ?? 'btn'} data-variant={triggerClass ? undefined : triggerVariant} {disabled} aria-label={label}
-    >{#if opener}{@render opener()}{:else}{label}{/if}</Dialog.Trigger
-  >
-  <Dialog.Portal>
-    <Dialog.Overlay class="sheet-backdrop" />
-    <Dialog.Content
-      onCloseAutoFocus={(event) => {
-        event.preventDefault();
-        trigger?.focus({ preventScroll: true });
-      }}
-      class="app-sheet"
-      escapeKeydownBehavior={busy ? 'ignore' : 'close'}
-      interactOutsideBehavior={busy ? 'ignore' : 'close'}
-    >
-      <div class="dialog-title">
-        <Dialog.Title>{title}</Dialog.Title><Dialog.Close class="btn" data-variant="text" disabled={busy}
-          >Close</Dialog.Close
-        >
-      </div>
-      <div class="app-sheet-body">
-        {@render children(close)}
-      </div>
-      {#if actions}<div class="app-sheet-actions">{@render actions(close)}</div>{/if}
-    </Dialog.Content>
-  </Dialog.Portal>
-</Dialog.Root>
+<button type="button" bind:this={trigger} class={triggerClass ?? 'btn'}
+  data-variant={triggerClass ? undefined : triggerVariant} {disabled} aria-label={label}
+  aria-haspopup="dialog" onclick={show}>
+  {#if opener}{@render opener()}{:else}{label}{/if}
+</button>
+{#if open}
+  <dialog bind:this={dialog} use:present class="app-sheet" closedby="any" aria-labelledby={titleId}
+    oncancel={event => {
+      event.preventDefault();
+      if (!busy && canDismiss?.() !== false) close();
+    }}>
+    <div class="dialog-title">
+      <h2 id={titleId}>{title}</h2>
+      <button type="button" class="btn" data-variant="text" disabled={busy}
+        onclick={() => { if (canDismiss?.() !== false) close(); }}>Close</button>
+    </div>
+    <div class="app-sheet-body">{@render children(close)}</div>
+    {#if actions}<div class="app-sheet-actions">{@render actions(close)}</div>{/if}
+  </dialog>
+{/if}

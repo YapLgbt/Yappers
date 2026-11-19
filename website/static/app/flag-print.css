@@ -8,18 +8,12 @@
 .flag-print [hidden] { display: none; }
 .hero-art .cloth { aspect-ratio: 3/2; clip-path: url(#estuary-edge); }
 .hero-art figcaption { display: flex; align-items: center; justify-content: space-between; gap: 1em; }
-.welcome-art .cloth {
-  aspect-ratio: 4/3;
-  overflow: hidden;
-  border-radius: var(--mtrl-sys-shape-corner-large);
+/* Native onboarding overlays its surface color at 84% over the Estuary. */
+.welcome-art {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: .16;
+  pointer-events: none;
 }
-.welcome-art figcaption {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: .75rem;
-  min-height: 48px;
-  color: var(--quiet);
-  font: var(--type-small);
-  text-align: start;
-}
+.welcome-art .cloth { height: 100%; overflow: hidden; }

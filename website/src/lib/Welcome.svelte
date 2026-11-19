@@ -81,11 +81,13 @@
   }
 </script>
 <main id="welcome" class:initial={step === "intro"} aria-labelledby="welcome-title" hidden={step === null}>
+<section class="welcome-content" use:pageMotion={step ? steps.indexOf(step) : null}>
 {#if step === 'intro'}
   <a class="welcome-brand" href="/" aria-label="Yap home"><img src="/assets/yap-wordmark.svg" width="1745" height="773" alt="Yap"></a>
 {/if}
-<section class="welcome-content" use:pageMotion={step ? steps.indexOf(step) : null}><h1 class:sr-only={step === 'intro'} id="welcome-title" bind:this={heading} tabindex="-1">{step === "restore" ? "Restore your account" : step === "username" ? "Choose a username" : step === "backup" ? "Keep your account" : step === "name" ? "What should neighbors call you?" : "Welcome to Yap"}</h1>
+<h1 id="welcome-title" bind:this={heading} tabindex="-1">{step === "restore" ? "Restore your account" : step === "username" ? "Choose a username" : step === "backup" ? "Keep your account" : step === "name" ? "What should neighbors call you?" : "Welcome to Yap"}</h1>
 <div id="welcome-intro" hidden={step !== "intro"}><p>Yap is a neighborhood for queer conversation. Join yap.lgbt to share a plan, ask a question or find your people.</p>
+<p class="welcome-age">For ages 18 and older.</p>
 <div class="welcome-primary-actions">
   <ActionButton type="button" variant="filled" onclick={() => go("name")} id="welcome-create">Create an account</ActionButton>
   <ActionButton type="button" variant="outlined" onclick={() => go("restore")} id="welcome-restore-existing">Restore an existing account</ActionButton>
@@ -136,18 +138,18 @@
 <div id="welcome-backup" hidden={step !== "backup"}><p>Your account is ready. Save a recovery key in your password manager to use it on another device.</p>
 <div class="actions"><ActionButton type="button" onclick={() => recovery("backup")} id="welcome-get-key">Back up account</ActionButton><ActionButton type="button" variant="filled" disabled={busy} onclick={finish} id="welcome-enter">Enter neighborhood</ActionButton></div>
 <p class="hint">You can back up later in Preferences.</p></div>
-<p id="welcome-error" class="form-feedback" class:form-error={failed} role="status">{message}</p></section>
+<p id="welcome-error" class:form-feedback={!!message} class:form-error={failed} role="status">{message}</p></section>
   <figure class="flag-print welcome-art">
     <div class="cloth" aria-hidden="true">
       <img src="/app/estuary.webp" width="660" height="400" alt="">
       <canvas hidden aria-hidden="true"></canvas>
     </div>
-    <figcaption>
+    <figcaption class="sr-only">
       <span data-flag-name>Rainbow Estuary</span>
     </figcaption>
   </figure>
   {#if step === 'intro'}
-    <footer class="welcome-footer"><p>For ages 18 and older.</p><nav aria-label="Policies">
+    <footer class="welcome-footer"><nav aria-label="Policies">
       <a href="/terms/">Terms of Service</a><a href="/privacy-policy/">Privacy Policy</a>
     </nav></footer>
   {/if}
@@ -156,32 +158,26 @@
 <style>
   #welcome.initial {
     min-height: 100dvh;
-    max-width: 36rem;
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto auto 1fr;
-    align-content: start;
-    padding-block-start: clamp(1.75rem, 5dvh, 3.5rem);
-    gap: clamp(.75rem, 2.4dvh, 1.5rem);
+    grid-template-rows: 1fr auto;
+    padding-block-start: max(1.75rem, env(safe-area-inset-top));
   }
-  .welcome-brand { justify-self: center; }
-  .welcome-brand img { display: block; width: clamp(8rem, 33vw, 10.75rem); height: auto; }
+  .welcome-brand { display: block; width: fit-content; margin: 0 auto 1.5rem; }
+  .welcome-brand img { display: block; width: clamp(7.25rem, 26vw, 9rem); height: auto; }
   @media (prefers-color-scheme: dark) { .welcome-brand img { filter: brightness(0) invert(96%); } }
-  .initial .welcome-art { grid-row: 2; }
-  .initial .welcome-art .cloth { aspect-ratio: 2.45; }
-  .initial .welcome-art figcaption { min-height: 1.75rem; }
-  .initial .welcome-content { text-align: center; max-width: none; }
-  #welcome-intro > p { margin: 0 auto 1.25rem; }
+  .initial .welcome-content h1 { font: 700 clamp(1.75rem, 4vw, 2.25rem)/1.15 var(--sans); }
+  #welcome-intro > .welcome-age { color: var(--quiet); font: var(--type-small); margin-block: .875rem 1rem; }
   .welcome-primary-actions, .welcome-restore-actions { display: grid; gap: .625rem; }
   .welcome-primary-actions :global(button) { min-height: 3rem; }
-  .demo-link { display: inline-flex; align-items: center; min-height: 2.75rem; margin-block-start: .25rem; }
-  .welcome-footer { align-self: end; text-align: center; font: var(--type-small); color: var(--quiet); }
-  .welcome-footer p { margin: 0; }
-  .welcome-footer nav { display: flex; flex-wrap: wrap; justify-content: center; gap: 0 1.25rem; }
+  .welcome-primary-actions :global(button[data-variant=outlined]) { justify-self: center; }
+  .demo-link { display: flex; width: fit-content; margin: .25rem auto 0; }
+  .welcome-footer { font: var(--type-small); }
+  .welcome-footer nav { display: flex; flex-wrap: wrap; justify-content: space-evenly; gap: 0 1rem; }
   .welcome-footer a { display: inline-flex; align-items: center; min-height: 2.75rem; }
   #welcome-name { margin-block-start: .875rem; }
   #welcome-name > p { margin: 0; }
   #welcome-name .home-invitation { margin: 0; }
   #welcome-name .form-field .form-actions { margin-block-start: .375rem; }
-  #welcome-error { color: var(--mtrl-sys-color-on-secondary-container); }
-  #welcome-error.form-error { color: var(--mtrl-sys-color-on-error-container); }
+  #welcome-error:empty { margin: 0; }
+  #welcome-error { color: var(--on-accent); }
+  #welcome-error.form-error { color: var(--on-error-container); }
 </style>

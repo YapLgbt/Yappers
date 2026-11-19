@@ -154,7 +154,10 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
             label.accessibilityIdentifier = id
             label.isAccessibilityElement = true
         case "photo":
-            if previous?.value != next.value { imagePreview.image = Data(base64Encoded: next.value).flatMap { UIImage(data: $0) } }
+            if previous?.value != next.value {
+                imagePreview.image = Data(base64Encoded: next.value).flatMap { UIImage(data: $0) }
+                    ?? UIImage(named: "DefaultAvatar")
+            }
             imagePreview.isAccessibilityElement = true
             imagePreview.accessibilityLabel = next.title
             imagePreview.accessibilityIdentifier = id

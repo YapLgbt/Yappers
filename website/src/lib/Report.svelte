@@ -116,7 +116,7 @@
   .evidence-support { display: flex; flex-wrap: wrap; gap: .125rem .75rem; }
   .evidence-support p { flex: 1 1 12rem; }
   .evidence-count { margin-inline-start: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .report-summary { display: grid; gap: .75rem; padding-block: 1rem; border-block: 1px solid var(--mtrl-sys-color-outline-variant); }
+  .report-summary { display: grid; gap: .75rem; padding-block: 1rem; border-block: 1px solid var(--line); }
   .report-summary dt { font: var(--type-label); }
   .report-summary dd { margin: .25rem 0 0; }
   @media (min-height: 480px) {

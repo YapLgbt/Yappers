@@ -3,7 +3,7 @@
   import { onMount,tick } from 'svelte';
   import {page} from '$app/state';
   import {pushState,replaceState} from '$app/navigation';
-  import { Tabs } from 'bits-ui';
+  import { Tabs } from '@skeletonlabs/skeleton-svelte';
   import { trackFeed } from '../../../lib/feedMotion.svelte';
   import { pageMotion } from '../../../lib/pageMotion';
   import AppHead from '../../../lib/AppHead.svelte';
@@ -122,7 +122,7 @@
     <ActionButton variant="filled" onclick={event => composer?.open(null, event.currentTarget)}>Post</ActionButton>
   {/if}</div>
   <p class="hint">Sample conversations. Your changes stay in this preview until you leave.</p>
-  <Tabs.Root bind:value={tab}
+  <Tabs value={tab} onValueChange={({ value }) => tab = value}
     ><Tabs.List hidden={!!reading} class="dm-tabs" aria-label="Demo feeds"
       ><Tabs.Trigger class="btn" value="nearby">Nearby</Tabs.Trigger><Tabs.Trigger class="btn" value="saved"
         >Saved</Tabs.Trigger
@@ -159,7 +159,7 @@
         {/if}</Tabs.Content
       >{/each}
     </div>
-  </Tabs.Root>
+  </Tabs>
 </main>
 <Composer bind:this={composer} {profile} destination="Local demo" queue={addSample}
   showReply={async (_parent, id) => {

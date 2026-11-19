@@ -1,6 +1,6 @@
 <script lang="ts">
   import ActionButton from './ActionButton.svelte';
-  import { Chip, Chips } from 'material/svelte';
+  import { ToggleGroup } from '@skeletonlabs/skeleton-svelte';
   import AppIcon from './AppIcon.svelte';
   import Avatar from './Avatar.svelte';
   import { blankProfile, type Community, type Profile } from './community';
@@ -235,7 +235,7 @@
   }
 </script>
 
-<ActionButton type="button" variant="tonal" aria-label="Edit profile" aria-haspopup="dialog" onclick={prepare}>Edit profile</ActionButton>
+<ActionButton type="button" variant="filled" aria-label="Edit profile" aria-haspopup="dialog" onclick={prepare}>Edit profile</ActionButton>
 <dialog class="profile-editor" class:closing class:reserveScrollbar bind:this={dialog}
   aria-labelledby={formId + '-title'} oncancel={cancel} onclose={didClose}>
   <header><h2 id={formId + '-title'}>Edit profile</h2></header>
@@ -280,25 +280,25 @@
           </figure>
           <div class="profile-crop-controls">
             <div class="crop-control-row" role="group" aria-label="Zoom">
-              <button type="button" class="mtrl-icon-button mtrl-icon-button--tonal mtrl-icon-button--round"
+              <button type="button" class="btn-icon crop-button preset-tonal-brand"
                 aria-label="Zoom out"
                 disabled={cropLocked || zoom <= 1} onclick={() => zoomBy(-0.25)}>
-                <span class="mtrl-icon-button__icon"><AppIcon name="minus" /></span>
+                <AppIcon name="minus" />
               </button>
               <span class="crop-zoom-value" aria-live="polite" aria-atomic="true">{Math.round(zoom * 100)}%</span>
-              <button type="button" class="mtrl-icon-button mtrl-icon-button--tonal mtrl-icon-button--round"
+              <button type="button" class="btn-icon crop-button preset-tonal-brand"
                 aria-label="Zoom in"
                 disabled={cropLocked || zoom >= maxZoom} onclick={() => zoomBy(0.25)}>
-                <span class="mtrl-icon-button__icon"><AppIcon name="plus" /></span>
+                <AppIcon name="plus" />
               </button>
             </div>
             <div class="crop-control-row" role="group" aria-label="Photo position">
               {#each directions as direction (direction.icon)}
-                <button type="button" class="mtrl-icon-button mtrl-icon-button--outlined mtrl-icon-button--round"
+                <button type="button" class="btn-icon crop-button preset-outlined-surface-500"
                   aria-label={direction.label}
                   disabled={cropLocked || (direction.x ? source.width : source.height) <= cropSide}
                   onclick={() => movePhoto(direction.x, direction.y)}>
-                  <span class="mtrl-icon-button__icon"><AppIcon name={direction.icon} /></span>
+                  <AppIcon name={direction.icon} />
                 </button>
               {/each}
             </div>
@@ -312,12 +312,15 @@
     <label>Bio<textarea bind:value={draft.bio} maxlength="280"></textarea></label>
     <label>Identity<input bind:value={draft.identity} maxlength="80" /></label>
     <label>Interests<input bind:value={draft.interests} maxlength="120" /></label>
-    <Chips class="profile-intentions" label="Here for" value={draft.hereFor}
-      onchange={({ detail }) => { if (Array.isArray(detail.value)) draft.hereFor = detail.value; }}>
-      {#each options as tag (tag)}
-        <Chip value={tag} variant="filter" disabled={busy}>{tag}</Chip>
-      {/each}
-    </Chips>
+    <fieldset class="profile-intentions">
+      <legend>Here for</legend>
+      <ToggleGroup multiple value={draft.hereFor} disabled={busy} aria-label="Here for"
+        onValueChange={({ value }) => draft.hereFor = value}>
+        {#each options as tag (tag)}
+          <ToggleGroup.Item class="chip" value={tag}>{tag}</ToggleGroup.Item>
+        {/each}
+      </ToggleGroup>
+    </fieldset>
   </form>
   <footer>
     {#if error}<p class="profile-error" role="alert">{error}</p>{/if}

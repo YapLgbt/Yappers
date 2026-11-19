@@ -23,18 +23,19 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import app.yappers.resources.Res
+import app.yappers.resources.default_avatar
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlin.io.encoding.Base64
+import org.jetbrains.compose.resources.painterResource
 
 @Composable
 internal fun ProfileAvatar(name: String, profile: CommunityProfile?, size: Dp) {
     val image = remember(profile?.photo) { profile?.photo?.takeIf { it.isNotEmpty() }?.let(::decodeProfilePhoto) }
     Box(Modifier.size(size).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) {
         if (image != null) Image(image, "Profile photo of $name", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-        else Text(if (name == "Anonymous neighbor") "?" else name.take(1).uppercase(),
-            style = if (size >= 72.dp) MaterialTheme.typography.headlineLarge else MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+        else Image(painterResource(Res.drawable.default_avatar), null, Modifier.fillMaxSize())
     }
 }
 
@@ -165,7 +166,7 @@ internal fun ProfileEditor(initialName: String, initial: CommunityProfile, libra
         } else {
             val sections = listOf(
                 FormSection("Photo", buildList {
-                    if (profile.photo.isNotBlank()) add(FormRow("photo-preview", "Profile photo", "photo", value = profile.photo))
+                    add(FormRow("photo-preview", "Profile photo", "photo", value = profile.photo))
                     add(FormRow("pick-photo", photoAction.title, symbol = "photo", enabled = photoAction.enabled, onTap = ::choosePhoto))
                     if (profile.photo.isNotBlank()) add(FormRow("remove-photo", "Remove photo", destructive = true, enabled = active,
                         onTap = { profile = profile.copy(photo = "") }))
@@ -252,6 +253,7 @@ internal fun AuthorProfileSheet(name: String, username: String?, profile: Commun
     if (nativeForm != null) {
         val sections = buildList {
             add(FormSection(rows = buildList {
+                add(FormRow("photo", "Profile photo of $name", "photo", value = profile?.photo.orEmpty()))
                 profile?.pronouns?.takeIf { it.isNotBlank() }?.let { add(FormRow("pronouns", it, "text")) }
                 username?.let { add(FormRow("username", it, "text")) }
                 if (profile != null) add(FormRow("source", "Shared with this post", "text"))
@@ -262,7 +264,6 @@ internal fun AuthorProfileSheet(name: String, username: String?, profile: Commun
                 val details = buildList {
                     if (profile.identity.isNotBlank()) add(FormRow("identity", profile.identity, "text"))
                     if (profile.interests.isNotBlank()) add(FormRow("interests", profile.interests, "text"))
-                    if (profile.photo.isNotBlank()) add(FormRow("photo", "Profile photo of $name", "photo", value = profile.photo))
                 }
                 if (details.isNotEmpty()) add(FormSection(rows = details))
             }
@@ -284,6 +285,7 @@ internal fun AuthorProfileSheet(name: String, username: String?, profile: Commun
             item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(onClick = onDismiss) { Text("Done") } } }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    ProfileAvatar(name, profile, 72.dp)
                     Text(name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                     profile?.pronouns?.takeIf { it.isNotBlank() }?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
                     username?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -301,7 +303,6 @@ internal fun AuthorProfileSheet(name: String, username: String?, profile: Commun
                 }
                 if (profile.identity.isNotBlank()) item { Text(profile.identity, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 if (profile.interests.isNotBlank()) item { Text(profile.interests, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                if (profile.photo.isNotBlank()) item { ProfileAvatar(name, profile, 72.dp) }
             }
             if (onMessage != null || onBlock != null) item {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

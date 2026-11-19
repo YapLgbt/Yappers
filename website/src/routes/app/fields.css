@@ -1,6 +1,6 @@
-/* Native controls share Material outlined-field roles across app surfaces. */
+/* Native fields use the same Yap theme as Skeleton controls. */
 :where(dialog, .app-sheet, .profile-editor, .dm-compose, #welcome) :where(textarea, select, input:not([type=checkbox], [type=radio], [type=range], [type=file], [type=hidden], [type=submit], [type=button])) {
-  --field-outline: var(--mtrl-sys-color-outline);
+  --field-outline: var(--outline);
   box-sizing: border-box;
   inline-size: 100%;
   min-inline-size: 0;
@@ -8,31 +8,31 @@
   padding: .875rem 1rem;
   margin-block-start: .375rem;
   border: 1px solid var(--field-outline);
-  border-radius: var(--mtrl-sys-shape-corner-extra-small, 4px);
+  border-radius: var(--corner-extra-small, 4px);
   background: transparent;
-  color: var(--mtrl-sys-color-on-surface);
-  caret-color: var(--mtrl-sys-color-primary);
+  color: var(--ink);
+  caret-color: var(--plum);
   font: var(--type-body);
   letter-spacing: .01em;
 
-  &::placeholder { color: var(--mtrl-sys-color-on-surface-variant); opacity: 1; }
+  &::placeholder { color: var(--quiet); opacity: 1; }
 
-  &:hover:not(:disabled) { --field-outline: var(--mtrl-sys-color-on-surface); }
+  &:hover:not(:disabled) { --field-outline: var(--ink); }
 
   &:focus {
-    --field-outline: var(--mtrl-sys-color-primary);
+    --field-outline: var(--plum);
     /* An inset second stroke preserves field size and avoids clipping in a sheet. */
     outline: 1px solid var(--field-outline);
     outline-offset: -2px;
   }
 
   &:is([aria-invalid="true"], :user-invalid:not(:where(#editor-form *))):not(:disabled) {
-    --field-outline: var(--mtrl-sys-color-error);
+    --field-outline: var(--error);
   }
 
   &:disabled {
-    --field-outline: color-mix(in srgb, var(--mtrl-sys-color-on-surface) 12%, transparent);
-    color: color-mix(in srgb, var(--mtrl-sys-color-on-surface) 38%, transparent);
+    --field-outline: color-mix(in srgb, var(--ink) 12%, transparent);
+    color: color-mix(in srgb, var(--ink) 38%, transparent);
     opacity: 1;
   }
 }
@@ -66,10 +66,10 @@
   min-block-size: 3.5rem;
   padding: .25rem;
   margin-block-start: .375rem;
-  border: 1px solid var(--mtrl-sys-color-outline);
-  border-radius: var(--mtrl-sys-shape-corner-extra-small, 4px);
+  border: 1px solid var(--outline);
+  border-radius: var(--corner-extra-small, 4px);
   overflow: hidden;
-  color: var(--mtrl-sys-color-on-surface);
+  color: var(--ink);
   font: var(--type-small);
 }
 
@@ -79,58 +79,58 @@
   margin-inline-end: .75rem;
   padding-inline: .875rem;
   border: 0;
-  border-radius: var(--mtrl-sys-shape-corner-full, 9999px);
-  background: var(--mtrl-sys-color-secondary-container);
-  color: var(--mtrl-sys-color-on-secondary-container);
+  border-radius: var(--corner-full, 9999px);
+  background: var(--accent);
+  color: var(--on-accent);
   font: var(--type-label);
   cursor: pointer;
 }
 
 .form-field > input[type="file"]:focus-visible {
-  outline: 2px solid var(--mtrl-sys-color-primary);
+  outline: 2px solid var(--plum);
   outline-offset: 2px;
 }
 
-.form-field > input[type="file"]:user-invalid { border-color: var(--mtrl-sys-color-error); }
+.form-field > input[type="file"]:user-invalid { border-color: var(--error); }
 .form-field > input[type="file"]:disabled { opacity: .55; }
 
 .task-form, .task-form > section { display: grid; gap: 1rem; }
 .task-form :where(p, dl) { margin-block: 0; }
 .task-form .form-help, #welcome .form-help {
   margin-block: .375rem 0;
-  color: var(--mtrl-sys-color-on-surface-variant);
+  color: var(--quiet);
   font: var(--type-small);
 }
 
 .task-form .form-error, #welcome .form-error {
   margin-block: .375rem 0;
-  color: var(--mtrl-sys-color-error);
+  color: var(--error);
   font: var(--type-small);
 }
 
 .form-feedback {
   padding: .75rem 1rem;
-  border-radius: var(--mtrl-sys-shape-corner-small, 8px);
-  background: var(--mtrl-sys-color-secondary-container);
-  color: var(--mtrl-sys-color-on-secondary-container);
+  border-radius: var(--corner-small, 8px);
+  background: var(--accent);
+  color: var(--on-accent);
   font: var(--type-small);
   overflow-wrap: anywhere;
 }
 
 .form-feedback.form-error {
-  background: var(--mtrl-sys-color-error-container);
-  color: var(--mtrl-sys-color-on-error-container);
+  background: var(--error-container);
+  color: var(--on-error-container);
 }
 
 .form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .375rem .5rem; }
 .form-actions--footer {
   justify-content: flex-end;
   padding-block-start: .625rem;
-  border-block-start: 1px solid var(--mtrl-sys-color-outline-variant);
+  border-block-start: 1px solid var(--line);
 }
 
 .task-form .check { margin: 0; }
-.task-form .check > input { flex: none; accent-color: var(--mtrl-sys-color-primary); }
+.task-form .check > input { flex: none; accent-color: var(--plum); }
 
 @media (forced-colors: active) {
   :where(dialog, .app-sheet, .profile-editor, .dm-compose, #welcome) :is(textarea, select, input:not([type=checkbox], [type=radio], [type=range])):focus {

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { Select, SelectOption } from 'material/svelte';
   import PrivacySwitch from './PrivacySwitch.svelte';
   import ActionButton from './ActionButton.svelte';
   import type { Profile, BlockedAccount, RecoveryMode, Privacy } from './community';
@@ -45,12 +44,14 @@
 <PrivacySwitch id="hide-anonymous" label="Hide anonymous posts and replies" checked={!!profile.hideAnonymous}
   change={hideAnonymous => setPrivacy({hideAnonymous})}/>
 {#each [{key:'feedDays' as const,label:'Minimum account age for posts'},{key:'dmDays' as const,label:'Minimum account age for inbox'}] as setting (setting.key)}
-  <Select variant="filled" label={setting.label} value={String(profile.inboxPolicy?.[setting.key] || 0)}
-    onchange={({ detail }) => { if (detail.value !== null) void setPrivacy({ [setting.key]: Number(detail.value) }); }}>
-    {#each [0,1,7,30] as days (days)}
-      <SelectOption value={String(days)}>{days===0?'Any age':days===1?'1 day':days+' days'}</SelectOption>
-    {/each}
-  </Select>
+  <label>{setting.label}
+    <select value={String(profile.inboxPolicy?.[setting.key] || 0)}
+      onchange={event => setPrivacy({ [setting.key]: Number(event.currentTarget.value) })}>
+      {#each [0,1,7,30] as days (days)}
+        <option value={String(days)}>{days === 0 ? 'Any age' : days === 1 ? '1 day' : days + ' days'}</option>
+      {/each}
+    </select>
+  </label>
 {/each}
 <PrivacySwitch id="approved-contacts" label="Only approved contacts in my inbox" hint="Other messages go to Requests."
   checked={!!profile.inboxPolicy?.approvedOnly} change={approvedOnly => setPrivacy({approvedOnly})}/>
@@ -95,15 +96,6 @@
     overscroll-behavior: contain;
     scroll-padding-block: .375rem;
     scrollbar-width: thin;
-    scrollbar-color: var(--mtrl-sys-color-outline) transparent;
-  }
-
-  /* Apply foreground and background together when the device theme changes. */
-  .preferences-body :global(m-select)::part(label) {
-    transition-property: transform, left;
-  }
-
-  .preferences-body :global(m-select)::part(input) {
-    transition: none;
+    scrollbar-color: var(--outline) transparent;
   }
 </style>

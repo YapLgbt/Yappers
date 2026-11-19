@@ -1,7 +1,8 @@
 export const paths = {
     groups:'M15 8a3 3 0 1 1-6 0 3 3 0 0 1 6 0M5 20c0-4 3-6 7-6s7 2 7 6M18 5a3 3 0 0 1 0 6M19 14c2 1 3 2 3 4',
     up:'m6 15 6-6 6 6',down:'m6 9 6 6 6-6',
-    nearby:'M4 4h16v12H11l-6 5v-5H4z',
+    nearby:'M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0ZM15 10a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
+    conversation:'M4 4h16v12H11l-6 5v-5H4z',
     saved:'M6 3h12v18l-6-4-6 4z',
     you:'M16 8a4 4 0 1 1-8 0 4 4 0 0 1 8 0M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7',
     post:'M12 5v14M5 12h14',

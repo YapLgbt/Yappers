@@ -28,11 +28,6 @@ async function externalizeBootstrap(shell) {
 await Promise.all(['app/index.html','app/demo/index.html'].map(path=>externalizeBootstrap(join(dist,path))));
 
 // Distribute the notices alongside the components in the static release.
-const materialNotices = await Promise.all(['LICENSE', 'NOTICE'].map(name =>
-  readFile(new URL('../node_modules/material/' + name, import.meta.url), 'utf8')
-));
-await writeFile(join(dist, 'app', 'material-notices.txt'), materialNotices.join('\n'));
-
 const kitPackages = ['@skeletonlabs/skeleton', '@skeletonlabs/skeleton-common', '@skeletonlabs/skeleton-svelte', 'tailwindcss'];
 const kitNotices = await Promise.all(kitPackages.map(async name => {
   const license = await readFile(new URL('../node_modules/' + name + '/LICENSE', import.meta.url), 'utf8');
