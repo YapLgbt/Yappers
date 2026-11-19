@@ -45,7 +45,7 @@ try:
     request("feed")
     request("social", op={"kind": "claimUsername", "name": "native_reader"})
     request("social", op={"kind":"setProfile","expected":0,"name":"Native reader",
-                          "profile":{"photo":sys.argv[2],"bio":"","identity":"","interests":"","pronouns":"","hereFor":[]}})
+                          "profile":{"photo":sys.argv[2] if len(sys.argv)>2 else "","bio":"","identity":"","interests":"","pronouns":"","hereFor":[]}})
     post = request("prepare", action={"kind": "postV2", "anonymous": False, "displayName": "Native reader",
                    "topic": "Chatter", "headline": "Native inbox test", "body": "Book swap on Sunday"})
     request("submit", event=post["event"])
@@ -54,6 +54,10 @@ try:
     print(json.dumps("ready"), flush=True)
     for line in sys.stdin:
         command = json.loads(line)
+        if command["kind"] == "reply":
+            event = request("prepare", action={"kind":"reply","parent":command["parent"],
+                            "body":"Following up on your post","displayName":"Native reader"})["event"]
+            request("submit", event=event)
         if command["kind"] == "send":
             step("prepare", peer=command["peer"], label="Library neighbor", name="Native reader", body=command["body"])
         step("sync")

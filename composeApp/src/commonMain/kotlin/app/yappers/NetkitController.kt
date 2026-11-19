@@ -77,6 +77,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
 
     private val mutex = Mutex()
     private val foreground = MutableStateFlow(true)
+    private val openInboxItem = MutableStateFlow<InboxItem?>(null)
     private var handle: Long? = null
     private var publicRoute: PublicRoute? = null
     private var lastDiscovery: kotlin.time.TimeMark? = null
@@ -930,7 +931,11 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         result.getValue("category").jsonPrimitive.content to json.decodeFromJsonElement<InboxItem>(item)
     }
 
-    suspend fun openActivityThread(item: InboxItem): Post = mutex.withLock {
+    internal fun closeInboxThread(target: String?) {
+        openInboxItem.update { item -> item?.takeUnless { it.target == target } }
+    }
+
+    suspend fun openActivityThread(item: InboxItem): Pair<Post, Long> = mutex.withLock {
         if (cache.target?.substringAfter('/') != item.scope) {
             val join = groupPreferences.joined[item.scope]?.join ?: groupPreferences.home?.takeIf {
                 it["community"]?.jsonPrimitive?.content == item.scope
@@ -939,13 +944,17 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
             connectLocked(join.toString(), cache.snapshot.alias)
         }
         val cached=cache.snapshot.posts.firstOrNull { it.remoteId==item.target && !it.hidden && it.replies.any { r->r.remoteId==item.first } }
-        if (!state.value.online && cached!=null) return@withLock cached
+        if (!state.value.online && cached != null) {
+            openInboxItem.value = item
+            return@withLock cached to item.firstThrough
+        }
         val value=social("notificationThread") {put("target",item.target);put("anchor",item.first)}
         val wire=json.decodeFromJsonElement<WirePost>(value.getValue("post"))
         val projected=cache.withFeed(listOf(wire))
         val post=projected.snapshot.posts.first {it.remoteId==item.target}
         commit(projected.copy(snapshot=projected.snapshot.copy(posts=cache.snapshot.posts.filterNot {it.id==post.id}+post)))
-        post
+        openInboxItem.value = item
+        post to minOf(item.through, value.getValue("through").jsonPrimitive.long)
     }
 
     suspend fun muteThread(id: String, title: String?) = mutex.withLock {
@@ -1280,7 +1289,24 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
                 learnDeletions(scoped)
                 scoped.getValue("posts").jsonArray.map { json.decodeFromJsonElement<WirePost>(it) }
             } else emptyList()
-            commit(cache.withFeed((remote + local).distinctBy { it.id }.sortedByDescending { it.acceptedAt }))
+            val posts = (remote + local).distinctBy { it.id }.toMutableList()
+            val open = openInboxItem.value
+            if (!background && open != null && open.scope == cache.target?.substringAfter('/') &&
+                policy.notifications.activity.any { it.target == open.target } &&
+                posts.none { it.id == open.target && it.replies.any { reply -> reply.id == open.first } }) {
+                // Refresh an open detail outside the feed window through the same visibility checks.
+                val detail = try {
+                    social("notificationThread") { put("target", open.target); put("anchor", open.first) }
+                } catch (failure: Exception) {
+                    if (failure is CancellationException) throw failure
+                    null
+                }
+                if (detail != null) {
+                    posts.removeAll { it.id == open.target }
+                    posts.add(json.decodeFromJsonElement<WirePost>(detail.getValue("post")))
+                }
+            }
+            commit(cache.withFeed(posts.sortedByDescending { it.acceptedAt }))
             val status = if (cache.outbox.isEmpty()) "Connected · ${state.value.homeLabel ?: "federated community"}"
                 else "Connected · ${cache.outbox.size} pending upload(s)"
             mutableState.update { it.copy(online = true, feedUnavailable = false, status = status) }

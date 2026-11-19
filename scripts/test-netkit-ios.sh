@@ -72,7 +72,7 @@ elif [ "${NETKIT_TEST_SCOPE:-all}" = recovery ]; then
   NETKIT_TEST_ARGS=(-only-testing:YappersUITests/YappersUITests/testNativeAccountBackupAndMove)
 elif [ "${NETKIT_TEST_SCOPE:-all}" = messaging ]; then
   NETKIT_TEST_ARGS=(-only-testing:YappersUITests/YappersUITests/testEncryptedConversation -only-testing:YappersUITests/YappersUITests/testBlockAndUnblockFromInbox)
-  YAP_IOS_FIXTURE="$NETKIT_FIXTURE" "$NETKIT_CARGO" test --locked --workspace ios_messaging_fixture -- --ignored > "$NETKIT_FIXTURE/messaging.log" 2>&1 &
+  YAP_IOS_FIXTURE="$NETKIT_FIXTURE" "$NETKIT_CARGO" test --locked -p yappers-netkit --test portability ios_messaging_fixture -- --ignored > "$NETKIT_FIXTURE/messaging.log" 2>&1 &
   NETKIT_MAIL_PID=$!
   for _ in $(seq 1 120); do
     [ -f "$NETKIT_FIXTURE/dm-peer-ready" ] && break

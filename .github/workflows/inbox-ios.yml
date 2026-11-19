@@ -8,12 +8,25 @@ jobs:
   inbox:
     runs-on: macos-26
     timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.gradle/caches
+            ~/.konan
+            build/rust
+          key: ios-inbox-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'gradle/wrapper/gradle-wrapper.properties', 'composeApp/build.gradle.kts') }}
       - name: Install simulator build tools
         run: |
           command -v xcodegen || brew install xcodegen
@@ -24,4 +37,7 @@ jobs:
           device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for group in reversed(list(json.load(sys.stdin)["devices"].values())) for d in group if d["name"].startswith("iPhone")))')
           xcrun simctl boot "$device"
           xcrun simctl bootstatus "$device" -b
+          (cd iosApp && xcodegen generate)
+          cargo test --locked -p yappers-netkit --test portability --no-run
+          xcodebuild -project iosApp/Yappers.xcodeproj -scheme Yappers -configuration Debug -destination "platform=iOS Simulator,id=$device" -derivedDataPath build/ios build-for-testing
           NETKIT_TEST_SCOPE=messaging scripts/test-netkit-ios.sh "$device"

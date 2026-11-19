@@ -304,11 +304,11 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
         (connection.awaitingDefault || connection.homeLabel == AppBrand.domain)
     suspend fun openInboxThread(item: InboxItem) {
         val controller=checkNotNull(networking)
-        val post=controller.openActivityThread(item)
+        val (post, through)=controller.openActivityThread(item)
         val route=PostDestination(post.id,true,controller.state.value.activeGroup?.id,true,item.first)
         if(platformNavigation!=null) platformNavigation.openPost(post,route)
         else { inbox=true; dmContact=null; inboxThread=route }
-        if(item.unread>0) controller.readNotification("reply",item)
+        if(item.unread>0 && through>0) controller.readNotification("reply",item.copy(through=through))
     }
     val welcoming = networking != null && (firstVisit || offerBackup || revisitGuide || installationWelcome)
     val incomingPush by InboxPush.routes.collectAsState()
@@ -410,6 +410,9 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                 (nativePost == null || (nativePost.group == connection.activeGroup?.id && nativePost.live == live)) }
             @Composable
             fun ThreadContent(post: Post, dedicated: Boolean) {
+                if (nativePost?.replyAnchor != null || inboxThread?.replyAnchor != null) {
+                    DisposableEffect(post.remoteId) { onDispose { networking?.closeInboxThread(post.remoteId) } }
+                }
                 Conversation(post, state.alias, namedIdentity, anonymous, ::chooseIdentity, live, backLabel = tab,
                     replyAnchor = nativePost?.replyAnchor ?: inboxThread?.replyAnchor, openAtComments = thread?.atComments ?: nativePost?.atComments ?: openAtComments, onBack = ::closeConversation,
                     needsUsername = live && connection.needsUsername, usernameControl = { UsernameControl(connection, networking) },

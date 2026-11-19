@@ -1049,6 +1049,9 @@ impl Server {
         use std::process::Stdio;
         use tokio::io::AsyncWriteExt;
         let Ok(worker)=std::env::var("YAP_PUSH_WORKER") else{return Ok(())};
+        // This is a scheduling hint only. Leases and policy checks use the fenced,
+        // committed home image. Both nodes recover it on the next client/federation call.
+        if !self.state.store()?.db.query_row("SELECT EXISTS(SELECT 1 FROM push_devices)",[],|r|r.get::<_,bool>(0))? {return Ok(())}
         let jobs=match &self.state.ha {
             Some(ha)=>ha.push_operation(&self.state,None).await?,
             None=>self.state.store()?.claim_push()?,

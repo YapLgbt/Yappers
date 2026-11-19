@@ -216,6 +216,8 @@ impl Store {
             SocialOp::PrivacyStatus => {
                 let mut result = self.privacy_status(owner)?;
                 result["notifications"] = self.notification_inbox(owner,device)?;
+                result["requests"] = json!(result["notifications"]["requests"].as_array().unwrap().iter()
+                    .map(|r|&r["target"]).collect::<Vec<_>>());
                 result["pushCapabilities"] = crate::push::capabilities();
                 result["pushCategories"] = self.push_categories(owner,device)?;
                 result["currentProfile"] =
@@ -241,6 +243,8 @@ impl Store {
                 valid_peer(&peer, owner)?;
                 ensure!(!self.unavailable(owner, &peer)?, "contact unavailable");
                 let tx = self.db.transaction()?;
+                ensure!(!tx.query_row("SELECT EXISTS(SELECT 1 FROM dm_devices WHERE owner=? AND device<>?)",
+                    [owner,device],|r|r.get::<_,bool>(0))?, "open this account’s messaging installation");
                 crate::privacy::approve(&tx, owner, &peer)?;
                 tx.commit()?;
                 json!({})
@@ -275,6 +279,10 @@ impl Store {
                     "INSERT OR IGNORE INTO user_blocks(owner,peer,handle,label) VALUES(?,?,?,?)",
                     params![owner, peer, new_secret(), label],
                 )?;
+                tx.execute("INSERT INTO inbox_reads(owner,kind,target,through)
+                    SELECT recipient,'message',sender,MAX(seq) FROM dm_mail WHERE
+                    (recipient=?1 AND sender=?2) OR (recipient=?2 AND sender=?1) GROUP BY recipient,sender
+                    ON CONFLICT(owner,kind,target) DO UPDATE SET through=MAX(through,excluded.through)", [owner,&peer])?;
                 tx.execute("UPDATE dm_mail SET packet=NULL WHERE (sender=?1 AND recipient=?2) OR (sender=?2 AND recipient=?1)",[owner,&peer])?;
                 tx.execute("DELETE FROM dm_approved WHERE (owner=?1 AND peer=?2) OR (owner=?2 AND peer=?1)",[owner,&peer])?;
                 let id: String = tx.query_row(

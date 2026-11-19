@@ -27,7 +27,7 @@
   import { deliveryDisclosure } from '../../lib/deliveryDisclosure';
   import { pullToRefresh } from '../../lib/pull';
   import { trackFeed } from '../../lib/feedMotion.svelte';
-  import { loadCommunity, visible, authorLabel, errorMessage, type Community, type Profile,
+  import { loadCommunity, inboxCount, type ActivityItem, visible, authorLabel, errorMessage, type Community, type Profile,
     type Author, type Contact, type BlockedAccount, type Post, type RecoveryMode, type View } from '../../lib/community';
 
   let client = $state.raw<Community | null>(null), profile = $state.raw<Profile | null>(null);
@@ -69,6 +69,22 @@
   }
   const wideReading = new MediaQuery('(min-width: 76rem)');
   let thread = $state<string | undefined>();
+  let activityPost = $state.raw<Post|null>(null);
+  let replyFocus = '';
+  async function openActivity(item:ActivityItem) {
+    if (!client) return;
+    try {
+      const post = await client.activityThread(item);
+      const group=item.scope===profile?.join.community ? null : item.scope;
+      if ((profile?.activeGroup || null)!==group) await selectScope(group);
+      activityPost=post;
+      replyFocus=item.first;
+      const token=crypto.randomUUID();
+      historyThreads.set(token,post.id);
+      pushState('', {yap:{...snapshot(),mode:'feed',destination:group?'groups':'feed',thread:token,comments:true}});
+      if (item.unread) await client.readNotification('reply',item.target,post.readThrough);
+    } catch { notice=navigator.onLine ? 'This conversation is no longer available.' : 'Reconnect to open this conversation.'; }
+  }
   const screens = ['feed', 'groups', 'groupFeed', 'saved', 'you', 'inbox', 'conversation'];
   const screen = $derived(mode === 'inbox' && contact ? 'conversation'
     : mode === 'feed' && destination === 'groups' ? 'groupFeed' : mode);
@@ -144,6 +160,10 @@
           ? heading.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop - 16 : 0;
       } else if (saved.comments && heading) heading.scrollIntoView({block:'start'});
       else window.scrollTo(0,0);
+      if (replyFocus) {
+        const row=document.getElementById('reply-'+replyFocus);
+        row?.focus({preventScroll:true}); row?.scrollIntoView({block:'center'}); replyFocus='';
+      }
       return;
     }
     if (saved?.returnFocus) {
@@ -213,7 +233,7 @@
     scopedOutbox.length && (showQueuedActions || view === 'offline' || view === 'replica') ? scopedOutbox.length + ' waiting to sync' : ''
   ].filter(Boolean).join(' · ') || notice);
   let filterCount = $derived(Number(sort !== 'new') + Number(topic !== 'All'));
-  let threadPost = $derived(thread ? posts.find(post => post.id === thread) : undefined);
+  let threadPost = $derived(thread ? (posts.find(post => post.id === thread && (!replyFocus || post.replies.some(r=>r.id===replyFocus))) ?? (activityPost?.id===thread && profile?.notifications?.activity.some(row=>row.target===thread) ? activityPost : undefined)) : undefined);
   const backLabel = $derived('Back to ' + (mode === 'you' ? 'profile' : mode === 'saved' ? 'saved posts' : 'feed'));
   let waiting = $derived(!profile?.lastSync && view !== 'replica');
   let nextRadius = $derived(Math.min(250, (profile?.nearby?.radiusMiles || 25) * 2));
@@ -323,7 +343,26 @@
   async function vote(post:Post,direction:number) {
     await act(async()=>{await client!.queue({kind:'vote',target:post.id,value:post.vote===direction?0:direction},null,post.scope);await deliver()});
   }
-  function mute(post:Post) {void act(()=>editState(s=>({...s,muted:{...s.muted,[post.id]:post.headline||post.body.slice(0,60)}})))}
+  function mute(post:Post) {void act(()=>client!.muteNotifications(post.id,post.headline||post.body.slice(0,60)))}
+  let inboxFolder = $state('chats'), pendingPush = $state(''), resolvingPush = false;
+  async function handlePush(route:string) {
+    if (!client || !ready || !route || resolvingPush) return;
+    resolvingPush=true; pendingPush='';
+    try {
+      await openInbox(); await refresh();
+      const result=await client.resolvePush(route);
+      if (!result?.item) {notice='This Inbox item is no longer available.';return;}
+      if (result.category==='reply') {inboxFolder='activity';await openActivity(result.item);}
+      else if(result.category==='request') inboxFolder='requests';
+      else {
+        const peer=result.item.target;
+        contact={peer,label:profile?.directState?.messages.findLast(m=>m.peer===peer)?.label||'Neighbor'};
+        changeContact(contact);
+      }
+    } catch {notice='Reconnect and open Inbox to see this update.';}
+    finally {resolvingPush=false;}
+  }
+  $effect(()=>{if(ready && pendingPush) void handlePush(pendingPush);});
   async function openInbox() {
     contact = null; mode = 'inbox';
     await remember(null, 'screen');
@@ -363,6 +402,10 @@
   }
   function refreshOrBoot() { return ready ? refresh() : boot(); }
   onMount(() => {
+    const incoming = /^#inbox=([a-f0-9]{64})$/.exec(location.hash);
+    if(incoming){pendingPush=incoming[1]; history.replaceState(history.state,'',location.pathname+location.search);}
+    const pushed=(event:MessageEvent)=>{if(event.data?.type==='yap-open-inbox' && /^[a-f0-9]{64}$/.test(event.data.route)) pendingPush=event.data.route;};
+    navigator.serviceWorker?.addEventListener('message',pushed);
     void boot();
     if ('serviceWorker' in navigator && !import.meta.env.DEV) navigator.serviceWorker.register('/app/background-sw.js',{scope:'/app/',type:'module'})
       .catch(()=>navigator.serviceWorker.register('/app/sw.js',{scope:'/app/'}))
@@ -382,13 +425,13 @@
       if (ready && navigator.onLine && !document.hidden && !document.querySelector('dialog[open]')) void refresh();
     },60000);
     const inboxTimer = setInterval(() => { if (ready && mode === 'inbox' && !document.hidden && navigator.onLine && !busy) void refresh(); },10000);
-    return () => { listeners.abort(); clearInterval(timer); clearInterval(inboxTimer); client?.updates.removeEventListener('change',readProfile); };
+    return () => { navigator.serviceWorker?.removeEventListener('message',pushed); listeners.abort(); clearInterval(timer); clearInterval(inboxTimer); client?.updates.removeEventListener('change',readProfile); };
   });
 </script>
 <AppHead />
 <header class="app-header" hidden={step === "intro"} class:enrolled={ready && step === null}><div class="bar">
   <div class="bar-start" hidden={step !== null}>
-    {#if mode !== 'inbox'}<ActionButton id="inbox-tab" disabled={!ready} onclick={openInbox}>Inbox</ActionButton>{/if}
+    {#if mode !== 'inbox'}<ActionButton id="inbox-tab" disabled={!ready} onclick={openInbox} aria-label={inboxCount(profile) ? 'Inbox, '+inboxCount(profile)+' unread' : 'Inbox'}>Inbox{#if inboxCount(profile)} <span class="inbox-count">{inboxCount(profile)}</span>{/if}</ActionButton>{/if}
     <button id="refresh" class="btn-icon icon-action" aria-label="Refresh" disabled={busy} onclick={refreshOrBoot}><AppIcon name="refresh" /></button>
   </div>
   <a href="/" class="brand" aria-label="Yap home"><img src="/assets/yap-wordmark.svg" width="72" height="36" alt="yap"></a>
@@ -446,7 +489,7 @@
   {#if mode === 'groups' && profile && client}
     <Groups {profile} {client} {openGroup}/>
   {:else if mode === 'inbox' && profile && client}
-    <Inbox changedContact={changeContact} report={(kind,id,text)=>reportDialog?.open(kind,id,text)} {client} {profile} bind:contact {refresh} browse={() => navigate('feed')} block={blockContact}
+    <Inbox bind:tab={inboxFolder} {openActivity} changedContact={changeContact} report={(kind,id,text)=>reportDialog?.open(kind,id,text)} {client} {profile} bind:contact {refresh} browse={() => navigate('feed')} block={blockContact}
       status={profile.mailboxElsewhere ? client.otherMessagingDevice : view === 'offline' || view === 'replica' ? 'Offline inbox. Queued messages will send when you reconnect.' :
         inboxError || (view === 'primary' && !profile.directAvailable ? 'Messaging is unavailable on this home.' : '')} />
   {:else}
@@ -542,7 +585,11 @@
   <Report bind:this={reportDialog} {client} />
   <Preferences discard={ids=>client!.discardUploads(ids)} reports={lookup=>reportDialog?.open("account","","",lookup)} bind:this={preferences} {profile} domain={client.usernameDomain(profile)} {pull}
     chooseUsername={() => username?.open()} recovery={openRecovery} {refresh} guide={() => step = 'returning'}
-    setPrivacy={change=>act(async()=>{await client!.setPrivacy(change);await refresh()})} unmute={id=>act(()=>editState(s=>{const muted={...s.muted};delete muted[id];return {...s,muted}}))} {unblock} />
+    setPrivacy={change=>act(async()=>{await client!.setPrivacy(change);await refresh()})} unmute={id=>act(()=>client!.muteNotifications(id,null))} {unblock} />
   <Username bind:this={username} {client} domain={client.usernameDomain(profile)} />
   <Block bind:this={block} confirm={blockAccount} />
 {/if}
+
+<style>
+  .inbox-count { border-radius:1rem; padding:.08rem .38rem; font-size:.75rem; background:var(--color-primary-700); color:white; font-variant-numeric:tabular-nums; }
+</style>

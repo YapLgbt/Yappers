@@ -77,11 +77,14 @@ internal fun InboxScreen(
                         }
                     }
                     else -> {
-                        add(FormSection(rows=listOf(FormRow("activity","Activity","choice",checked=activity){activity=true},
-                            FormRow("messages","Messages","choice",checked=!activity){activity=false})))
+                        add(FormSection(rows = listOf(FormRow("folder", "Inbox folders", "segments",
+                            value = if (activity) "Activity" else "Messages",
+                            choices = listOf(FormChoice("Activity", activity) { activity = true },
+                                FormChoice("Messages", !activity) { activity = false })))))
                         if (connection.privacy.pushAvailable) add(FormSection("Device notifications", listOf("reply" to "Replies to my posts", "message" to "Direct messages", "request" to "Message requests").map { (kind,label) ->
                             val categories=connection.privacy.pushCategories
-                            FormRow("push-$kind", label,"choice", checked=kind in categories) { onPush(if(kind in categories) categories-kind else categories+kind) }
+                            FormRow("push-$kind", label, "toggle", checked = kind in categories,
+                                onToggle = { enabled -> onPush(if (enabled) categories + kind else categories - kind) })
                         }))
                         if (activity) {
                             add(FormSection(rows=if(inbox.activity.isEmpty()) listOf(FormRow("empty","No replies yet","text"))

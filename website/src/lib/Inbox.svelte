@@ -7,9 +7,10 @@
   import ContentMenu from './ContentMenu.svelte';
   import { onDestroy, tick } from 'svelte';
   import { Tabs } from '@skeletonlabs/skeleton-svelte';
-  import { inboxFor, inboxPhotos, type Community, type Profile, type Contact } from './community';
+  import { inboxFor, inboxPhotos, type ActivityItem, type Community, type Profile, type Contact } from './community';
 
-  let { profile, client, contact = $bindable(null), status, refresh, browse, block, report, changedContact }: {
+  let { tab=$bindable('chats'),openActivity, profile, client, contact = $bindable(null), status, refresh, browse, block, report, changedContact }: {
+    tab?:string;openActivity:(item:ActivityItem)=>Promise<void>;
     changedContact:(person:Contact|null)=>void;report: (kind:"message"|"account",id:string,text:string)=>void; profile: Profile; client: Community; contact: Contact | null; status: string;
     refresh: () => Promise<void>; browse: () => void; block: (contact: Contact) => Promise<void>;
   } = $props();
@@ -18,7 +19,7 @@
   let selected = $derived(contact && !profile.blocks.some(b => b.peer === contact?.peer) &&
     !mailbox.requests.includes(contact.peer) ? contact : null);
   let lines = $derived(mailbox.messages.filter(message => message.peer === selected?.peer));
-  let tab = $state('chats'), busyPeer = $state(''), error = $state('');
+  let busyPeer = $state(''), error = $state(''), changingPush = $state(false);
   let viewVersion = 0;
   onDestroy(() => { viewVersion++; });
   const mailboxReady = $derived(!!profile.directState || !!profile.directAvailable);
@@ -29,6 +30,14 @@
   let drafts = $state<Record<string,string>>({});
   let heading = $state<HTMLHeadingElement>();
   let scrollbox = $state<HTMLDivElement>();
+  let marked = '';
+  $effect(()=>{
+    const row=profile.notifications?.messages.find(r=>r.target===selected?.peer && r.unread);
+    if (row && lines.some(m=>m.id===row.last) && marked!==row.last) {
+      marked=row.last||'';
+      void client.readNotification('message',row.target,row.through).catch(()=>{marked='';});
+    }
+  });
   let lastPeer = '', lastId = '';
   $effect(() => {
     const peer = selected?.peer || '', id = lines.at(-1)?.id || '';
@@ -42,6 +51,13 @@
     lastPeer = peer; lastId = id;
   });
 
+  async function togglePush(kind:string) {
+    const enabled = profile.pushCategories||[];
+    changingPush=true;error='';
+    try {await client.setPushCategories(enabled.includes(kind)?enabled.filter(k=>k!==kind):[...enabled,kind]);}
+    catch(failure){error=failure instanceof Error?failure.message:'Couldn’t change notifications.';}
+    finally{changingPush=false;}
+  }
   function setFolder(next: string) {
     if (next !== tab) { viewVersion++; error = ''; }
     tab = next;
@@ -143,15 +159,25 @@
 {:else}
   <Tabs value={tab} onValueChange={({ value }) => setFolder(value)}>
     <Tabs.List class="dm-tabs" aria-label="Inbox folders">
-      <Tabs.Trigger class="btn" value="chats">Conversations</Tabs.Trigger>
-      <Tabs.Trigger class="btn" value="requests">Requests{mailbox.requests.length ? ' ('+mailbox.requests.length+')' : ''}</Tabs.Trigger>
+      <Tabs.Trigger class="btn" value="activity">Activity</Tabs.Trigger>
+      <Tabs.Trigger class="btn" value="chats">Messages</Tabs.Trigger>
+
     </Tabs.List>
     <div use:pageMotion={tab === 'chats' ? 0 : 1}>
+    <Tabs.Content value="activity">
+      {#each (profile.notifications?.activity||[]).filter(item=>!profile.muted?.[item.target]) as item (item.target)}
+        <button class="dm-thread" onclick={()=>openActivity(item)}>
+          <AppIcon name="conversation"/><span class="conversation"><strong>{item.title}</strong>
+            <span>{item.unread ? item.unread+(item.unread===1?' new reply':' new replies') : 'Read'}</span></span><AppIcon name="arrowRight"/>
+        </button>
+      {:else}<section class="dm-empty"><h2>No replies yet</h2><p>Replies to your posts will appear here.</p></section>{/each}
+    </Tabs.Content>
     <Tabs.Content value="chats">
+      {#if mailbox.requests.length}<button class="dm-thread" onclick={()=>setFolder('requests')}><strong>Message requests ({mailbox.requests.length})</strong><AppIcon name="arrowRight"/></button>{/if}
       {#each mailbox.threads as thread (thread.peer)}
         <button class="dm-thread" onclick={() => show({peer:thread.peer,label:thread.label})}>
           <Avatar label={thread.label} photo={photos.get(thread.peer)}/>
-          <span class="conversation"><strong>{thread.label}</strong><span>{thread.outgoing ? 'You: ' : ''}{thread.body}</span></span>
+          <span class="conversation"><strong>{thread.label}</strong>{#if profile.notifications?.messages.some(row=>row.target===thread.peer && row.unread)}<small>Unread</small>{/if}<span>{thread.outgoing ? 'You: ' : ''}{thread.body}</span></span>
           <AppIcon name="arrowRight"/>
         </button>
       {:else}
@@ -161,22 +187,34 @@
       {/each}
     </Tabs.Content>
     <Tabs.Content value="requests">
+      <ActionButton onclick={()=>setFolder('chats')}>Back to messages</ActionButton>
       {#each mailbox.requests as peer (peer)}
         <div class="dm-request"><div class="requester"><Avatar label={labelFor(peer)} photo={photos.get(peer)}/><strong>{labelFor(peer)}</strong></div><div class="actions">
           <ActionButton variant="tonal" disabled={!!busyPeer || !profile.directAvailable} onclick={() => accept(peer)}>Accept</ActionButton>
           <ActionButton disabled={!!busyPeer} onclick={() => blockPerson({peer,label:labelFor(peer)})}>Block</ActionButton>
+          <ActionButton disabled={!!busyPeer} onclick={async()=>{try{await client.dismissRequest(peer)}catch{error='Couldn’t dismiss the request. Try again.'}}}>Dismiss</ActionButton>
           <ActionButton onclick={() => report('account',peer,'')}>Report account</ActionButton>
         </div></div>
       {:else}{#if mailboxReady && !profile.mailboxElsewhere}<section class="dm-empty"><h2>No message requests</h2><p>Messages that need your approval will appear here.</p></section>{/if}{/each}
     </Tabs.Content>
     </div>
   </Tabs>
+  {#if profile.pushCapabilities?.webKey && typeof PushManager!=='undefined'}
+    <details class="delivery-feedback"><summary>Device notifications</summary>
+      {#each [['reply','Replies to my posts'],['message','Direct messages'],['request','Message requests']] as option}
+        <label class="push-option"><input type="checkbox" disabled={changingPush} checked={profile.pushCategories?.includes(option[0])||false}
+          onchange={()=>togglePush(option[0])}/>{option[1]}</label>
+      {/each}
+    </details>
+  {/if}
+  {#if error && !selected}<p role="alert">{error}</p>{/if}
 {/if}
 {#if !selected && feedback}<p class="dm-feedback" role="status">{feedback}</p>
 {:else if !selected && !mailboxReady && !feedback}<p class="dm-feedback" role="status">Loading inbox…</p>{/if}
 
 
 <style>
+  .push-option {display:flex;align-items:center;gap:.6rem;min-height:2.75rem;}
   .dm-thread { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: .85rem; padding: 1rem .35rem; }
   .dm-thread .conversation { display: grid; min-width: 0; gap: .16rem; }
   .conversation strong { color: var(--ink); font: var(--type-label); overflow: hidden; text-overflow: ellipsis; }

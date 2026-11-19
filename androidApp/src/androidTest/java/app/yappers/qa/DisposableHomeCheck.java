@@ -61,13 +61,14 @@ public final class DisposableHomeCheck extends Instrumentation {
             require(client.getWelcome$Yappers_composeApp().getValue(), "A clean tester installation is required");
             client.setForeground(true);
             stage = "first-run enrollment";
-            DisposableHomeCheck.<kotlin.Unit>await(c -> client.finishWelcome$Yappers_composeApp("Android reader", null, c));
+            DisposableHomeCheck.<kotlin.Unit>await(c -> client.finishWelcome$Yappers_composeApp("Android reader", null, null, false, c));
+            DisposableHomeCheck.<kotlin.Unit>await(c -> client.checkWelcomeUsername$Yappers_composeApp(false, c));
+            DisposableHomeCheck.<kotlin.Unit>await(c -> client.claimUsername$Yappers_composeApp("android_reader", c));
             DisposableHomeCheck.<kotlin.Unit>await(client::enterNeighborhood$Yappers_composeApp);
             DisposableHomeCheck.<kotlin.Unit>await(client::sync);
             require(client.getState().getValue().getOnline(), "Home offline");
             stage = "claim username and publish";
-            DisposableHomeCheck.<kotlin.Unit>await(c -> client.claimUsername$Yappers_composeApp("android_reader", c));
-            DisposableHomeCheck.<kotlin.Unit>await(c -> client.publish("See you there", "Chatter", false, "Android reader", "Android meetup", new CommunityProfile(), new PostArea("Test town", 4020,-7300), c));
+            DisposableHomeCheck.<kotlin.Unit>await(c -> client.publish("See you there", "Chatter", false, "Android reader", "Android meetup", new PostArea("Test town", 4020,-7300), c));
             DisposableHomeCheck.<kotlin.Unit>await(client::sync);
             Post own = client.getState().getValue().getSnapshot().getPosts().stream().filter(p -> p.getHeadline().equals("Android meetup")).findFirst().get();
             DisposableHomeCheck.<kotlin.Unit>await(c -> client.reply(own.getId(), "Bring a book", true, c));
@@ -84,6 +85,12 @@ public final class DisposableHomeCheck extends Instrumentation {
                 if (!received) Thread.sleep(1000);
             }
             require(received, "No reply from native peer");
+            stage = "Inbox read progress";
+            InboxItem unread = client.getState().getValue().getPrivacy().getNotifications().getMessages().stream()
+                .filter(row -> row.getTarget().equals(contact.getPeer()) && row.getUnread()>0).findFirst().get();
+            DisposableHomeCheck.<kotlin.Unit>await(c -> client.readNotification("message", unread, c));
+            DisposableHomeCheck.<kotlin.Unit>await(client::sync);
+            require(client.getState().getValue().getPrivacy().getNotifications().getMessages().isEmpty(), "DM read mark did not persist");
             stage = "report";
             JsonObject draft = DisposableHomeCheck.<JsonObject>await(client::reportDraft$Yappers_composeApp);
             String receipt = ((JsonPrimitive)draft.get("receipt")).getContent();

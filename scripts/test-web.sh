@@ -5,6 +5,20 @@ cd "$(dirname "$0")/.."
 cargo build --locked -p yappers-backend -p yappers-netkit
 mkdir -p build
 fixture=$(mktemp -d "$PWD/build/web-qa.XXXXXX")
+# Exercise the normal fenced dispatcher with a recording provider on the disposable home.
+export YAP_PUSH_WORKER="$fixture/record-push"
+export YAP_TEST_PUSH_ROUTE="$fixture/last-push"
+export YAP_PUSH_PROVIDERS=fcm
+cat >"$YAP_PUSH_WORKER" <<'WORKER'
+#!/usr/bin/env python3
+import json, os, sys
+jobs = json.load(sys.stdin)
+for job in jobs:
+    with open(os.environ['YAP_TEST_PUSH_ROUTE'], 'w') as out:
+        json.dump({'route': job['route'], 'revision': str(job['seq'])}, out)
+print(json.dumps({job['route']: 'ok' for job in jobs}))
+WORKER
+chmod 700 "$YAP_PUSH_WORKER"
 server_pids=()
 bootstrap_pid=''
 cleanup() {

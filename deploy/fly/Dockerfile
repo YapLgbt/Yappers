@@ -17,9 +17,17 @@ COPY website/scripts scripts
 COPY website/vite.config.ts website/tsconfig.json website/sw-template.js website/background-sync.js ./
 RUN npm run check && npm run build
 
+FROM node:24-bookworm-slim AS push
+WORKDIR /opt/yap-push
+COPY deploy/push/package*.json ./
+RUN npm ci --omit=dev --ignore-scripts
+COPY deploy/push/send.cjs ./
+
 FROM caddy:2 AS web
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libstdc++6 libatomic1 && rm -rf /var/lib/apt/lists/*
+COPY --from=push /usr/local/bin/node /usr/local/bin/node
+COPY --from=push /opt/yap-push /opt/yap-push
 COPY --from=web /usr/bin/caddy /usr/local/bin/caddy
 COPY --from=build /src/target/release/yappers-server /usr/local/bin/yappers-server
 COPY --from=site /site/dist /srv/yap-site

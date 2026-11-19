@@ -186,6 +186,10 @@ async fn encrypted_mail_and_private_policy_survive_crash_partition_and_failback(
     call(&b, prefs).await?;
     let before = a.prepare(note("Before crash"))?.event;
     a.submit(before.clone()).await?;
+    let inbox=json!({"type":"social","op":{"kind":"notificationInbox"}});
+    let unread=call(&b,inbox.clone()).await?["messages"][0].clone();
+    assert_eq!(unread["unread"],1);
+    call(&b,json!({"type":"social","op":{"kind":"readNotification","category":"message","target":aid,"through":unread["through"]}})).await?;
     processes.crash(primary)?;
     let standby_status = Request::HomeOperation {
         request_id: new_secret(),
@@ -203,6 +207,7 @@ async fn encrypted_mail_and_private_policy_survive_crash_partition_and_failback(
     assert_eq!(sb["messages"][0]["body"], "before crash");
     let status = call(&b, json!({"type":"social","op":{"kind":"privacyStatus"}})).await?;
     assert_eq!(status["settings"]["hideAnonymous"], true);
+    assert_eq!(status["notifications"]["messages"],json!([]));
     direct(&a, &replay, sync.clone()).await?;
     sb = direct(&b, &sb, sync.clone()).await?;
     assert_eq!(sb["messages"].as_array().unwrap().len(), 1);

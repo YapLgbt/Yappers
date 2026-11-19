@@ -109,8 +109,12 @@ final class YapTabBarController: UITabBarController, UITabBarControllerDelegate,
             item.rightBarButtonItem = post
         }
         let count = actions.inboxCount
-        item.leftBarButtonItem?.image = count == 0 ? UIImage(systemName: "tray") : nil
-        item.leftBarButtonItem?.title = count == 0 ? nil : "Inbox (\(count))"
+        if #available(iOS 26, *) {
+            item.leftBarButtonItem?.badge = count == 0 ? nil : .count(Int(count))
+        } else {
+            item.leftBarButtonItem?.image = count == 0 ? UIImage(systemName: "tray") : nil
+            item.leftBarButtonItem?.title = count == 0 ? nil : "Inbox (\(count))"
+        }
         item.leftBarButtonItem?.accessibilityLabel = count == 0 ? "Inbox" : "Inbox, \(count) unread"
         item.titleView?.accessibilityCustomActions = actions.refreshLabel.map { label in
             [UIAccessibilityCustomAction(name: label) { _ in actions.refresh(); return true }]

@@ -54,11 +54,11 @@ impl Store {
             SELECT target,scope,title,MAX(seq) AS latest,MAX(created) AS created,SUM(unread) AS unread,
                 MIN(CASE WHEN unread THEN seq END) AS first FROM rows GROUP BY target)
             SELECT target,scope,title,latest,created,unread,
-                (SELECT reply FROM rows WHERE seq=COALESCE(first,latest)) FROM grouped ORDER BY latest DESC")?;
+                (SELECT reply FROM rows WHERE seq=COALESCE(first,latest)), COALESCE(first,latest) FROM grouped ORDER BY latest DESC")?;
         let activity = stmt.query_map([owner], |r| Ok(json!({
             "target":r.get::<_,String>(0)?, "scope":r.get::<_,String>(1)?, "title":r.get::<_,String>(2)?,
             "through":r.get::<_,i64>(3)?, "created":r.get::<_,i64>(4)?, "unread":r.get::<_,i64>(5)?,
-            "first":r.get::<_,String>(6)?
+            "first":r.get::<_,String>(6)?, "firstThrough":r.get::<_,i64>(7)?
         })))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let mailbox = self.db.query_row(
             "SELECT EXISTS(SELECT 1 FROM dm_devices WHERE owner=? AND device=?)",
@@ -132,41 +132,91 @@ impl Store {
 impl Store {
     /// Fetch an owned thread even when it falls outside Nearby, the 200-post feed
     /// window, or the current group. Anchor keeps an older unread reply in view.
-    pub(crate) fn activity_thread(&self, owner:&str, target:&str, anchor:&str) -> Result<Value> {
-        use crate::model::{Action,project};
+    pub(crate) fn activity_thread(&self, owner: &str, target: &str, anchor: &str) -> Result<Value> {
+        use crate::model::{Action, project};
         let missing = || anyhow::anyhow!("This conversation is no longer available.");
-        let parent=self.existing(target)?.ok_or_else(missing)?;
-        let scope=&parent.event.payload.community;
-        let hidden=self.hidden()?;
-        ensure!(parent.event.owner_id()==owner && !hidden.contains(target) &&
-            matches!(parent.event.payload.action,Action::Post{..}|Action::PostV2{..}),"This conversation is no longer available.");
-        let mut allowed=self.db.prepare("SELECT reply FROM inbox_visible WHERE owner=? AND target=?")?;
-        let ids=allowed.query_map([owner,target],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
-        let mut events=vec![parent.clone()];
-        let mut replies=Vec::new();
-        for event in self.events(scope)? {
+        let parent = self.existing(target)?.ok_or_else(missing)?;
+        let scope = &parent.event.payload.community;
+        let hidden = self.hidden()?;
+        ensure!(
+            parent.event.owner_id() == owner
+                && !hidden.contains(target)
+                && matches!(
+                    parent.event.payload.action,
+                    Action::Post { .. } | Action::PostV2 { .. }
+                ),
+            "This conversation is no longer available."
+        );
+        let mut query = self.db.prepare(
+            "SELECT e.cursor,e.envelope FROM events e
+            WHERE e.community=?1 AND (json_extract(e.envelope,'$.event.payload.action.parent')=?2
+            OR json_extract(e.envelope,'$.event.payload.action.target')=?2) ORDER BY e.cursor",
+        )?;
+        let mut visible = self
+            .db
+            .prepare("SELECT reply FROM inbox_visible WHERE owner=? AND target=?")?;
+        let allowed = visible
+            .query_map([owner, target], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+        let mut events = vec![parent.clone()];
+        let mut replies = Vec::new();
+        let mut cursor = std::collections::HashMap::new();
+        for row in query.query_map([scope, target], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })? {
+            let (seq, raw) = row?;
+            let event: crate::model::Envelope = serde_json::from_str(&raw)?;
             match &event.event.payload.action {
-                Action::Reply{parent,..} if parent==target && !hidden.contains(&event.event.id)
-                    && (ids.contains(&event.event.id)||event.event.owner_id()==owner) => replies.push(event),
-                Action::Vote{target:id,..} if id==target => events.push(event),
-                _=>{}
+                Action::Reply { .. }
+                    if allowed.contains(&event.event.id)
+                        || (event.event.owner_id() == owner
+                            && !hidden.contains(&event.event.id)) =>
+                {
+                    cursor.insert(event.event.id.clone(), seq);
+                    replies.push(event);
+                }
+                Action::Vote { .. } => events.push(event),
+                _ => {}
             }
         }
-        replies.sort_by(|a,b|(a.accepted_at,&a.event.id).cmp(&(b.accepted_at,&b.event.id)));
-        let index=replies.iter().position(|r|r.event.id==anchor).ok_or_else(missing)?;
-        let start=index.saturating_sub(10);
+        let index = replies
+            .iter()
+            .position(|r| r.event.id == anchor)
+            .ok_or_else(missing)?;
+        let start = index.saturating_sub(10);
         events.extend(replies.into_iter().skip(start).take(80));
-        let mut posts=project(&events,scope,owner,&hidden);
-        self.apply_current_bylines(&mut posts,&events)?;
-        let post=posts.first_mut().ok_or_else(missing)?;
-        let ages=self.ages()?;
-        post.visibility=Some(crate::privacy::visibility(&parent,&ages));
+        let mut posts = project(&events, scope, owner, &hidden);
+        self.apply_current_bylines(&mut posts, &events)?;
+        let post = posts.first_mut().ok_or_else(missing)?;
+        let ages = self.ages()?;
+        post.visibility = Some(crate::privacy::visibility(&parent, &ages));
         for reply in &mut post.replies {
-            if let Some(event)=events.iter().find(|e|e.event.id==reply.id) {
-                reply.visibility=Some(crate::privacy::visibility(event,&ages));
-                reply.mine=event.event.owner_id()==owner;
+            if let Some(event) = events.iter().find(|e| e.event.id == reply.id) {
+                reply.visibility = Some(crate::privacy::visibility(event, &ages));
+                reply.mine = event.event.owner_id() == owner;
             }
         }
-        Ok(json!({"post":post,"scope":scope}))
+        // An unusually large profile photo can limit how many replies fit in an RPC.
+        // Remove neighbors farthest along the read window first, keeping its anchor.
+        let anchor_seq = cursor[anchor];
+        while serde_json::to_vec(&post)?.len() > crate::MAX_FRAME - 4096 {
+            let removable = post
+                .replies
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.id != anchor)
+                .max_by_key(|(_, r)| cursor[&r.id])
+                .map(|(index, _)| index)
+                .ok_or_else(missing)?;
+            post.replies.remove(removable);
+        }
+        let through = post
+            .replies
+            .iter()
+            .filter(|r| allowed.contains(&r.id))
+            .map(|r| cursor[&r.id])
+            .max()
+            .unwrap_or(anchor_seq);
+        Ok(json!({"post":post,"scope":scope,"through":through}))
     }
 }

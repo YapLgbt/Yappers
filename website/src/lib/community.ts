@@ -18,7 +18,17 @@ export interface Post extends Author {
 }
 export interface BlockedAccount { scope?:string; event: string; label: string; peer?: string; handle?: string; byAccount?: boolean }
 type AuthoredEvent = {id:string;payload:{action:{kind:string;headline?:string;body?:string}}};
+export interface InboxItem {target:string; through:number; unread:number; created:number; last?:string}
+export interface ActivityItem extends InboxItem {scope:string; title:string; first:string}
+export interface NotificationInbox {activity:ActivityItem[]; messages:InboxItem[]; requests:InboxItem[]}
+export function inboxCount(profile:Profile|null) {
+  const inbox=profile?.notifications;
+  return inbox ? inbox.activity.filter(row=>row.unread && !profile?.muted?.[row.target]).length +
+    inbox.messages.filter(row=>row.unread).length + inbox.requests.length : 0;
+}
 export interface Profile {
+  notifications?:NotificationInbox;
+  pushCapabilities?:{webKey?:string|null}; pushCategories?:string[];
   pendingApprovals?:string[]; pendingPrivacy?:Privacy|null; groupLocality?:Locality|null;
   ownedEvents?:{event:AuthoredEvent;deletion?:unknown}[];recoveredDrafts?:AuthoredEvent[];pendingTransfer?:unknown;
   directAvailable?: boolean;
@@ -49,6 +59,12 @@ export type ReportSubject = 'post'|'reply'|'message'|'account';
 export interface ReportEvidence {subject: ReportSubject; category: string; text:string; reference:string|null}
 export interface Community {
   setPublicProfile(name:string,profile:PublicProfile,expected:number):Promise<void>;
+  resolvePush(route:string):Promise<{category:string;item:ActivityItem}|null>;
+  setPushCategories(categories:string[]):Promise<void>;
+  readNotification(category:'reply'|'message',target:string,through:number):Promise<void>;
+  activityThread(item:ActivityItem):Promise<Post & {readThrough:number}>;
+  muteNotifications(target:string,title:string|null):Promise<void>;
+  dismissRequest(peer:string):Promise<void>;
   exportArchive(passphrase:string,includeHome:boolean):Promise<Blob>;
   importArchive(file:File,passphrase:string,invitation:string,drafts:boolean):Promise<void>;
   discardUploads(ids:string[]):Promise<void>;

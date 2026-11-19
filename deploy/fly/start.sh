@@ -32,6 +32,12 @@ supervise() {
 serve_standby() {
     # Provisioning writes the activation marker last, after staging the private files.
     while [[ ! -f "$state/ha/active" ]]; do sleep 2; done
+    if [[ -s "$state/push/public" && -s "$state/push/private" ]]; then
+        export YAP_PUSH_PROVIDERS=web
+        export YAP_WEB_PUSH_KEY="$(cat "$state/push/public")"
+        export YAP_WEB_PUSH_PRIVATE_FILE="$state/push/private"
+        export YAP_PUSH_WORKER=/opt/yap-push/send.cjs
+    fi
     exec yappers-server ha-run --config "$state/ha/home.json" --grant "$state/ha/grant.json" \
         --standby-config "$state/ha/transport/config.json" --ledger "$state/ha/ledger.sqlite"
 }

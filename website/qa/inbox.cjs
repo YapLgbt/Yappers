@@ -36,11 +36,68 @@ module.exports = async function verifyInbox(page, ctx, fixture, engine) {
   try {
     assert.equal(await read(),'ready');
     await refresh();
-    await page.getByRole('button',{name:'Inbox',exact:true}).click();
+    await page.getByRole('button',{name:/^Inbox(?:,|$)/}).click();
     await page.getByText('No conversations yet').waitFor();
-    await page.getByRole('tab',{name:'Conversations'}).focus();
-    await page.keyboard.press('ArrowRight');
-    await page.getByText('No message requests').waitFor();
+    await page.getByRole('tab',{name:'Messages'}).focus();
+    await page.keyboard.press('ArrowLeft');
+    await page.getByText('No replies yet').waitFor();
+    const parent = await page.evaluate(async () => {
+      const home = await import('/app/network.js');
+      const id = await home.queue({kind:'postV2', anonymous:true, displayName:'Anonymous neighbor',
+        topic:'Chatter', headline:'Inbox activity test', body:'Looking for a book'});
+      await home.sync();
+      return id;
+    });
+    if (engine==='chrome' && process.env.YAP_TEST_PUSH_ROUTE) {
+      await page.evaluate(async()=>{
+        const {profile:p}=await import('/app/network.js');
+        const {BrowserClient}=await import('/app/runtime/yap.js');
+        const client=await BrowserClient.open(JSON.stringify({join:p.join,authorSecret:p.wallet.deviceSecret,
+          nextSequence:p.wallet.nextSequence,accountChain:p.wallet.chain}));
+        try { await client.request(JSON.stringify({type:'social',op:{kind:'setPush',provider:'fcm',
+          subscription:crypto.randomUUID(),categories:['reply']}})); } finally {await client.close();}
+      });
+    }
+    await native({kind:'reply',parent});
+    await refresh();
+    const activity=page.getByRole('button',{name:/Inbox activity test.*1 new reply/});
+    await activity.click();
+    await page.locator('.reply').filter({hasText:'Following up on your post'}).waitFor();
+    await page.goBack();
+    await refresh();
+    await page.getByRole('tab',{name:'Activity'}).click();
+    await page.getByRole('button',{name:/Inbox activity test.*Read/}).waitFor();
+    if (engine==='chrome' && process.env.YAP_TEST_PUSH_ROUTE) {
+      // The recording transport supplies the same opaque payload received from a provider.
+      await native({kind:'reply',parent});
+      let payload;
+      const fs=require('node:fs/promises');
+      for(let i=0;i<100 && !payload;i++) {
+        try {payload=JSON.parse(await fs.readFile(process.env.YAP_TEST_PUSH_ROUTE,'utf8'));} catch {}
+        if(!payload) await new Promise(resolve=>setTimeout(resolve,150));
+      }
+      assert.match(payload?.route||'',/^[a-f0-9]{64}$/);
+      const url=new URL(page.url());
+      await ctx.grantPermissions(['notifications'],{origin:url.origin});
+      const cdp=await ctx.newCDPSession(page);
+      const registration=new Promise(resolve=>cdp.on('ServiceWorker.workerRegistrationUpdated',({registrations})=>{
+        const app=registrations.find(reg=>reg.scopeURL===url.origin+'/app/'); if(app) resolve(app.registrationId);
+      }));
+      await cdp.send('ServiceWorker.enable');
+      await cdp.send('ServiceWorker.deliverPushMessage',{origin:url.origin,registrationId:await registration,data:JSON.stringify(payload)});
+      await page.waitForFunction(async route=>{
+        const reg=await navigator.serviceWorker.ready;
+        return (await reg.getNotifications({tag:route})).some(n=>n.title==='Yap' && n.body==='You have an Inbox update.');
+      },payload.route);
+      await page.goto('about:blank');
+      await page.goto(url.origin+'/app/#inbox='+payload.route);
+      await page.locator('#thread-pane .reply').filter({hasText:'Following up on your post'}).first().waitFor({timeout:65000});
+      await page.goBack();
+      await page.getByRole('tab',{name:'Messages'}).waitFor();
+      console.log('PASS worker displayed a generic alert and cold launch opened its authenticated reply thread.');
+    }
+    console.log('PASS Inbox activity opens the reply and preserves read progress ('+engine+').');
+    await page.getByRole('tab',{name:'Messages'}).click();
     const receiver = await page.evaluate(async()=>{
       const profile=await (await import('/app/store.js')).load();
       return profile.wallet.chain.at(-1).payload.account;
@@ -63,6 +120,7 @@ module.exports = async function verifyInbox(page, ctx, fixture, engine) {
       await native({kind:'send',peer:receiver,body:reply});
       await refresh();
       assert.equal(await page.getByText(reply,{exact:true}).count(),0);
+      await page.getByRole('button',{name:/Message requests/}).click();
       await expectContactPhoto(page.locator('.dm-request'));
       await page.getByRole('button',{name:'Accept',exact:true}).click();
       await page.getByText(reply,{exact:true}).waitFor();
@@ -76,7 +134,7 @@ module.exports = async function verifyInbox(page, ctx, fixture, engine) {
       await page.getByRole('button',{name:'Done',exact:true}).click();
       await card.waitFor();
       await page.goForward();
-      await page.getByRole('tab',{name:'Conversations'}).waitFor();
+      await page.getByRole('tab',{name:'Messages'}).waitFor();
       await page.goForward();
     }
     await expectContactPhoto(page.locator('.recipient'));
@@ -91,7 +149,7 @@ module.exports = async function verifyInbox(page, ctx, fixture, engine) {
     }
     await page.reload();
     await page.locator('#posts[data-feed-state=primary]').waitFor({timeout:65000});
-    await page.getByRole('button',{name:'Inbox',exact:true}).click();
+    await page.getByRole('button',{name:/^Inbox(?:,|$)/}).click();
     await expectContactPhoto(page.getByRole('button',{name:/Native reader/}));
     await page.getByRole('button',{name:/Native reader/}).click();
     await page.getByText(reply,{exact:true}).waitFor();

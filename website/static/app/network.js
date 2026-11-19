@@ -294,6 +294,63 @@ export async function queue(action, _legacyAlias, scope = profile.activeGroup ||
   scheduleDelivery();
   return eventId;
 }
+const blankInbox = () => ({activity:[],messages:[],requests:[]});
+function applyInbox(state, incoming) {
+  const inbox = incoming || blankInbox();
+  const pending = state.inboxReads || {};
+  const rows = (items,kind) => items.map(item =>
+    (pending[kind + '/' + item.target] || 0) >= item.through ? {...item,unread:0} : item);
+  return {...inbox,activity:rows(inbox.activity,'reply').filter(item => !state.muted?.[item.target]),
+    messages:rows(inbox.messages,'message')};
+}
+export async function readNotification(category,target,through) {
+  if (!through) return;
+  const key = category + '/' + target;
+  await modify(s => {
+    const next = {...s,inboxReads:{...s.inboxReads,[key]:Math.max(through,s.inboxReads?.[key]||0)}};
+    return {...next, notifications:applyInbox(next,s.notifications)};
+  });
+  scheduleDelivery();
+}
+export async function muteNotifications(target,title) {
+  await modify(s=>{
+    const muted={...s.muted};
+    if (title === null) delete muted[target]; else muted[target]=title;
+    return {...s, muted, pendingMutes:{...s.pendingMutes,[target]:title!==null}};
+  });
+  scheduleDelivery();
+}
+async function flushInboxChanges() {
+  for (const [target,muted] of Object.entries(profile.pendingMutes || {})) {
+    await rpc({type:'social',op:{kind:'muteNotifications',target,muted}});
+    await modify(s=>{
+      const next={...s.pendingMutes}; if(next[target]===muted) delete next[target];
+      return {...s,pendingMutes:next};
+    });
+  }
+  for (const [key,through] of Object.entries(profile.inboxReads || {})) {
+    const [category,target]=key.split('/');
+    await rpc({type:'social',op:{kind:'readNotification',category,target,through}});
+    await modify(s=>{
+      const next={...s.inboxReads}; if(next[key]===through) delete next[key];
+      return {...s,inboxReads:next};
+    });
+  }
+}
+export async function dismissRequest(peer) {
+  await accountTask(async()=> {
+    await rpc({type:'social',op:{kind:'dismissRequest',peer}});
+    await modify(s=>({...s,messageRequests:(s.messageRequests||[]).filter(id=>id!==peer),
+      notifications:{...(s.notifications||blankInbox()),requests:(s.notifications?.requests||[]).filter(row=>row.target!==peer)}}));
+  });
+}
+export async function activityThread(item) {
+  const cached = [...profile.posts,...Object.values(profile.savedPosts||{}),
+    ...Object.values(profile.feedCache||{}).flatMap(entry=>entry.posts)].find(p=>p.id===item.target);
+  if (!navigator.onLine && cached?.replies.some(r=>r.id===item.first)) return {...cached,scope:item.scope,readThrough:item.firstThrough};
+  const result = await rpc({type:'social',op:{kind:'notificationThread',target:item.target,anchor:item.first}});
+  return {...result.post,scope:result.scope,readThrough:Math.min(item.through,result.through)};
+}
 export function canShowPublic(state) {
   return !state.activeGroup && !state.nearby && !state.pendingPrivacy && !state.hideAnonymous && !state.inboxPolicy?.feedDays && state.safeForPublic && !state.blocks.length && !state.pendingUnblocks.length;
 }
@@ -381,9 +438,11 @@ async function synchronize() {
     }
     // Refresh after each delivery batch before publishing the personalized projection.
     const latest = pendingBlocks.length || pendingUnblocks.length || sent ? await getFeed() : feed;
+    await flushInboxChanges();
     const [blocks, privacy] = await Promise.all([
       rpc({type:'social',op:{kind:'blocks'}}), rpc({type:'social',op:{kind:'privacyStatus'}})
     ]);
+    try {await refreshPushRegistration(privacy);} catch { /* A push service outage must not interrupt the feed. */ }
     const safe = !blocks.blocks.length && !privacy.settings.hideAnonymous && !privacy.settings.feedDays;
     if (latest.accountChain?.length && latest.accountChain.at(-1).payload.account !== profile.wallet.chain.at(-1).payload.account) {
       throw new Error('Your home returned a different account.');
@@ -398,7 +457,7 @@ async function synchronize() {
       }
       const scope=s.activeGroup||s.join.community;
       for(const post of latest.posts)if(s.saved.includes(post.id))savedPosts[post.id]={...post,scope};
-      return purgeDeleted({...currentProfile(s,privacy.currentProfile),savedPosts,outbox:s.outbox.filter(event=>!acceptedFeedEvents.has(event.id)),feedCache:newlyBlocked ? {} : s.feedCache,blocks:[...confirmedBlocks,...s.blocks.filter(b=>!b.handle)], posts:latest.posts, lastSync:Date.now(), safeForPublic:safe,
+      return purgeDeleted({...currentProfile(s,privacy.currentProfile),pushCapabilities:privacy.pushCapabilities,pushCategories:privacy.pushCategories||[],notifications:applyInbox(s,privacy.notifications),savedPosts,outbox:s.outbox.filter(event=>!acceptedFeedEvents.has(event.id)),feedCache:newlyBlocked ? {} : s.feedCache,blocks:[...confirmedBlocks,...s.blocks.filter(b=>!b.handle)], posts:latest.posts, lastSync:Date.now(), safeForPublic:safe,
       directAvailable:latest.direct === true && !s.mailboxElsewhere, messageRequests:privacy.requests || [], inboxPolicy:s.pendingPrivacy || privacy.settings, hideAnonymous:s.pendingPrivacy?.hideAnonymous ?? (s.privacyManaged ? privacy.settings.hideAnonymous : s.hideAnonymous || privacy.settings.hideAnonymous),
       usernameDomain:privacy.usernameDomain || s.usernameDomain, username:privacy.username || s.username,
       wallet:latest.accountChain?.length ? {...s.wallet,chain:latest.accountChain} : s.wallet},latest.deleted);});
@@ -566,10 +625,11 @@ export async function restoreIdentity({account, home, root}) {
     const restored = await openClient({...original,wallet});
     try {
       await restored.request(JSON.stringify({type:'accountRegister',wallet}));
+      await forgetBrowserSubscription();
       await modify(state => {
         if (state.pendingRecovery?.deviceSecret !== wallet.deviceSecret || hasLocalActivity(state))
           throw new Error('This account changed during recovery. Retry with your file.');
-        return {...state,wallet,profileRevision:0,privateGroupState:null,directState:null,directAvailable:false,messageRequests:[],pendingApprovals:[],approvedContacts:[],revokedContacts:[],inboxPolicy:null,pendingRecovery:null,welcomePending:false,setupStep:'restored-username',username:null,usernameDomain:null,mailboxElsewhere:false,accountRestored:true,safeForPublic:false,posts:[],savedPosts:{},feedCache:{},lastSync:null};
+        return {...state,wallet,profileRevision:0,privateGroupState:null,directState:null,directAvailable:false,messageRequests:[],pendingApprovals:[],approvedContacts:[],revokedContacts:[],inboxPolicy:null,pendingRecovery:null,welcomePending:false,setupStep:'restored-username',username:null,usernameDomain:null,mailboxElsewhere:false,accountRestored:true,safeForPublic:false,posts:[],pushEndpoint:null,pushCategories:[],notifications:blankInbox(),inboxReads:{},pendingMutes:{},savedPosts:{},feedCache:{},lastSync:null};
       });
     } finally {await restored.close();}
   });
@@ -857,6 +917,7 @@ export async function importArchive(file, passphrase, invitation, allowDrafts) {
       const prefs = (meta.preferences || []).filter((p) => p.community === join.community);
       const sameAccount = existing.account === account && sameHome;
       const saved = await load();
+      if (wallet.deviceSecret!==saved.wallet.deviceSecret) await forgetBrowserSubscription();
       const retained = mergeHistory(sameAccount ? saved.ownedEvents : [], result.events);
       await modify((s) =>
         purgeDeleted(
@@ -876,6 +937,7 @@ export async function importArchive(file, passphrase, invitation, allowDrafts) {
             username: sameAccount ? s.username : null,
             usernameDomain: sameHome ? s.usernameDomain : null,
             posts: [],
+            pushEndpoint:null,pushCategories:[],notifications:blankInbox(), inboxReads:{}, pendingMutes:{},
             savedPosts: {},
             feedCache: {},
             groupLocality: null,
@@ -927,6 +989,7 @@ export async function importArchive(file, passphrase, invitation, allowDrafts) {
 }
 export function resetLocalData() {
   return navigator.locks.request('yap-web-delivery-v1', async () => {
+    await forgetBrowserSubscription();
     await clearDevice((s) => {
       if (!s || s.wallet.deviceSecret !== activeDevice)
         throw new Error('Reopen the active account first.');
@@ -935,3 +998,49 @@ export function resetLocalData() {
     location.reload();
   });
 }
+
+async function browserSubscription(publicKey) {
+  const registration = await navigator.serviceWorker.ready;
+  const current = await registration.pushManager.getSubscription();
+  if (current) return current;
+  const key = Uint8Array.from(atob(publicKey.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));
+  return registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key});
+}
+async function refreshPushRegistration(privacy) {
+  if (!privacy.pushCategories?.length || !privacy.pushCapabilities?.webKey || !globalThis.PushManager ||
+      !navigator.serviceWorker || typeof Notification==='undefined') return;
+  if (Notification.permission!=='granted') {
+    await rpc({type:'social',op:{kind:'setPush',provider:'web',subscription:null,categories:[]}});
+    privacy.pushCategories=[];
+    return;
+  }
+  const subscription=await browserSubscription(privacy.pushCapabilities.webKey);
+  if (profile.pushEndpoint!==subscription.endpoint) {
+    await rpc({type:'social',op:{kind:'setPush',provider:'web',subscription:subscription.toJSON(),categories:privacy.pushCategories}});
+    await modify(s=>({...s,pushEndpoint:subscription.endpoint}));
+  }
+}
+async function forgetBrowserSubscription() {
+  const registration=await navigator.serviceWorker?.getRegistration('/app/');
+  const subscription=await registration?.pushManager?.getSubscription();
+  if (subscription) await subscription.unsubscribe();
+}
+export async function setPushCategories(categories) {
+  if (!('Notification' in globalThis) || !navigator.serviceWorker || !globalThis.PushManager)
+    throw Error('This browser does not support notifications here.');
+  const key=profile.pushCapabilities?.webKey;
+  if (!key) throw Error('This home has not enabled browser notifications.');
+  // Request permission in the user's click handler, before acquiring any delivery lock.
+  if (categories.length && await Notification.requestPermission()!=='granted')
+    throw Error('Notifications are off. You can change permission in browser settings.');
+  const device=activeDevice;
+  const subscription=categories.length ? await browserSubscription(key) : null;
+  await accountTask(async()=>{
+    if (device!==activeDevice) throw Error('Reopen Inbox for this account.');
+    await rpc({type:'social',op:{kind:'setPush',provider:'web',subscription:subscription?.toJSON()||null,categories}});
+    await modify(s=>({...s,pushCategories:categories,pushEndpoint:subscription?.endpoint}));
+    if (!categories.length) await forgetBrowserSubscription();
+  });
+
+}
+export const resolvePush = route => accountTask(()=>rpc({type:'social',op:{kind:'openPush',route}}));
