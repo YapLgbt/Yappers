@@ -95,7 +95,13 @@ impl PrivateState {
         }
         self.messages.push(line);
     }
-    fn receive(&mut self, account: &mut Account, letter: &Signed<Letter>, age: u8, received: i64) -> Result<()> {
+    fn receive(
+        &mut self,
+        account: &mut Account,
+        letter: &Signed<Letter>,
+        age: u8,
+        received: i64,
+    ) -> Result<()> {
         let peer = &letter.record.payload.account;
         let v = &letter.value;
         valid_peer(peer, &self.owner)?;
@@ -120,13 +126,6 @@ impl PrivateState {
                 let plain = session.decrypt(&v.ciphertext)?;
                 (session, plain)
             } else {
-                ensure!(
-                    self.threads.len() < 256 || thread.is_some(),
-                    "conversation capacity reached"
-                );
-                if let Some(t) = &thread {
-                    ensure!(t.sessions.len() < 8, "conversation session limit reached");
-                }
                 let OlmMessage::PreKey(pre) = &v.ciphertext else {
                     bail!("unknown session")
                 };
@@ -253,7 +252,9 @@ impl Client {
                 for item in items {
                     ensure!(item.cursor > state.cursor, "invalid mailbox cursor");
                     if !blocked.contains(&item.letter.record.payload.account)
-                        && state.receive(&mut account, &item.letter, item.age, item.received).is_err()
+                        && state
+                            .receive(&mut account, &item.letter, item.age, item.received)
+                            .is_err()
                     {
                         state.unreadable = state.unreadable.saturating_add(1);
                     }
@@ -302,12 +303,8 @@ impl Client {
                 valid_peer(&peer, owner)?;
                 let content = Content { name, body };
                 content.validate()?;
-                ensure!(
-                    label.encode_utf16().count() <= 80 && state.outbox.len() < 16,
-                    "message queue or label too long"
-                );
+                ensure!(label.encode_utf16().count() <= 80, "contact label too long");
                 if !state.threads.contains_key(&peer) {
-                    ensure!(state.threads.len() < 256, "conversation capacity reached");
                     let mut response = self
                         .social_value(SocialOp::Claim { peer: peer.clone() })
                         .await?;

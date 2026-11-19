@@ -15,7 +15,6 @@ use vodozemac::{
     olm::{self, Account, AccountPickle, OlmMessage},
 };
 
-const MAX_SAVED_GROUPS: usize = 16;
 const GROUP_CONFIG: megolm::SessionConfig = megolm::SessionConfig::version_1();
 const OLM_CONFIG: olm::SessionConfig = olm::SessionConfig::version_1();
 
@@ -88,10 +87,6 @@ impl SavedGroup {
     }
 
     fn roster_check(&mut self, group: &str, history: &[Signed<Roster>]) -> Result<()> {
-        ensure!(
-            history.len() <= MAX_REVISIONS as usize,
-            "private group roster is too large"
-        );
         let mut prior = None;
         for roster in history {
             roster.check(group, &self.room.value.owner, prior)?;
@@ -357,14 +352,34 @@ impl Client {
             );
             group.initial = None;
         }
-        let Outcome::Roster { history } = self
-            .private_rpc(Operation::Roster {
-                group: id.to_owned(),
-            })
-            .await?
-        else {
-            bail!("expected group membership history");
+        let mut history = Vec::new();
+        let mut operation = Operation::Roster {
+            group: id.to_owned(),
         };
+        loop {
+            match self.private_rpc(operation).await? {
+                Outcome::Roster { history: last } => {
+                    if last.is_empty() {
+                        return Ok(Vec::new());
+                    }
+                    history.extend(last);
+                    break;
+                }
+                Outcome::RosterPage { history: page } => {
+                    let next = page.last().context("empty roster page")?.value.revision;
+                    ensure!(
+                        next as usize == history.len() + page.len(),
+                        "invalid roster cursor"
+                    );
+                    history.extend(page);
+                    operation = Operation::RosterAfter {
+                        group: id.to_owned(),
+                        after: next,
+                    };
+                }
+                _ => bail!("expected group membership history"),
+            }
+        }
         if !history.is_empty() {
             group.roster_check(id, &history)?;
         }
@@ -408,10 +423,6 @@ impl Client {
                 );
             }
             LocalAction::Create { name } => {
-                ensure!(
-                    vault.groups.len() < MAX_SAVED_GROUPS,
-                    "saved private group limit reached"
-                );
                 let room = Signed::new(
                     Room {
                         home: home.clone(),
@@ -452,10 +463,6 @@ impl Client {
                     .context("invalid private group invitation")?;
                 let id = room.check(&home)?;
                 if !vault.groups.contains_key(&id) {
-                    ensure!(
-                        vault.groups.len() < MAX_SAVED_GROUPS,
-                        "saved private group limit reached"
-                    );
                     vault.groups.insert(
                         id.clone(),
                         SavedGroup::new(room, owner.clone(), device.clone())?,
@@ -621,7 +628,11 @@ impl Client {
         let history = self.private_history(group, saved).await?;
         let previous = history.last().context("private group unavailable")?;
         let mut members = previous.value.members.clone();
-        let revision = previous.value.revision + 1;
+        let revision = previous
+            .value
+            .revision
+            .checked_add(1)
+            .context("roster revision overflow")?;
         if let Some(request) = &request {
             let device = &request.value.device;
             if let Some(already) = members.get(&device.signing) {

@@ -97,6 +97,18 @@ async fn private_groups_enforce_membership_history_and_rotate_pending_posts() {
             .is_err()
     );
 
+    // Historical ciphertext predating the current roster counts toward the old
+    // 2,000-event limit. It is outside every current member's visible history.
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<2000)
+         INSERT INTO private_group_events(group_id,id,revision,session,ratchet_index,event)
+         SELECT ?,printf('%064x',i),0,'historical',i,'{}' FROM n",
+            [group.as_str().unwrap()],
+        )
+        .unwrap();
+
     owner
         .prepare(&group, "pre-join confidential sample", None)
         .await;

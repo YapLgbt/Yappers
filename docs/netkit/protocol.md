@@ -2,9 +2,13 @@
 
 ## Current transport
 
-Yap clients and homes negotiate `yappers/netkit/5` over Iroh. New posts, replies, votes and deletions use event version 4. A home verifies the device signature, checks the account grant when present, and signs an acceptance receipt. After deletion, a receiver can verify the retained header and deletion proof without the original plaintext or salt. [Event format, signing domains and deletion proofs](deletion.md#what-a-peer-verifies)
+Yap clients and homes negotiate `yappers/netkit/6` over Iroh. New posts, replies, votes and deletions use event version 4. A home verifies the device signature, checks the account grant when present, and signs an acceptance receipt. After deletion, a receiver can verify the retained header and deletion proof without the original plaintext or salt. [Event format, signing domains and deletion proofs](deletion.md#what-a-peer-verifies)
 
 The [Rust wire types](../../netkit/src/model.rs) define the request and response fields. [Group records](groups.md#canonical-signed-records) and [portable account records](../ownership.md) have separate signatures and version numbers.
+
+Feed responses fit the newest complete conversations inside a 1 MiB frame. When the deletion history needs another page, the client follows `feedWithMoreDeletions` with authorized `deletionsAfter` requests before it displays or caches the feed. Public group catalogs and private roster histories also support continuation pages. Upgrade clients before a home needs any of these larger responses. Older clients reject an unfamiliar paged response.
+
+Account registration, shared event history and groups created on a home have no fixed lifetime count. Operators can monitor the HA image budget and increase it as the database grows. [Worker health and capacity](operations.md)
 
 ## Historical RPC v4 and signed events v1/v2/v3
 

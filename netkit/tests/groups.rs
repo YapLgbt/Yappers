@@ -334,3 +334,50 @@ async fn three_homes_discover_enroll_replicate_and_restart_without_manual_peers(
     a.close().await;
     b.close().await;
 }
+
+#[tokio::test]
+async fn home_can_create_and_browse_more_than_64_public_groups() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let cfg = config(&dir.path().join("home"));
+    let store = Store::open(&cfg.database_path)?;
+    let db = rusqlite::Connection::open(&cfg.database_path)?;
+    let key = signing_key(&cfg.private_key)?;
+    // Seed existing, genuinely signed descriptors. Only the final group needs a live announcement.
+    for index in 0..64 {
+        let group = SignedGroup::create(&key, details(&format!("Group {index}"), false))?;
+        db.execute(
+            "INSERT INTO public_groups VALUES(?,?)",
+            rusqlite::params![group.id, serde_json::to_string(&group)?],
+        )?;
+        store.host_group(&group.id)?;
+    }
+    drop(store);
+    let server = Server::start(cfg).await?;
+    server.create_group(details("Group 65", false))?;
+    let reader = client(server.join("private-home", NetworkMode::Local)?).await;
+    let Response::Groups { groups } = reader.groups().await? else {
+        panic!("expected group list")
+    };
+    assert_eq!(groups.len(), 65);
+    assert!(groups.iter().all(|group| group.hosted));
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..9 {
+        let Response::Directory { snapshot } = transport::rpc(
+            &reader.endpoint,
+            server.public_address(),
+            &Request::Directory {
+                snapshot: DirectorySnapshot::default(),
+            },
+        )
+        .await?
+        else {
+            panic!("expected directory")
+        };
+        assert!(snapshot.groups.len() <= MAX_GROUPS);
+        seen.extend(snapshot.groups.into_iter().map(|g| g.id));
+    }
+    assert_eq!(seen.len(), 65);
+    reader.close().await;
+    server.close().await;
+    Ok(())
+}

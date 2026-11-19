@@ -19,7 +19,7 @@ fn accepted(home_secret: &str, wallet: &AccountWallet, n: u64, action: Action) -
 }
 
 #[test]
-fn full_home_still_accepts_an_owners_deletion() -> Result<()> {
+fn home_accepts_activity_and_deletion_past_the_old_log_limit() -> Result<()> {
     let dir = tempdir()?;
     let home = new_secret();
     let home_id = hex::encode(signing_key(&home)?.verifying_key().as_bytes());
@@ -44,7 +44,7 @@ fn full_home_still_accepts_an_owners_deletion() -> Result<()> {
         "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<?)
         INSERT INTO events(id, community, author, author_seq, envelope)
         SELECT 'fixture-' || i, 'other', 'fixture', i, '{}' FROM n",
-        [yappers_netkit::store::MAX_EVENTS - 2],
+        [10_001],
     )?;
     let vote = accepted(
         &home,
@@ -55,7 +55,7 @@ fn full_home_still_accepts_an_owners_deletion() -> Result<()> {
             value: 1,
         },
     )?;
-    assert!(store.accept(&vote).is_err());
+    store.accept(&vote)?;
     let deletion = accepted(
         &home,
         &wallet,

@@ -51,7 +51,7 @@ pub fn moderate_ha(path: &Path, grant: &FullHomeStandby, event: &str, hide: bool
     store.moderate(event, hide)?;
     let snapshot = store.snapshot()?;
     ensure!(
-        snapshot.len() <= SNAPSHOT_LIMIT,
+        snapshot.len() <= snapshot_limit()?,
         "home exceeds replication capacity"
     );
     let next = rev.checked_add(1).context("revision exhausted")?;
@@ -65,7 +65,24 @@ pub fn moderate_ha(path: &Path, grant: &FullHomeStandby, event: &str, hide: bool
     tx.commit()?;
     Ok(())
 }
-const SNAPSHOT_LIMIT: usize = 64 * 1024 * 1024;
+// Size this transport allocation to the memory and bandwidth of both operators.
+fn snapshot_limit() -> Result<usize> {
+    let mib = match std::env::var("YAP_HA_SNAPSHOT_MIB") {
+        Ok(raw) => raw
+            .parse::<usize>()
+            .context("invalid YAP_HA_SNAPSHOT_MIB")?,
+        Err(std::env::VarError::NotPresent) => 64,
+        Err(error) => return Err(error.into()),
+    };
+    let bytes = mib
+        .checked_mul(1024 * 1024)
+        .context("snapshot budget overflow")?;
+    ensure!(
+        (1..=1_000_000_000).contains(&bytes),
+        "snapshot budget exceeds SQLite blob range"
+    );
+    Ok(bytes)
+}
 const HEADER_LIMIT: usize = 2 * MAX_FRAME + 4096;
 const OPERATION_TTL: Duration = Duration::from_secs(8);
 const RECEIPT_TTL: i64 = 300;
@@ -202,7 +219,7 @@ impl Ledger {
         image: Vec<u8>,
     ) -> Result<(Answer, Vec<u8>)> {
         ensure!(
-            image.len() <= SNAPSHOT_LIMIT,
+            image.len() <= snapshot_limit()?,
             "home exceeds replication capacity"
         );
         let mut data = Vec::new();
@@ -402,7 +419,7 @@ fn deletion_set(image: &[u8]) -> Result<BTreeSet<RetainedDeletion>> {
 fn packet<T: Serialize>(header: &T, image: &[u8]) -> Result<Vec<u8>> {
     let h = serde_json::to_vec(header)?;
     ensure!(
-        h.len() <= HEADER_LIMIT && image.len() <= SNAPSHOT_LIMIT,
+        h.len() <= HEADER_LIMIT && image.len() <= snapshot_limit()?,
         "replication capacity exceeded"
     );
     let mut bytes = Vec::with_capacity(4 + h.len() + image.len());
@@ -416,7 +433,10 @@ fn unpack<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<(T, Vec<u8>)> 
     let n = u32::from_be_bytes(length.try_into()?) as usize;
     ensure!(n <= HEADER_LIMIT, "invalid replication header");
     let (header, image) = rest.split_at_checked(n).context("truncated HA header")?;
-    ensure!(image.len() <= SNAPSHOT_LIMIT, "invalid replication image");
+    ensure!(
+        image.len() <= snapshot_limit()?,
+        "invalid replication image"
+    );
     Ok((serde_json::from_slice(header)?, image.to_vec()))
 }
 pub(super) struct Ha {
@@ -453,6 +473,7 @@ impl Ha {
         )
         .to_hex()
         .to_string();
+        snapshot_limit()?;
         let ledger = match &options.role {
             HaRole::Primary => None,
             HaRole::Standby { ledger, .. } => {
@@ -466,6 +487,22 @@ impl Ha {
             cached: tokio::sync::Mutex::new(None),
         })
     }
+    pub(super) fn committed_capacity(&self) -> Result<(usize, usize)> {
+        let ledger = self
+            .ledger
+            .as_ref()
+            .context("standby ledger required")?
+            .lock()
+            .map_err(|_| anyhow::anyhow!("ledger unavailable"))?;
+        let bytes = ledger.db.query_row(
+            "SELECT length(image) FROM head JOIN deletion_epoch USING(singleton)
+            JOIN guard.state USING(id,epoch) WHERE revision>0",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok((bytes, snapshot_limit()?))
+    }
+
     fn local(&self, primary: bool, op: Control, data: Vec<u8>) -> Result<(Answer, Vec<u8>)> {
         self.ledger
             .as_ref()
@@ -484,7 +521,9 @@ impl Ha {
             self.ledger.is_some() && remote == self.grant.home,
             "not an authorized HA member"
         );
-        let bytes = recv.read_to_end(4 + HEADER_LIMIT + SNAPSHOT_LIMIT).await?;
+        let bytes = recv
+            .read_to_end(4 + HEADER_LIMIT + snapshot_limit()?)
+            .await?;
         let ((policy, op), image): ((String, Control), _) = unpack(&bytes)?;
         ensure!(policy == self.policy, "home admission policies differ");
         let (answer, image) = self
@@ -510,7 +549,9 @@ impl Ha {
             send.write_all(&packet(&(&self.policy, op), &image)?)
                 .await?;
             send.finish()?;
-            let bytes = recv.read_to_end(4 + HEADER_LIMIT + SNAPSHOT_LIMIT).await?;
+            let bytes = recv
+                .read_to_end(4 + HEADER_LIMIT + snapshot_limit()?)
+                .await?;
             let result = unpack(&bytes);
             connection.close(0u32.into(), b"replication complete");
             result
@@ -633,6 +674,7 @@ impl Ha {
         let bytes = if matches!(
             call,
             Request::Pull { .. }
+                | Request::DeletionsAfter { .. }
                 | Request::PeerProfiles { .. }
                 | Request::PullPublicProjection { .. }
                 | Request::EnrollHost { .. }
@@ -644,30 +686,40 @@ impl Ha {
         let op = Operation::new(remote, id, &bytes)?;
         self.run(state, op, || state.dispatch(remote, call)).await
     }
-    pub(super) async fn push_operation(&self, state:&State, jobs:Option<(&serde_json::Value,&serde_json::Value)>)->Result<serde_json::Value> {
-        let op=Operation::new(&self.grant.home,new_secret(),b"push-dispatch")?;
-        match self.run(state,op,||async{
-            let store=state.store()?;
-            let result=match jobs{Some((jobs,outcomes))=>store.finish_push(jobs,outcomes)?,None=>store.claim_push()?};
-            Ok(Response::Social{result})
-        }).await?{
-            Response::Social{result}=>Ok(result),
-            _=>bail!("push state unavailable"),
+    pub(super) async fn push_operation(
+        &self,
+        state: &State,
+        jobs: Option<(&serde_json::Value, &serde_json::Value)>,
+    ) -> Result<serde_json::Value> {
+        let op = Operation::new(&self.grant.home, new_secret(), b"push-dispatch")?;
+        match self
+            .run(state, op, || async {
+                let store = state.store()?;
+                let result = match jobs {
+                    Some((jobs, outcomes)) => store.finish_push(jobs, outcomes)?,
+                    None => store.claim_push()?,
+                };
+                Ok(Response::Social { result })
+            })
+            .await?
+        {
+            Response::Social { result } => Ok(result),
+            _ => bail!("push state unavailable"),
         }
     }
-    pub(super) async fn synchronize(&self, server: &Server) -> Result<usize> {
-        // Foreign Iroh federation peers grant replication to the original transport ID.
-        // Client takeover never expands those independent peers' trust policies.
-        if self.ledger.is_some() || self.cached.try_lock().is_err() {
-            return Ok(0);
-        }
+    // Each operation gets its own permit and deadline. A failed peer cannot roll back
+    // another peer's cursor, and slow metadata cannot roll back a verified page.
+    async fn background<T, F>(&self, state: &State, work: F) -> Result<T>
+    where
+        T: Serialize + serde::de::DeserializeOwned,
+        F: std::future::Future<Output = Result<T>>,
+    {
         let op = Operation::new(&self.grant.home, new_secret(), b"background-federation")?;
         let result = self
-            .run(&server.state, op, || async {
-                let count =
-                    tokio::time::timeout(Duration::from_secs(3), server.sync_inner()).await??;
+            .run(state, op, || async {
+                let value = tokio::time::timeout(Duration::from_secs(3), work).await??;
                 Ok(Response::Social {
-                    result: serde_json::json!(count),
+                    result: serde_json::to_value(value)?,
                 })
             })
             .await?;
@@ -676,6 +728,48 @@ impl Ha {
             Response::Error { message, .. } => bail!("{message}"),
             _ => bail!("unexpected sync receipt"),
         }
+    }
+
+    pub(super) async fn synchronize(&self, server: &Server) -> Result<usize> {
+        if self.ledger.is_some() || self.cached.try_lock().is_err() {
+            return Ok(0);
+        }
+        let mut errors = Vec::new();
+        if server.state.auto.enabled
+            && let Err(e) = self.background(&server.state, server.discover_once()).await
+        {
+            errors.push(format!("discovery: {e:#}"));
+        }
+        let peers = self
+            .background(&server.state, async { server.sync_peers() })
+            .await?;
+        let mut count = 0;
+        for peer in peers {
+            let result: Result<()> = async {
+                for _ in 0..MAX_SYNC_PAGES {
+                    let (entries, more) = self
+                        .background(&server.state, server.sync_page(&peer))
+                        .await?;
+                    count += entries;
+                    if !more {
+                        self.background(&server.state, server.sync_peer_metadata(&peer))
+                            .await?;
+                        break;
+                    }
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(error) = result {
+                errors.push(format!("{}: {error:#}", peer.address.id));
+            }
+        }
+        ensure!(
+            errors.is_empty(),
+            "some peers failed: {}",
+            errors.join("; ")
+        );
+        Ok(count)
     }
 }
 
@@ -713,6 +807,18 @@ mod tests {
             permit: permit.into(),
             result: "durable receipt".into(),
         }
+    }
+    #[test]
+    fn capacity_warning_precedes_the_commit_limit() {
+        let health = |used| WorkerHealth {
+            ready: true,
+            image_bytes: Some(used),
+            budget_bytes: Some(1000),
+            oldest_projection_age_seconds: None,
+        };
+        assert!(health(799).has_headroom());
+        assert!(!health(800).has_headroom());
+        assert!(!health(1000).has_headroom());
     }
     #[test]
     fn expired_restarted_wrong_node_and_stale_tokens_cannot_commit() -> Result<()> {

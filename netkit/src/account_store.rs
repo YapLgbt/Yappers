@@ -34,12 +34,6 @@ impl Store {
         if known.len() >= chain.len() {
             return Ok(known.last().context("missing account state")?.clone());
         }
-        if known.is_empty() {
-            let count: i64 = self
-                .db
-                .query_row("SELECT COUNT(*) FROM account_states", [], |r| r.get(0))?;
-            ensure!(count < 1000, "account registry capacity reached");
-        }
         let tx = self.db.transaction()?;
         crate::privacy::observe(&tx, &latest.payload.account)?;
         tx.execute("INSERT INTO account_states(account,chain) VALUES(?1,?2) ON CONFLICT(account) DO UPDATE SET chain=excluded.chain", params![latest.payload.account, serde_json::to_string(chain)?])?;
@@ -47,22 +41,33 @@ impl Store {
         Ok(latest.clone())
     }
     pub fn owned_events(&self, account: &str) -> Result<Vec<Envelope>> {
+        self.owned_after(account, "", -1)
+    }
+
+    pub(crate) fn owned_after(
+        &self,
+        account: &str,
+        after: &str,
+        limit: i64,
+    ) -> Result<Vec<Envelope>> {
         let mut events = BTreeMap::new();
-        // Account proof authorizes export of one's own authored data across this home's
-        // communities. It never grants access to other members' private-group content.
-        let mut shared = self
-            .db
-            .prepare("SELECT envelope FROM events ORDER BY cursor")?;
-        for value in shared.query_map([], |r| r.get::<_, String>(0))? {
+        // Read at most one page from each ordered source, then merge by event ID.
+        // Comparing duplicates retains the strongest known deletion proof.
+        let mut shared = self.db.prepare("SELECT envelope FROM events
+            WHERE COALESCE(json_extract(envelope,'$.event.payload.account.payload.account'),author)=? AND id>?
+            ORDER BY id LIMIT ?")?;
+        for value in shared.query_map(params![account, after, limit], |r| r.get::<_, String>(0))? {
             let event: Envelope = serde_json::from_str(&value?)?;
-            if event.event.owner_id() == account {
-                events.insert(event.event.id.clone(), event);
-            }
+            ensure!(event.event.owner_id() == account, "invalid owned event");
+            events.insert(event.event.id.clone(), event);
         }
-        let mut statement = self
-            .db
-            .prepare("SELECT envelope FROM personal_events WHERE account=?1")?;
-        for value in statement.query_map([account], |r| r.get::<_, String>(0))? {
+        let mut statement = self.db.prepare(
+            "SELECT envelope FROM personal_events
+            WHERE account=? AND event_id>? ORDER BY event_id LIMIT ?",
+        )?;
+        for value in
+            statement.query_map(params![account, after, limit], |r| r.get::<_, String>(0))?
+        {
             let envelope: Envelope = serde_json::from_str(&value?)?;
             if let Some(existing) = events.get(&envelope.event.id) {
                 ensure!(
@@ -119,7 +124,6 @@ impl Store {
                     "conflicting personal history"
                 );
             } else {
-                Self::check_event_capacity(&tx, envelope, true)?;
                 tx.execute(
                     "INSERT INTO personal_events(account,event_id,envelope) VALUES(?1,?2,?3)",
                     params![account, envelope.event.id, serde_json::to_string(envelope)?],

@@ -141,16 +141,12 @@ impl Store {
                     }
                 }
                 let chain = self.account_chain(owner)?;
-                let deleted = self.erased_ids(community)?;
-                let overhead =
-                    serde_json::to_vec(&chain)?.len() + serde_json::to_vec(&deleted)?.len() + 1024;
-                ensure!(
-                    overhead < crate::MAX_FRAME,
-                    "deletion history exceeds frame"
-                );
-                while serde_json::to_vec(&posts)?.len() + overhead > crate::MAX_FRAME {
-                    posts.pop();
-                }
+                let mut deleted = self.erased_ids(community)?;
+                let more = crate::server::fit_feed_page(
+                    &mut posts,
+                    &mut deleted,
+                    serde_json::to_vec(&chain)?.len(),
+                )?;
                 return Ok(Response::Feed {
                     deleted,
                     posts,
@@ -158,7 +154,8 @@ impl Store {
                     account_chain: chain,
                     direct: true,
                     privacy: enhanced,
-                });
+                }
+                .with_deletion_pages(more));
             }
             SocialOp::SetProfile {
                 expected,
@@ -189,37 +186,71 @@ impl Store {
                 }
                 serde_json::Value::Object(profiles)
             }
-            SocialOp::SetPush {provider,subscription,categories} => self.set_push(owner,device,&provider,subscription,categories)?,
-            SocialOp::OpenPush {route} => self.push_route(owner,device,&route)?,
-            SocialOp::NotificationThread { target,anchor } => self.activity_thread(owner,&target,&anchor)?,
-            SocialOp::NotificationInbox => self.notification_inbox(owner,device)?,
-            SocialOp::ReadNotification { category, target, through } => {
-                self.read_notification(owner,device,&category,&target,through)?;
+            SocialOp::SetPush {
+                provider,
+                subscription,
+                categories,
+            } => self.set_push(owner, device, &provider, subscription, categories)?,
+            SocialOp::OpenPush { route } => self.push_route(owner, device, &route)?,
+            SocialOp::NotificationThread { target, anchor } => {
+                self.activity_thread(owner, &target, &anchor)?
+            }
+            SocialOp::NotificationInbox => self.notification_inbox(owner, device)?,
+            SocialOp::ReadNotification {
+                category,
+                target,
+                through,
+            } => {
+                self.read_notification(owner, device, &category, &target, through)?;
                 json!({})
             }
             SocialOp::MuteNotifications { target, muted } => {
-                ensure!(target.len()==64 && hex::decode(&target).is_ok(),"invalid thread");
+                ensure!(
+                    target.len() == 64 && hex::decode(&target).is_ok(),
+                    "invalid thread"
+                );
                 if muted {
-                    self.db.execute("INSERT OR IGNORE INTO inbox_mutes VALUES(?,?)", [owner,&target])?;
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO inbox_mutes VALUES(?,?)",
+                        [owner, &target],
+                    )?;
                 } else {
-                    self.db.execute("DELETE FROM inbox_mutes WHERE owner=? AND target=?", [owner,&target])?;
+                    self.db.execute(
+                        "DELETE FROM inbox_mutes WHERE owner=? AND target=?",
+                        [owner, &target],
+                    )?;
                 }
                 json!({})
             }
             SocialOp::DismissRequest { peer } => {
-                valid_peer(&peer,owner)?;
-                ensure!(self.db.query_row("SELECT EXISTS(SELECT 1 FROM dm_devices WHERE owner=? AND device=?)",
-                    [owner,device],|r| r.get::<_,bool>(0))?,"open this account's messaging installation");
-                self.db.execute("UPDATE dm_mail SET packet=NULL WHERE recipient=? AND sender=? AND held=1", [owner,&peer])?;
+                valid_peer(&peer, owner)?;
+                ensure!(
+                    self.db.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM dm_devices WHERE owner=? AND device=?)",
+                        [owner, device],
+                        |r| r.get::<_, bool>(0)
+                    )?,
+                    "open this account's messaging installation"
+                );
+                self.db.execute(
+                    "UPDATE dm_mail SET packet=NULL WHERE recipient=? AND sender=? AND held=1",
+                    [owner, &peer],
+                )?;
                 json!({})
             }
             SocialOp::PrivacyStatus => {
                 let mut result = self.privacy_status(owner)?;
-                result["notifications"] = self.notification_inbox(owner,device)?;
-                result["requests"] = json!(result["notifications"]["requests"].as_array().unwrap().iter()
-                    .map(|r|&r["target"]).collect::<Vec<_>>());
+                result["notifications"] = self.notification_inbox(owner, device)?;
+                result["requests"] = json!(
+                    result["notifications"]["requests"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|r| &r["target"])
+                        .collect::<Vec<_>>()
+                );
                 result["pushCapabilities"] = crate::push::capabilities();
-                result["pushCategories"] = self.push_categories(owner,device)?;
+                result["pushCategories"] = self.push_categories(owner, device)?;
                 result["currentProfile"] =
                     serde_json::to_value(self.current_profile(home, owner)?)?;
                 if let Some(domain) = crate::usernames::domain(home) {
@@ -243,8 +274,14 @@ impl Store {
                 valid_peer(&peer, owner)?;
                 ensure!(!self.unavailable(owner, &peer)?, "contact unavailable");
                 let tx = self.db.transaction()?;
-                ensure!(!tx.query_row("SELECT EXISTS(SELECT 1 FROM dm_devices WHERE owner=? AND device<>?)",
-                    [owner,device],|r|r.get::<_,bool>(0))?, "open this account’s messaging installation");
+                ensure!(
+                    !tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM dm_devices WHERE owner=? AND device<>?)",
+                        [owner, device],
+                        |r| r.get::<_, bool>(0)
+                    )?,
+                    "open this account’s messaging installation"
+                );
                 crate::privacy::approve(&tx, owner, &peer)?;
                 tx.commit()?;
                 json!({})
@@ -424,12 +461,6 @@ impl Store {
                     [&id],
                     |r| r.get::<_, bool>(0),
                 )? {
-                    let count: u32 = tx.query_row(
-                        "SELECT COUNT(*) FROM dm_mail WHERE recipient=? AND packet IS NOT NULL",
-                        [peer],
-                        |r| r.get(0),
-                    )?;
-                    ensure!(count < 512, "mailbox full; retry later");
                     let count: u32 = tx.query_row(
                         "SELECT COUNT(*) FROM dm_mail WHERE sender=? AND created>=?",
                         params![owner, now() - 3600],

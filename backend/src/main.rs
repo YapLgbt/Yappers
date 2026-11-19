@@ -6,6 +6,7 @@
 //! See docs/netkit/operations.md for trust configuration, backup, and recovery rules.
 
 mod account;
+mod health;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
@@ -398,11 +399,30 @@ async fn group_operation(
     Ok(())
 }
 
+async fn serve_background(server: &Server, period: Duration) {
+    let mut interval = tokio::time::interval(period);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            _ = interval.tick() => {
+                if let Err(error) = server.dispatch_notifications().await {
+                    eprintln!("push dispatch: {error:#}");
+                }
+                if let Err(error) = server.sync_once().await {
+                    eprintln!("federation sync: {error:#}");
+                }
+            }
+        }
+    }
+}
+
 async fn serve_one(path: PathBuf, public_manifest: Option<PathBuf>) -> Result<()> {
     let config: ServerConfig = serde_json::from_slice(&fs::read(&path)?)?;
     let mode = config.network_mode;
     let communities: Vec<_> = config.communities.keys().cloned().collect();
     let server = Server::start(config).await?;
+    health::listen(&server).await?;
     private_json(
         &path.with_file_name("address.json"),
         &server.public_address(),
@@ -426,14 +446,7 @@ async fn serve_one(path: PathBuf, public_manifest: Option<PathBuf>) -> Result<()
         let join = server.join(&scope, mode)?;
         private_json(&manifest, &serde_json::json!({"version": 1, "join": join}))?;
     }
-    let mut interval = tokio::time::interval(Duration::from_secs(2));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => break,
-            _ = interval.tick() => { if let Err(error)=server.dispatch_notifications().await {eprintln!("push dispatch: {error}");} if let Err(error) = server.sync_once().await { eprintln!("federation sync: {error:#}"); } }
-        }
-    }
+    serve_background(&server, Duration::from_secs(2)).await;
     server.close().await;
     Ok(())
 }
@@ -635,7 +648,7 @@ async fn main() -> Result<()> {
                 !unhide,
             )?;
         }
-        Commands::Backup { database, output } => Store::open(&database)?.backup(&output)?,
+        Commands::Backup { database, output } => Store::backup_existing(&database, &output)?,
         Commands::Restore {
             guard,
             input,
@@ -692,18 +705,12 @@ async fn main() -> Result<()> {
             };
             let settings = serde_json::from_slice(&fs::read(&config)?)?;
             let server = Server::start_ha(settings, HaOptions { grant, role }).await?;
+            health::listen(&server).await?;
             private_json(
                 &config.with_file_name("ha-address.json"),
                 &server.public_address(),
             )?;
-            let mut interval = tokio::time::interval(Duration::from_secs(15));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                tokio::select! {
-                    _=tokio::signal::ctrl_c()=>break,
-                    _=interval.tick()=>{if let Err(error)=server.dispatch_notifications().await {eprintln!("push dispatch: {error}");} if let Err(error)=server.sync_once().await {eprintln!("HA federation sync: {error}");}}
-                }
-            }
+            serve_background(&server, Duration::from_secs(15)).await;
             server.close().await;
         }
         Commands::Account { command } => account::execute(command).await?,

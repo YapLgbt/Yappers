@@ -9,39 +9,15 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS peer_deliveries(peer
     CREATE TABLE IF NOT EXISTS deletions(
     target TEXT NOT NULL, owner TEXT NOT NULL, community TEXT NOT NULL, private INTEGER NOT NULL,
     proof TEXT NOT NULL, PRIMARY KEY(target, owner, community, private));
+    CREATE INDEX IF NOT EXISTS owned_event_page ON events(COALESCE(json_extract(envelope,'$.event.payload.account.payload.account'),author),id);
+    CREATE INDEX IF NOT EXISTS recent_owner_events ON events(community,COALESCE(json_extract(envelope,'$.event.payload.account.payload.account'),author),json_extract(envelope,'$.acceptedAt'));
+    CREATE INDEX IF NOT EXISTS erased_by_community ON events(community,id) WHERE json_extract(envelope,'$.deletion') IS NOT NULL;
     CREATE INDEX IF NOT EXISTS live_events ON events(id)
       WHERE json_extract(envelope,'$.event.payload.action.kind') IN ('post','postV2','reply');
     CREATE INDEX IF NOT EXISTS live_personal_events ON personal_events(event_id)
       WHERE json_extract(envelope,'$.event.payload.action.kind') IN ('post','postV2','reply');";
 
 impl Store {
-    /// Each open post or reply reserves one slot for the delete that will close it.
-    /// Reconciliation has already released that slot when inserting an authorized delete.
-    pub(crate) fn check_event_capacity(
-        db: &Connection,
-        entry: &Envelope,
-        private: bool,
-    ) -> Result<()> {
-        let (table, limit) = if private {
-            (
-                "personal_events",
-                crate::portability::MAX_ARCHIVE_EVENTS as i64,
-            )
-        } else {
-            ("events", crate::store::MAX_EVENTS)
-        };
-        let used: i64 = db.query_row(&format!("SELECT (SELECT count(*) FROM {table}) +
-            (SELECT count(*) FROM {table} WHERE json_extract(envelope,'$.event.payload.action.kind') IN ('post','postV2','reply'))"), [], |r| r.get(0))?;
-        let live = matches!(
-            entry.event.payload.action,
-            Action::Post { .. } | Action::PostV2 { .. } | Action::Reply { .. }
-        );
-        ensure!(
-            used + 1 + i64::from(live) <= limit,
-            "event capacity reached"
-        );
-        Ok(())
-    }
     pub(crate) fn acceptance(&self, envelope: Envelope) -> Result<Response> {
         let erased = if let Action::Delete { target } = &envelope.event.payload.action {
             let target = self
@@ -59,9 +35,15 @@ impl Store {
     }
 
     pub(crate) fn erased_ids(&self, community: &str) -> Result<Vec<String>> {
-        let mut stmt=self.db.prepare("SELECT id FROM events WHERE community=? AND json_extract(envelope,'$.deletion') IS NOT NULL ORDER BY id")?;
+        self.erased_after(community, "")
+    }
+
+    pub(crate) fn erased_after(&self, community: &str, after: &str) -> Result<Vec<String>> {
+        let mut stmt = self.db.prepare("SELECT id FROM events WHERE community=? AND id>? AND json_extract(envelope,'$.deletion') IS NOT NULL ORDER BY id LIMIT ?")?;
         Ok(stmt
-            .query_map([community], |r| r.get(0))?
+            .query_map(params![community, after, crate::DELETION_PAGE + 1], |row| {
+                row.get(0)
+            })?
             .collect::<rusqlite::Result<_>>()?)
     }
     pub(crate) fn apply_deletion(db: &Connection, proof: &Envelope, private: bool) -> Result<()> {

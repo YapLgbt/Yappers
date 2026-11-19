@@ -5,7 +5,7 @@
 //! A failed/timed-out submit may already be accepted remotely: retry that exact event.
 
 use crate::{model::*, transport};
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use ed25519_dalek::SigningKey;
 use iroh::Endpoint;
 use serde::{Deserialize, Serialize};
@@ -373,17 +373,36 @@ impl Client {
         Ok(response)
     }
     pub async fn groups(&self) -> Result<Response> {
-        let response = self
-            .home_rpc(&Request::Groups {
-                token: self.join.access_token.clone(),
-                community: self.join.community.clone(),
-            })
-            .await?;
-        ensure!(
-            matches!(response, Response::Groups { .. }),
-            "invalid groups response"
-        );
-        Ok(response)
+        let token = &self.join.access_token;
+        let community = &self.join.community;
+        let mut call = Request::Groups {
+            token: token.clone(),
+            community: community.clone(),
+        };
+        let mut groups = Vec::new();
+        loop {
+            match self.home_rpc(&call).await? {
+                Response::Groups { groups: last } => {
+                    groups.extend(last);
+                    return Ok(Response::Groups { groups });
+                }
+                Response::GroupPage { groups: page } => {
+                    let next = page.last().context("empty group page")?.id.clone();
+                    ensure!(
+                        groups.last().is_none_or(|g| g.id < next)
+                            && page.windows(2).all(|w| w[0].id < w[1].id),
+                        "invalid group cursor"
+                    );
+                    groups.extend(page);
+                    call = Request::GroupsAfter {
+                        token: token.clone(),
+                        community: community.clone(),
+                        after: next,
+                    };
+                }
+                _ => anyhow::bail!("invalid groups response"),
+            }
+        }
     }
     pub async fn create_group(&self, details: crate::groups::NewGroup) -> Result<Response> {
         details.validate()?;
@@ -470,7 +489,13 @@ impl Client {
                             | ClaimUsername { .. }
                             | SetProfile { .. }
                             | Profiles { .. }
-                            | SetPush { .. } | OpenPush { .. } | NotificationThread { .. } | NotificationInbox | ReadNotification { .. } | MuteNotifications { .. } | DismissRequest { .. }
+                            | SetPush { .. }
+                            | OpenPush { .. }
+                            | NotificationThread { .. }
+                            | NotificationInbox
+                            | ReadNotification { .. }
+                            | MuteNotifications { .. }
+                            | DismissRequest { .. }
                             | PrivacyStatus
                             | SetPrivacy { .. }
                             | Approve { .. }
@@ -610,6 +635,7 @@ impl Client {
         wallet: &crate::portability::AccountWallet,
     ) -> Result<Vec<Envelope>> {
         let mut events = Vec::new();
+        let mut archive_bytes = 0usize;
         let mut after = None;
         loop {
             let digest = crate::portability::digest(&(&self.join.community, &after))?;
@@ -651,11 +677,13 @@ impl Client {
                 next == page.last().map(|e| e.event.id.clone()),
                 "owned history cursor mismatch"
             );
-            events.extend(page);
+            archive_bytes += serde_json::to_vec(&page)?.len().saturating_sub(2);
             ensure!(
-                events.len() <= crate::portability::MAX_ARCHIVE_EVENTS,
-                "owned history exceeds export capacity"
+                archive_bytes <= crate::portability::MAX_ARCHIVE_BYTES,
+                "owned history exceeds recovery file size"
             );
+            events.extend(page);
+
             if !more {
                 break;
             }

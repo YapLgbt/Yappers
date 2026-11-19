@@ -10,8 +10,6 @@ use anyhow::{Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeSet;
 
-/// Deliberate prototype bound; reaching it fails writes rather than pruning signed history.
-pub const MAX_EVENTS: i64 = 10_000;
 /// SQLite store with secure deletion and atomic rollback journals. Callers serialize access.
 pub struct Store {
     pub(crate) db: Connection,
@@ -107,7 +105,6 @@ impl Store {
             );
             return Ok(());
         }
-        Self::check_event_capacity(db, envelope, false)?;
         db.execute(
             "INSERT INTO events(id,community,author,author_seq,envelope) VALUES(?1,?2,?3,?4,?5)",
             params![
@@ -226,7 +223,8 @@ impl Store {
         }
         tx.execute(
             "INSERT INTO peers(id,generation,cursor,scope) VALUES(?1,?2,?3,?4)
-             ON CONFLICT(id) DO UPDATE SET generation=excluded.generation,cursor=excluded.cursor,scope=excluded.scope",
+             ON CONFLICT(id) DO UPDATE SET generation=excluded.generation,cursor=excluded.cursor,scope=excluded.scope
+             WHERE peers.generation<>excluded.generation OR peers.cursor<>excluded.cursor OR peers.scope<>excluded.scope",
             params![peer, generation, next as i64, scope],
         )?;
         tx.commit()?;

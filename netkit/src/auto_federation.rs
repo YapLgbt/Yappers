@@ -76,10 +76,15 @@ impl State {
                 )?);
             }
         }
-        store.import_directory(&DirectorySnapshot {
-            hosts: announcements,
-            ..Default::default()
-        })?;
+        for hosts in announcements.chunks(MAX_PROVIDERS) {
+            store.merge_directory(
+                &DirectorySnapshot {
+                    hosts: hosts.to_vec(),
+                    ..Default::default()
+                },
+                Some(&own),
+            )?;
+        }
         let mut snapshot = store.directory()?;
         snapshot
             .permits
@@ -90,6 +95,53 @@ impl State {
                 .blocked_hosts
                 .contains(&h.payload.address.id.to_string())
         });
+        Ok(snapshot)
+    }
+    pub(super) fn group_page(&self, community: &str, token: &str, after: &str) -> Result<Response> {
+        self.member(community, token)?;
+        self.local_directory()?;
+        let mut bytes = 0;
+        let mut groups = Vec::new();
+        for group in self
+            .store()?
+            .group_summaries()?
+            .into_iter()
+            .filter(|g| g.id.as_str() > after)
+        {
+            bytes += serde_json::to_vec(&group)?.len() + 1;
+            if bytes > MAX_FRAME - 1024 {
+                return Ok(Response::GroupPage { groups });
+            }
+            groups.push(group);
+        }
+        Ok(Response::Groups { groups })
+    }
+
+    pub(super) fn advertised_directory(&self) -> Result<DirectorySnapshot> {
+        let mut snapshot = self.local_directory()?;
+        if snapshot.groups.len() <= MAX_GROUPS
+            && snapshot.permits.len() <= MAX_PROVIDERS
+            && snapshot.hosts.len() <= MAX_PROVIDERS
+        {
+            return Ok(snapshot);
+        }
+        // Every page includes the descriptors and signed permits needed to verify its hosts.
+        let width = MAX_PROVIDERS / MAX_GROUP_PROVIDERS;
+        let page = self.advertisement_round.fetch_add(1, Ordering::Relaxed)
+            % snapshot.groups.len().div_ceil(width);
+        snapshot.groups = snapshot
+            .groups
+            .into_iter()
+            .skip(page * width)
+            .take(width)
+            .collect();
+        let selected: BTreeSet<_> = snapshot.groups.iter().map(|g| g.id.as_str()).collect();
+        snapshot
+            .permits
+            .retain(|p| selected.contains(p.group.as_str()));
+        snapshot
+            .hosts
+            .retain(|h| selected.contains(h.payload.group.as_str()));
         Ok(snapshot)
     }
     pub(super) fn import_public_directory(&self, snapshot: &DirectorySnapshot) -> Result<()> {
@@ -104,7 +156,8 @@ impl State {
                 .blocked_hosts
                 .contains(&h.payload.address.id.to_string())
         });
-        self.store()?.import_directory(&filtered)
+        self.store()?
+            .merge_directory(&filtered, Some(&self.logical_addr().id.to_string()))
     }
     pub(super) fn automatic_scopes(&self, id: &str) -> Result<BTreeSet<String>> {
         let mut scopes = BTreeSet::new();
@@ -148,10 +201,13 @@ impl State {
             return Ok(permit);
         }
         let permit = HostPermit::create(&self.key, &group, id.into())?;
-        store.import_directory(&DirectorySnapshot {
-            permits: vec![permit.clone()],
-            ..Default::default()
-        })?;
+        store.merge_directory(
+            &DirectorySnapshot {
+                permits: vec![permit.clone()],
+                ..Default::default()
+            },
+            Some(&self.logical_addr().id.to_string()),
+        )?;
         Ok(permit)
     }
     pub(super) fn create_group(&self, details: NewGroup) -> Result<SignedGroup> {
@@ -177,17 +233,16 @@ impl State {
             store.host_group(&group.id)?;
             return Ok(group);
         }
-        ensure!(
-            store.hosted_groups()?.len() < 24,
-            "home group capacity reached"
-        );
         let group = SignedGroup::create(&self.key, details)?;
         let permit = HostPermit::create(&self.key, &group, self.logical_addr().id.to_string())?;
-        store.import_directory(&DirectorySnapshot {
-            groups: vec![group.clone()],
-            permits: vec![permit],
-            hosts: vec![],
-        })?;
+        store.merge_directory(
+            &DirectorySnapshot {
+                groups: vec![group.clone()],
+                permits: vec![permit],
+                hosts: vec![],
+            },
+            Some(&self.logical_addr().id.to_string()),
+        )?;
         store.host_group(&group.id)?;
         Ok(group)
     }
@@ -234,10 +289,13 @@ impl State {
                 "enrollment identity mismatch"
             );
             permit.validate(&descriptor)?;
-            self.store()?.import_directory(&DirectorySnapshot {
-                permits: vec![permit],
-                ..Default::default()
-            })?;
+            self.store()?.merge_directory(
+                &DirectorySnapshot {
+                    permits: vec![permit],
+                    ..Default::default()
+                },
+                Some(&self.logical_addr().id.to_string()),
+            )?;
         }
         self.store()?.host_group(group)?;
         Ok(())
@@ -332,7 +390,7 @@ impl Server {
                 &self.endpoint,
                 destination.clone(),
                 &Request::Directory {
-                    snapshot: self.state.local_directory()?,
+                    snapshot: self.state.advertised_directory()?,
                 },
             )
             .await;

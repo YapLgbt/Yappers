@@ -39,11 +39,8 @@ impl State {
                     .map(|e| crate::privacy::visibility(e, &ages));
             }
         }
-        let deleted = store.erased_ids(community)?;
-        let overhead = serde_json::to_vec(&deleted)?.len() + 1024;
-        while serde_json::to_vec(&posts)?.len() + overhead > MAX_FRAME {
-            posts.pop();
-        }
+        let mut deleted = store.erased_ids(community)?;
+        let more = fit_feed_page(&mut posts, &mut deleted, 0)?;
         if known == Some(fingerprint(&posts, events.len())?.as_str()) {
             return Ok(Response::ProjectionUnchanged);
         }
@@ -61,10 +58,11 @@ impl State {
             posts,
             event_count: events.len(),
             as_of: now(),
-        })
+        }
+        .with_deletion_pages(more))
     }
 
-    pub(super) fn replica_feed(&self, community: &str) -> Result<Response> {
+    pub(super) fn authorize_replica(&self, community: &str) -> Result<()> {
         ensure!(
             self.public_replica_feeds.contains(community),
             "public replica unavailable"
@@ -76,6 +74,11 @@ impl State {
             self.peer(owner)?.communities.contains(community),
             "public replica unavailable"
         );
+        Ok(())
+    }
+
+    pub(super) fn replica_feed(&self, community: &str) -> Result<Response> {
+        self.authorize_replica(community)?;
         let store = self.store()?;
         let (raw, count, verified): (String, usize, i64) = store
             .db
@@ -92,12 +95,15 @@ impl State {
         for p in &mut posts {
             p.replies.retain(|r| !hidden.contains(&r.id));
         }
+        let mut deleted = store.erased_ids(community)?;
+        let more = fit_feed_page(&mut posts, &mut deleted, 0)?;
         Ok(Response::PublicReplicaFeed {
-            deleted: store.erased_ids(community)?,
+            deleted,
             posts,
             event_count: count,
             as_of: verified,
-        })
+        }
+        .with_deletion_pages(more))
     }
 }
 

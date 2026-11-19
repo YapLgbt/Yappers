@@ -38,13 +38,14 @@ serve_standby() {
         export YAP_WEB_PUSH_PRIVATE_FILE="$state/push/private"
         export YAP_PUSH_WORKER=/opt/yap-push/send.cjs
     fi
+    export YAP_WORKER_HEALTH_ADDR=0.0.0.0:8082
     exec yappers-server ha-run --config "$state/ha/home.json" --grant "$state/ha/grant.json" \
         --standby-config "$state/ha/transport/config.json" --ledger "$state/ha/ledger.sqlite"
 }
 
 caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
 web_pid=$!
-supervise yappers-server run --config "$state/federation.json" &
+YAP_WORKER_HEALTH_ADDR=0.0.0.0:8081 supervise yappers-server run --config "$state/federation.json" &
 peer_pid=$!
 supervise serve_standby &
 ha_pid=$!

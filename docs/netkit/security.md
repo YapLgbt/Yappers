@@ -21,7 +21,7 @@ These layers have different purposes. A member token does not grant peer replica
 | Invalid page skips future events | Validate complete page; imports + cursor in one transaction |
 | Restart / offline restore reuses low log cursors | Fresh serving generation and idempotent full rescan |
 | Oversized / stalled stream | 1 MiB cap, 20-second request deadline, 64 connection slots |
-| Unbounded prototype growth | 10,000 event cap, bounded pages/cycles, author rate limit |
+| Storage and traffic growth | Bounded wire frames and sync pages, author rate limit, HA image headroom check |
 | UI-thread networking or FFI allocation leak | Worker-dispatched ABI, copied/freed owned results |
 | Credential leakage through local preferences | Keychain for identity/capabilities; protected atomic state file |
 | Silent loss of unreadable outbox | Fail closed; no automatic cache replacement |

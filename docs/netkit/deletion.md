@@ -18,7 +18,7 @@ The file next to a standalone database or HA ledger with suffix `.deletion-guard
 
 The checked-in Fly mount configuration disables scheduled raw volume snapshots. Verify the setting on the provisioned volume at cutover and account for the expiry of any existing snapshots. [Fly volume snapshot settings](https://fly.io/docs/reference/configuration/#scheduled_snapshots).
 
-- For a standalone home, run `yappers-server backup --database HOME_DB --output NEW_BACKUP`.
+- For a standalone home, run `yappers-server backup --database HOME_DB --output NEW_BACKUP`. The command requires an existing initialized home and its matching guard. A missing source fails before archive creation.
 - For the HA pair, run `yappers-server ha-export --ledger LEDGER --grant GRANT_JSON --output NEW_BACKUP`.
 - With the original authority stopped before cutover, run `yappers-server restore --guard CURRENT_GUARD --input BACKUP --output NEW_HOME_DB`. The output must be a new path. Keep the original guard location accessible. The restored home references that same guard and shares its service lock. Retire the old data volume after verifying the restored home. Its raw files can contain content erased after the cutover. For HA, seed a new authority from the restored standalone database and make a fresh protected backup after the transfer. Successful bootstrap retires the source database and its backup keys.
 

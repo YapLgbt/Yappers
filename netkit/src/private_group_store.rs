@@ -17,9 +17,6 @@ CREATE TABLE IF NOT EXISTS private_group_events(cursor INTEGER PRIMARY KEY AUTOI
 CREATE INDEX IF NOT EXISTS private_group_event_page ON private_group_events(group_id, cursor);
 ";
 
-const GROUPS_PER_DEVICE: u32 = 16;
-const GROUPS_PER_HOME: u32 = 128;
-const EVENTS_PER_GROUP: u32 = 2000;
 const PAGE_SIZE: usize = 24;
 
 impl Store {
@@ -69,18 +66,6 @@ impl Store {
                 {
                     return Ok(Outcome::Saved);
                 }
-                let total: u32 =
-                    self.db
-                        .query_row("SELECT count(*) FROM private_groups", [], |row| row.get(0))?;
-                let owned: u32 = self.db.query_row(
-                    "SELECT count(*) FROM private_groups WHERE owner=?",
-                    [device],
-                    |row| row.get(0),
-                )?;
-                ensure!(
-                    owned < GROUPS_PER_DEVICE && total < GROUPS_PER_HOME,
-                    "private group capacity reached"
-                );
                 let tx = self.db.transaction()?;
                 tx.execute(
                     "INSERT INTO private_groups VALUES(?,?,?)",
@@ -93,27 +78,9 @@ impl Store {
                 tx.commit()?;
                 Ok(Outcome::Saved)
             }
-            Operation::Roster { group } => {
-                let current = self.private_roster(&group)?;
-                if !current
-                    .value
-                    .members
-                    .get(device)
-                    .is_some_and(|m| m.device.account == account)
-                {
-                    return Ok(Outcome::Roster {
-                        history: Vec::new(),
-                    });
-                }
-                let mut query = self.db.prepare(
-                    "SELECT roster FROM private_group_rosters WHERE group_id=? ORDER BY revision",
-                )?;
-                let rows = query.query_map([group], |row| row.get::<_, String>(0))?;
-                let mut history = Vec::new();
-                for row in rows {
-                    history.push(serde_json::from_str(&row?)?);
-                }
-                Ok(Outcome::Roster { history })
+            Operation::Roster { group } => self.roster_page(&group, account, device, 0),
+            Operation::RosterAfter { group, after } => {
+                self.roster_page(&group, account, device, after)
             }
             Operation::Change { roster, request } => {
                 let group = &roster.value.group;
@@ -126,6 +93,10 @@ impl Store {
                     return Ok(Outcome::Saved);
                 }
                 roster.check(group, device, Some(&prior))?;
+                ensure!(
+                    serde_json::to_vec(&roster)?.len() + 1025 <= crate::MAX_FRAME,
+                    "roster exceeds transport frame"
+                );
                 let added = roster
                     .value
                     .members
@@ -173,6 +144,31 @@ impl Store {
         }
     }
 
+    fn roster_page(&self, group: &str, account: &str, device: &str, after: u32) -> Result<Outcome> {
+        let current = self.private_roster(group)?;
+        let mut history = Vec::new();
+        if current
+            .value
+            .members
+            .get(device)
+            .is_some_and(|m| m.device.account == account)
+        {
+            let mut query = self.db.prepare("SELECT roster FROM private_group_rosters WHERE group_id=? AND revision>? ORDER BY revision")?;
+            let mut bytes = 0;
+            let mut rows = query.query(params![group, after])?;
+            while let Some(row) = rows.next()? {
+                let raw: String = row.get(0)?;
+                bytes += raw.len() + 1;
+                if bytes > crate::MAX_FRAME - 1024 {
+                    ensure!(!history.is_empty(), "roster exceeds transport frame");
+                    return Ok(Outcome::RosterPage { history });
+                }
+                history.push(serde_json::from_str(&raw)?);
+            }
+        }
+        Ok(Outcome::Roster { history })
+    }
+
     fn private_publish(
         &mut self,
         account: &str,
@@ -208,10 +204,6 @@ impl Store {
                 roster: original.value.header.roster,
             });
         }
-        ensure!(
-            current.value.revision < MAX_REVISIONS,
-            "private group membership capacity reached; this group is read-only"
-        );
         let message = event.check(&current)?;
         if let Some(parent) = &header.parent {
             let visible: bool = self.db.query_row(
@@ -222,15 +214,6 @@ impl Store {
             )?;
             ensure!(visible, "this post is outside your group history");
         }
-        let count: u32 = self.db.query_row(
-            "SELECT count(*) FROM private_group_events WHERE group_id=?",
-            [&header.group],
-            |row| row.get(0),
-        )?;
-        ensure!(
-            count < EVENTS_PER_GROUP,
-            "private group post capacity reached"
-        );
         let tx = self.db.transaction()?;
         let stored: Option<String> = tx
             .query_row(

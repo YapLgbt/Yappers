@@ -30,6 +30,34 @@ primary_region = "iad"
     method = "GET"
     path = "/.well-known/yap-home.json"
 
+# Machine checks keep the enrollment site available during a worker outage.
+[checks.replica_freshness]
+  type = "http"
+  port = 8081
+  method = "GET"
+  path = "/ready"
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "45s"
+
+[checks.standby_ledger]
+  type = "http"
+  port = 8082
+  method = "GET"
+  path = "/ready"
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "45s"
+
+[checks.standby_capacity]
+  type = "http"
+  port = 8082
+  method = "GET"
+  path = "/capacity"
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "45s"
+
 [[vm]]
   size = "shared-cpu-1x"
   memory = "512mb"

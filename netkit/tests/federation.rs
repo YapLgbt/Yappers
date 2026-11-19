@@ -540,3 +540,135 @@ async fn remote_log_generation_prevents_skipping_overlapping_cursors_after_resto
     restored.close().await;
     b.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn healthy_peer_commits_posts_and_deletions_with_an_offline_peer_in_ha() -> anyhow::Result<()>
+{
+    use iroh::{EndpointAddr, SecretKey};
+    use yappers_netkit::{
+        server::{HaOptions, HaRole},
+        takeover::FullHomeStandby,
+    };
+    let dir = tempfile::tempdir()?;
+    let scope = "federated";
+    let source = Server::start(config(&dir.path().join("source"), new_secret(), scope)).await?;
+    let home_secret = new_secret();
+    let signing = signing_key(&home_secret)?;
+    let primary_id = SecretKey::from_bytes(&signing.to_bytes()).public();
+    let standby_key = SecretKey::generate();
+    let mut grant = FullHomeStandby::issue(&signing, EndpointAddr::new(standby_key.public()))?;
+    let peer = |address| PeerConfig {
+        address,
+        communities: BTreeSet::from([scope.to_owned()]),
+    };
+    let mut primary_cfg = config(&dir.path().join("primary"), home_secret, scope);
+    primary_cfg.peers = vec![
+        peer(EndpointAddr::new(SecretKey::generate().public())),
+        peer(source.public_address()),
+    ];
+    source.set_peers(vec![peer(EndpointAddr::new(primary_id))])?;
+    let mut standby_cfg = primary_cfg.clone();
+    standby_cfg.database_path = dir.path().join("staging");
+    let standby = Server::start_ha(
+        standby_cfg,
+        HaOptions {
+            grant: grant.clone(),
+            role: HaRole::Standby {
+                transport_key: hex::encode(standby_key.to_bytes()),
+                ledger: dir.path().join("ledger"),
+            },
+        },
+    )
+    .await?;
+    let health = standby.health_probe();
+    assert!(health().is_err());
+    grant.standby = standby.public_address();
+    Store::open(&primary_cfg.database_path)?;
+    Server::bootstrap_ha(primary_cfg.clone(), grant.clone()).await?;
+    assert!(health()?.ready && health()?.has_headroom());
+    let primary = Server::start_ha(
+        primary_cfg,
+        HaOptions {
+            grant,
+            role: HaRole::Primary,
+        },
+    )
+    .await?;
+    let secret = new_secret();
+    let sender = client(&source, scope, secret.clone(), 1).await;
+    let event = sender
+        .prepare(post("A healthy peer still replicates"))?
+        .event;
+    sender.submit(event.clone()).await?;
+    let reader = client(&standby, scope, new_secret(), 1).await;
+    assert!(primary.sync_once().await.is_err());
+    assert_eq!(posts(&reader).await[0].id, event.id);
+    let sender = client(&source, scope, secret, 2).await;
+    sender
+        .submit(
+            sender
+                .prepare(Action::Delete {
+                    target: event.id.clone(),
+                })?
+                .event,
+        )
+        .await?;
+    assert!(primary.sync_once().await.is_err());
+    let Response::Feed { posts, deleted, .. } = reader.feed().await? else {
+        panic!("expected committed feed")
+    };
+    assert!(posts.is_empty() && deleted.contains(&event.id));
+    reader.close().await;
+    primary.close().await;
+    standby.close().await;
+    source.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn replica_pages_deleted_ids_and_reports_freshness() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let origin = iroh::SecretKey::generate().public();
+    let scope = format!("{origin}/public");
+    let path = dir.path().join("replica");
+    let mut cfg = config(&path, new_secret(), &scope);
+    cfg.peers.push(PeerConfig {
+        address: iroh::EndpointAddr::new(origin),
+        communities: BTreeSet::from([scope.clone()]),
+    });
+    cfg.public_replica_feeds.insert(scope.clone());
+    let replica = Server::start(cfg).await?;
+    let probe = replica.health_probe();
+    assert!(probe().is_err());
+    let db = rusqlite::Connection::open(&path)?;
+    db.execute(
+        "INSERT INTO public_projections VALUES(?,'fixture','[]',0,?)",
+        rusqlite::params![scope, now()],
+    )?;
+    assert!(probe()?.ready);
+    db.execute("UPDATE public_projections SET verified=?", [now() - 300])?;
+    assert!(!probe()?.ready);
+    db.execute(
+        "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<16000)
+        INSERT INTO events(id,community,author,author_seq,envelope)
+        SELECT printf('%064x',i),?,'fixture',i,'{\"deletion\":true}' FROM n",
+        [&scope],
+    )?;
+    let client = client(&replica, &scope, new_secret(), 1).await;
+    let response = transport::rpc(
+        &client.endpoint,
+        replica.public_address(),
+        &Request::PublicReplicaFeed { community: scope },
+    )
+    .await?;
+    let Response::PublicReplicaFeed { deleted, .. } = response else {
+        panic!("expected replica feed")
+    };
+    assert_eq!(deleted.len(), 16000);
+    assert!(deleted.windows(2).all(|ids| ids[0] < ids[1]));
+    assert_eq!(deleted.last(), Some(&format!("{:064x}", 16000)));
+    client.close().await;
+    replica.close().await;
+    assert!(probe().is_err());
+    Ok(())
+}

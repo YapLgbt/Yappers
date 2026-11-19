@@ -85,6 +85,64 @@ pub async fn rpc(
     address: EndpointAddr,
     request: &Request,
 ) -> Result<Response> {
+    let response = rpc_once(endpoint, address.clone(), request).await?;
+    let Response::FeedWithMoreDeletions { mut feed } = response else {
+        return Ok(response);
+    };
+    let call = match request {
+        Request::HomeOperation { call, .. } => call.as_ref(),
+        other => other,
+    };
+    let (community, token) = match call {
+        Request::Feed {
+            community, token, ..
+        }
+        | Request::Social {
+            community, token, ..
+        } => (community, Some(token.clone())),
+        Request::PublicReplicaFeed { community }
+        | Request::PullPublicProjection { community, .. } => (community, None),
+        _ => anyhow::bail!("unexpected paged feed"),
+    };
+    let (Response::Feed { deleted, .. } | Response::PublicReplicaFeed { deleted, .. }) =
+        feed.as_mut()
+    else {
+        anyhow::bail!("invalid paged feed")
+    };
+    loop {
+        let cursor = deleted.last().context("missing deletion cursor")?.clone();
+        let query = Request::DeletionsAfter {
+            community: community.clone(),
+            token: token.clone(),
+            after: cursor.clone(),
+        };
+        let Response::DeletionPage { ids, more } =
+            rpc_once(endpoint, address.clone(), &query).await?
+        else {
+            anyhow::bail!("invalid deletion response");
+        };
+        ensure!(
+            ids.len() <= crate::DELETION_PAGE
+                && (!more || !ids.is_empty())
+                && ids.first().is_none_or(|id| id > &cursor)
+                && ids.windows(2).all(|p| p[0] < p[1])
+                && ids
+                    .iter()
+                    .all(|id| id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit())),
+            "invalid deletion page"
+        );
+        deleted.extend(ids);
+        if !more {
+            return Ok(*feed);
+        }
+    }
+}
+
+async fn rpc_once(
+    endpoint: &Endpoint,
+    address: EndpointAddr,
+    request: &Request,
+) -> Result<Response> {
     #[cfg(target_arch = "wasm32")]
     let address = {
         let mut target = EndpointAddr::new(address.id);

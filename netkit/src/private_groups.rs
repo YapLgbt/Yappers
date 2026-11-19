@@ -10,8 +10,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, megolm::MegolmMessage, olm::OlmMessage};
 
-pub(crate) const MAX_MEMBERS: usize = 16;
-pub(crate) const MAX_REVISIONS: u32 = 100;
 pub(crate) const MAX_CIPHERTEXT: usize = 24_000;
 pub(crate) const SESSION_MESSAGES: u32 = 100;
 pub(crate) const SESSION_SECONDS: i64 = 7 * 24 * 60 * 60;
@@ -154,8 +152,8 @@ impl Signed<Roster> {
         let roster = &self.value;
         ensure!(
             roster.group == group
-                && (1..=MAX_REVISIONS).contains(&roster.revision)
-                && (1..=MAX_MEMBERS).contains(&roster.members.len())
+                && roster.revision > 0
+                && !roster.members.is_empty()
                 && roster.members.contains_key(owner),
             "invalid group roster"
         );
@@ -174,7 +172,7 @@ impl Signed<Roster> {
             return Ok(());
         };
         ensure!(
-            roster.revision == prior.value.revision + 1
+            Some(roster.revision) == prior.value.revision.checked_add(1)
                 && roster.previous.as_ref() == Some(&digest(prior)?),
             "private group roster changed"
         );
@@ -336,6 +334,10 @@ pub enum Operation {
     Roster {
         group: String,
     },
+    RosterAfter {
+        group: String,
+        after: u32,
+    },
     Change {
         roster: Signed<Roster>,
         request: Option<Signed<JoinRequest>>,
@@ -356,6 +358,9 @@ pub enum Operation {
 pub enum Outcome {
     Saved,
     Roster {
+        history: Vec<Signed<Roster>>,
+    },
+    RosterPage {
         history: Vec<Signed<Roster>>,
     },
     Accepted {
@@ -401,5 +406,49 @@ impl Draft {
             (None, Some(parent)) => hash_id(parent),
             _ => anyhow::bail!("invalid private group post or reply"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roster_accepts_member_seventeen_and_revision_101() -> Result<()> {
+        let owner_key = SigningKey::from_bytes(&[1; 32]);
+        let owner = hex::encode(owner_key.verifying_key().as_bytes());
+        let group = "ab".repeat(32);
+        let member = |id: u8, since| {
+            let key = SigningKey::from_bytes(&[id; 32]);
+            let signing = hex::encode(key.verifying_key().as_bytes());
+            let device = Device {
+                account: signing.clone(),
+                signing: signing.clone(),
+                identity: Curve25519PublicKey::from_bytes([id; 32]),
+                fallback: Curve25519PublicKey::from_bytes([id + 17; 32]),
+            };
+            (signing, Member { device, since })
+        };
+        let prior = Signed::new(
+            Roster {
+                group: group.clone(),
+                revision: 100,
+                previous: Some("cd".repeat(32)),
+                members: (1..=16).map(|i| member(i, u32::from(i))).collect(),
+            },
+            &owner_key,
+        )?;
+        let mut update = prior.value.clone();
+        update.revision = 101;
+        update.previous = Some(digest(&prior)?);
+        update.members.extend([member(17, 101)]);
+        Signed::new(update.clone(), &owner_key)?.check(&group, &owner, Some(&prior))?;
+        update.previous = None;
+        assert!(
+            Signed::new(update, &owner_key)?
+                .check(&group, &owner, Some(&prior))
+                .is_err()
+        );
+        Ok(())
     }
 }

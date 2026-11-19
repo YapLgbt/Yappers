@@ -77,29 +77,78 @@ impl Payload for Letter {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum SocialOp {
-    PrivacyFeed { nearby: Option<crate::Nearby> },
+    PrivacyFeed {
+        nearby: Option<crate::Nearby>,
+    },
     PrivacyStatus,
     NotificationInbox,
-    SetPush { provider:String, subscription:serde_json::Value, categories:Vec<String> },
-    OpenPush { route:String },
-    NotificationThread { target: String, anchor: String },
-    ReadNotification { #[serde(rename = "category")] category: String, target: String, through: i64 },
-    MuteNotifications { target: String, muted: bool },
-    DismissRequest { peer: String },
-    SetProfile { expected: u64, name: String, profile: crate::CommunityProfile },
-    Profiles { events: Vec<String> },
-    ClaimUsername { name: String },
-    SetPrivacy { settings: PrivacySettings },
-    Approve { peer: String },
-    Feed { nearby: Option<crate::Nearby> },
-    Contact { event: String },
-    Block { target: Target },
-    Unblock { id: String },
+    SetPush {
+        provider: String,
+        subscription: serde_json::Value,
+        categories: Vec<String>,
+    },
+    OpenPush {
+        route: String,
+    },
+    NotificationThread {
+        target: String,
+        anchor: String,
+    },
+    ReadNotification {
+        #[serde(rename = "category")]
+        category: String,
+        target: String,
+        through: i64,
+    },
+    MuteNotifications {
+        target: String,
+        muted: bool,
+    },
+    DismissRequest {
+        peer: String,
+    },
+    SetProfile {
+        expected: u64,
+        name: String,
+        profile: crate::CommunityProfile,
+    },
+    Profiles {
+        events: Vec<String>,
+    },
+    ClaimUsername {
+        name: String,
+    },
+    SetPrivacy {
+        settings: PrivacySettings,
+    },
+    Approve {
+        peer: String,
+    },
+    Feed {
+        nearby: Option<crate::Nearby>,
+    },
+    Contact {
+        event: String,
+    },
+    Block {
+        target: Target,
+    },
+    Unblock {
+        id: String,
+    },
     Blocks,
-    Publish { keys: Vec<Signed<Prekey>> },
-    Claim { peer: String },
-    Deliver { letter: Box<Signed<Letter>> },
-    Inbox { after: i64 },
+    Publish {
+        keys: Vec<Signed<Prekey>>,
+    },
+    Claim {
+        peer: String,
+    },
+    Deliver {
+        letter: Box<Signed<Letter>>,
+    },
+    Inbox {
+        after: i64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

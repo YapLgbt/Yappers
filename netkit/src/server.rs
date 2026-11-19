@@ -68,6 +68,47 @@ mod replica;
 use crate::peering::{Access, Policy};
 pub use ha::{HaOptions, HaRole, export_ha, moderate_ha};
 
+/// Reserve space for the response fields and send only complete conversations.
+/// Deletion IDs are fixed-width lowercase hex plus JSON quotes and a comma.
+pub(crate) fn fit_feed_page(
+    posts: &mut Vec<RemotePost>,
+    deleted: &mut Vec<String>,
+    chain_bytes: usize,
+) -> Result<bool> {
+    let budget = MAX_FRAME
+        .checked_sub(chain_bytes + 1024)
+        .context("account history exceeds feed frame")?;
+    let count = (budget / 67).min(crate::DELETION_PAGE);
+    ensure!(
+        count > 0 || deleted.is_empty(),
+        "account history leaves no room for deletion cursor"
+    );
+    let more = deleted.len() > count;
+    deleted.truncate(count);
+    let mut remaining = budget - 67 * deleted.len();
+    for (index, post) in posts.iter().enumerate() {
+        let size = serde_json::to_vec(post)?.len() + 1;
+        if size > remaining {
+            posts.truncate(index);
+            break;
+        }
+        remaining -= size;
+    }
+    Ok(more)
+}
+
+impl Response {
+    pub(crate) fn with_deletion_pages(self, more: bool) -> Self {
+        if more {
+            Self::FeedWithMoreDeletions {
+                feed: Box::new(self),
+            }
+        } else {
+            self
+        }
+    }
+}
+
 struct State {
     reports: Option<Mutex<crate::report_inbox::Inbox>>,
     peering: Option<Policy>,
@@ -80,6 +121,7 @@ struct State {
     auto: AutoFederationConfig,
     seeds: RwLock<Vec<EndpointAddr>>,
     discovery_round: AtomicUsize,
+    advertisement_round: AtomicUsize,
     replication_round: AtomicUsize,
     generation: String,
     key: SigningKey,
@@ -412,13 +454,14 @@ impl State {
                     current.payload.devices.contains(&proof.device),
                     "export device revoked"
                 );
-                let all = store.owned_events(&record.payload.account)?;
+                let all = store.owned_after(
+                    &record.payload.account,
+                    after.as_deref().unwrap_or(""),
+                    51,
+                )?;
                 let mut events = Vec::new();
                 let mut more = false;
-                for event in all
-                    .into_iter()
-                    .filter(|e| after.as_ref().is_none_or(|id| e.event.id > *id))
-                {
+                for event in all {
                     events.push(event);
                     if events.len() > 50 || serde_json::to_vec(&events)?.len() > MAX_FRAME / 2 {
                         events.pop();
@@ -481,20 +524,18 @@ impl State {
             Request::Directory { snapshot } => {
                 self.import_public_directory(&snapshot)?;
                 Ok(Response::Directory {
-                    snapshot: self.local_directory()?,
+                    snapshot: self.advertised_directory()?,
                 })
             }
             Request::EnrollHost { group } => Ok(Response::HostPermit {
                 permit: self.enroll(remote, &group)?,
             }),
-            Request::Groups { token, community } => {
-                self.member(&community, &token)?;
-                ensure!(self.auto.enabled, "automatic federation is disabled");
-                self.local_directory()?;
-                Ok(Response::Groups {
-                    groups: self.store()?.group_summaries()?,
-                })
-            }
+            Request::Groups { token, community } => self.group_page(&community, &token, ""),
+            Request::GroupsAfter {
+                token,
+                community,
+                after,
+            } => self.group_page(&community, &token, &after),
             Request::CreateGroup {
                 token,
                 community,
@@ -510,6 +551,31 @@ impl State {
             }
             Request::JoinGroup { .. } => bail!("async group admission required"),
             Request::PublicReplicaFeed { community } => self.replica_feed(&community),
+            Request::DeletionsAfter {
+                community,
+                token,
+                after,
+            } => {
+                ensure!(
+                    after.len() == 64 && after.bytes().all(|c| c.is_ascii_hexdigit()),
+                    "invalid deletion cursor"
+                );
+                if let Some(token) = token {
+                    self.member(&community, &token)?;
+                } else if self.public_replica_feeds.contains(&community) {
+                    self.authorize_replica(&community)?;
+                } else {
+                    ensure!(
+                        community == format!("{}/public", self.logical_addr().id)
+                            && self.peer(remote)?.communities.contains(&community),
+                        "projection unavailable"
+                    );
+                }
+                let mut ids = self.store()?.erased_after(&community, &after)?;
+                let more = ids.len() > crate::DELETION_PAGE;
+                ids.truncate(crate::DELETION_PAGE);
+                Ok(Response::DeletionPage { ids, more })
+            }
             Request::PeerProfiles { community, known } => {
                 ensure!(
                     known.len() <= 100 && self.peer(remote)?.communities.contains(&community),
@@ -593,23 +659,17 @@ impl State {
                 let mut posts =
                     project_nearby(&events, &community, "", &store.hidden()?, nearby.as_ref());
                 store.apply_current_bylines(&mut posts, &events)?;
-                let account_chain = Vec::new();
-                let deleted = store.erased_ids(&community)?;
-                let account_bytes =
-                    serde_json::to_vec(&account_chain)?.len() + serde_json::to_vec(&deleted)?.len();
-                // Thumbnail-bearing feeds must still fit the bounded transport frame.
-                // Retain the newest complete conversations rather than failing the whole RPC.
-                while serde_json::to_vec(&posts)?.len() + account_bytes > MAX_FRAME - 1024 {
-                    posts.pop();
-                }
+                let mut deleted = store.erased_ids(&community)?;
+                let more = fit_feed_page(&mut posts, &mut deleted, 0)?;
                 Ok(Response::Feed {
                     deleted,
                     direct: false,
                     privacy: false,
                     posts,
                     event_count: events.len(),
-                    account_chain,
-                })
+                    account_chain: Vec::new(),
+                }
+                .with_deletion_pages(more))
             }
             Request::Submit {
                 token,
@@ -670,16 +730,15 @@ impl State {
                         "legacy key is now a recovery authority; use an authorized device"
                     );
                 }
-                let events = store.events(&event.payload.community)?;
                 let target = match &event.payload.action {
                     Action::Reply { parent, .. } => Some(parent),
                     Action::Vote { target, .. } | Action::Delete { target } => Some(target),
                     _ => None,
                 };
                 if let Some(target) = target {
-                    let parent = events
-                        .iter()
-                        .find(|e| &e.event.id == target)
+                    let parent = store
+                        .existing(target)?
+                        .filter(|e| e.event.payload.community == event.payload.community)
                         .context("target not available in this community; refresh first")?;
                     if matches!(
                         event.payload.action,
@@ -706,13 +765,9 @@ impl State {
                         );
                     }
                 }
-                let recent = events
-                    .iter()
-                    .filter(|e| {
-                        e.event.owner_id() == event.owner_id()
-                            && e.accepted_at >= now() - RATE_WINDOW_SECS
-                    })
-                    .count();
+                let recent: usize = store.db.query_row("SELECT COUNT(*) FROM events WHERE community=?
+                    AND COALESCE(json_extract(envelope,'$.event.payload.account.payload.account'),author)=?
+                    AND json_extract(envelope,'$.acceptedAt')>=?", rusqlite::params![event.payload.community,event.owner_id(),now()-RATE_WINDOW_SECS], |r|r.get(0))?;
                 ensure!(
                     recent < AUTHOR_EVENTS_PER_MINUTE,
                     "author rate limit; retry later"
@@ -784,7 +839,67 @@ fn retire_seed(path: &std::path::Path, store: Store) -> Result<()> {
     std::fs::remove_file(path)?;
     Ok(())
 }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerHealth {
+    pub ready: bool,
+    pub image_bytes: Option<usize>,
+    pub budget_bytes: Option<usize>,
+    pub oldest_projection_age_seconds: Option<i64>,
+}
+impl WorkerHealth {
+    pub fn has_headroom(&self) -> bool {
+        self.image_bytes
+            .zip(self.budget_bytes)
+            .is_none_or(|(used, budget)| used > 0 && (used as u64) * 5 < (budget as u64) * 4)
+    }
+}
+
 impl Server {
+    /// Read committed authority metadata or all configured projection verification times.
+    pub fn health_probe(
+        &self,
+    ) -> impl Fn() -> Result<WorkerHealth> + Clone + Send + Sync + 'static {
+        let state = Arc::downgrade(&self.state);
+        move || {
+            let state = state.upgrade().context("worker stopped")?;
+            ensure!(!state.endpoint.is_closed(), "transport closed");
+            if let Some(ha) = &state.ha {
+                let (used, budget) = ha.committed_capacity()?;
+                return Ok(WorkerHealth {
+                    ready: used > 0 && used <= budget,
+                    image_bytes: Some(used),
+                    budget_bytes: Some(budget),
+                    oldest_projection_age_seconds: None,
+                });
+            }
+            ensure!(
+                !state.public_replica_feeds.is_empty(),
+                "no configured replica scope"
+            );
+            let store = state.store()?;
+            let mut age = 0;
+            for scope in &state.public_replica_feeds {
+                let verified: i64 = store.db.query_row(
+                    "SELECT verified FROM public_projections WHERE community=?",
+                    [scope],
+                    |row| row.get(0),
+                )?;
+                let elapsed = now()
+                    .checked_sub(verified)
+                    .context("invalid projection timestamp")?;
+                ensure!(elapsed >= 0, "invalid projection timestamp");
+                age = age.max(elapsed);
+            }
+            Ok(WorkerHealth {
+                ready: age <= 120,
+                image_bytes: None,
+                budget_bytes: None,
+                oldest_projection_age_seconds: Some(age),
+            })
+        }
+    }
+
     /// Validate configuration and open storage before creating long-lived accept tasks.
     pub async fn start(config: ServerConfig) -> Result<Self> {
         Self::start_inner(config, None).await
@@ -939,6 +1054,7 @@ impl Server {
             seeds: RwLock::new(config.auto_federation.seeds.clone()),
             auto: config.auto_federation,
             discovery_round: AtomicUsize::new(0),
+            advertisement_round: AtomicUsize::new(0),
             replication_round: AtomicUsize::new(0),
             generation: new_secret(),
             key,
@@ -1045,27 +1161,51 @@ impl Server {
         })
     }
     /// Attempt every peer; return examined entries (including duplicates), or aggregated errors.
-    pub async fn dispatch_notifications(&self)->Result<()> {
+    pub async fn dispatch_notifications(&self) -> Result<()> {
         use std::process::Stdio;
         use tokio::io::AsyncWriteExt;
-        let Ok(worker)=std::env::var("YAP_PUSH_WORKER") else{return Ok(())};
+        let Ok(worker) = std::env::var("YAP_PUSH_WORKER") else {
+            return Ok(());
+        };
         // This is a scheduling hint only. Leases and policy checks use the fenced,
         // committed home image. Both nodes recover it on the next client/federation call.
-        if !self.state.store()?.db.query_row("SELECT EXISTS(SELECT 1 FROM push_devices)",[],|r|r.get::<_,bool>(0))? {return Ok(())}
-        let jobs=match &self.state.ha {
-            Some(ha)=>ha.push_operation(&self.state,None).await?,
-            None=>self.state.store()?.claim_push()?,
+        if !self.state.store()?.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM push_devices)",
+            [],
+            |r| r.get::<_, bool>(0),
+        )? {
+            return Ok(());
+        }
+        let jobs = match &self.state.ha {
+            Some(ha) => ha.push_operation(&self.state, None).await?,
+            None => self.state.store()?.claim_push()?,
         };
-        if jobs.as_array().is_none_or(Vec::is_empty){return Ok(())}
-        let mut child=tokio::process::Command::new(worker).kill_on_drop(true).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
-        let mut input=child.stdin.take().context("missing push worker input")?;
-        input.write_all(&serde_json::to_vec(&jobs)?).await?;drop(input);
-        let output=tokio::time::timeout(Duration::from_secs(45),child.wait_with_output()).await??;
-        ensure!(output.status.success() && output.stdout.len()<4096,"push worker unavailable");
-        let outcomes=serde_json::from_slice(&output.stdout)?;
-        match &self.state.ha{
-            Some(ha)=>{ha.push_operation(&self.state,Some((&jobs,&outcomes))).await?;}
-            None=>{self.state.store()?.finish_push(&jobs,&outcomes)?;}
+        if jobs.as_array().is_none_or(Vec::is_empty) {
+            return Ok(());
+        }
+        let mut child = tokio::process::Command::new(worker)
+            .kill_on_drop(true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?;
+        let mut input = child.stdin.take().context("missing push worker input")?;
+        input.write_all(&serde_json::to_vec(&jobs)?).await?;
+        drop(input);
+        let output =
+            tokio::time::timeout(Duration::from_secs(45), child.wait_with_output()).await??;
+        ensure!(
+            output.status.success() && output.stdout.len() < 4096,
+            "push worker unavailable"
+        );
+        let outcomes = serde_json::from_slice(&output.stdout)?;
+        match &self.state.ha {
+            Some(ha) => {
+                ha.push_operation(&self.state, Some((&jobs, &outcomes)))
+                    .await?;
+            }
+            None => {
+                self.state.store()?.finish_push(&jobs, &outcomes)?;
+            }
         }
         Ok(())
     }
@@ -1076,35 +1216,12 @@ impl Server {
         self.sync_inner().await
     }
     async fn sync_inner(&self) -> Result<usize> {
-        let mut peers = self
-            .state
-            .peers
-            .read()
-            .map_err(|_| anyhow::anyhow!("peer policy unavailable"))?
-            .clone();
         let mut imported = 0;
         let mut errors = Vec::new();
         if let Err(error) = self.discover_once().await {
             errors.push(format!("discovery: {error:#}"));
         }
-        for automatic in self.select_auto_peers()? {
-            if let Some(existing) = peers
-                .iter_mut()
-                .find(|p| p.address.id == automatic.address.id)
-            {
-                existing.communities.extend(automatic.communities);
-            } else {
-                peers.push(automatic);
-            }
-        }
-        for peer in peers {
-            if !peer.communities.iter().any(|scope| {
-                self.state
-                    .access(&peer.address.id.to_string(), scope)
-                    .is_some()
-            }) {
-                continue;
-            }
+        for peer in self.sync_peers()? {
             match self.sync_peer_inner(&peer).await {
                 Ok(count) => imported += count,
                 Err(error) => errors.push(format!("{}: {error:#}", peer.address.id)),
@@ -1117,12 +1234,51 @@ impl Server {
         );
         Ok(imported)
     }
+    fn sync_peers(&self) -> Result<Vec<PeerConfig>> {
+        let mut peers = self
+            .state
+            .peers
+            .read()
+            .map_err(|_| anyhow::anyhow!("peer policy unavailable"))?
+            .clone();
+        for automatic in self.select_auto_peers()? {
+            if let Some(existing) = peers
+                .iter_mut()
+                .find(|p| p.address.id == automatic.address.id)
+            {
+                existing.communities.extend(automatic.communities);
+            } else {
+                peers.push(automatic);
+            }
+        }
+        peers.retain(|peer| {
+            peer.communities.iter().any(|scope| {
+                self.state
+                    .access(&peer.address.id.to_string(), scope)
+                    .is_some()
+            })
+        });
+        Ok(peers)
+    }
     /// Validate complete bounded pages before committing imports and cursor together.
     pub async fn sync_peer(&self, peer: &PeerConfig) -> Result<usize> {
         ensure!(self.state.ha.is_none(), "use fenced sync_once for HA peers");
         self.sync_peer_inner(peer).await
     }
     async fn sync_peer_inner(&self, peer: &PeerConfig) -> Result<usize> {
+        let mut count = 0;
+        for _ in 0..MAX_SYNC_PAGES {
+            let (entries, more) = self.sync_page(peer).await?;
+            count += entries;
+            if !more {
+                self.sync_peer_metadata(peer).await?;
+                break;
+            }
+        }
+        Ok(count)
+    }
+
+    async fn sync_page(&self, peer: &PeerConfig) -> Result<(usize, bool)> {
         let id = peer.address.id.to_string();
         // Authorization is rechecked rather than accepting an arbitrary caller-provided address.
         let current = self.state.peer_for_pull(&id)?;
@@ -1133,142 +1289,137 @@ impl Server {
         ))?)
         .to_hex()
         .to_string();
-        let mut count = 0;
-        for _ in 0..MAX_SYNC_PAGES {
-            let (known_generation, after) = self.state.store()?.scoped_cursor(&id, &scope)?;
-            let response = transport::rpc(
-                &self.endpoint,
-                peer.address.clone(),
-                &Request::Pull {
-                    after,
-                    generation: known_generation.clone(),
-                    limit: MAX_PAGE_ENTRIES,
-                },
-            )
-            .await?;
-            let Response::Page {
-                generation,
-                entries,
-                next,
-                more,
-            } = response
-            else {
-                bail!("invalid federation response");
-            };
+        let (known_generation, after) = self.state.store()?.scoped_cursor(&id, &scope)?;
+        let response = transport::rpc(
+            &self.endpoint,
+            peer.address.clone(),
+            &Request::Pull {
+                after,
+                generation: known_generation.clone(),
+                limit: MAX_PAGE_ENTRIES,
+            },
+        )
+        .await?;
+        let Response::Page {
+            generation,
+            entries,
+            next,
+            more,
+        } = response
+        else {
+            bail!("invalid federation response");
+        };
+        ensure!(
+            generation.len() == 64 && hex::decode(&generation).is_ok(),
+            "invalid log generation"
+        );
+        let after = if known_generation.as_deref() == Some(&generation) {
+            after
+        } else {
+            0
+        };
+        ensure!(
+            next >= after && next <= i64::MAX as u64 && (!more || next > after),
+            "non-progressing federation cursor"
+        );
+        let mut previous = after;
+        let mut accepted = Vec::new();
+        for entry in &entries {
             ensure!(
-                generation.len() == 64 && hex::decode(&generation).is_ok(),
-                "invalid log generation"
+                entry.cursor > previous && entry.cursor <= next,
+                "invalid federation page ordering"
             );
-            let after = if known_generation.as_deref() == Some(&generation) {
-                after
-            } else {
-                0
-            };
             ensure!(
-                next >= after && next <= i64::MAX as u64 && (!more || next > after),
-                "non-progressing federation cursor"
+                current
+                    .communities
+                    .contains(&entry.envelope.event.payload.community),
+                "peer exceeded configured community scope"
             );
-            let mut previous = after;
-            let mut accepted = Vec::new();
-            for entry in &entries {
-                ensure!(
-                    entry.cursor > previous && entry.cursor <= next,
-                    "invalid federation page ordering"
-                );
-                ensure!(
-                    current
-                        .communities
-                        .contains(&entry.envelope.event.payload.community),
-                    "peer exceeded configured community scope"
-                );
-                // A deliberate local deny is different from an invalid/untrusted page:
-                // verify its bytes, skip that origin, and keep other hosts progressing.
-                entry.envelope.validate()?;
-                previous = entry.cursor;
-                if self
-                    .state
-                    .auto
-                    .blocked_hosts
-                    .contains(&entry.envelope.event.payload.home)
-                {
-                    continue;
-                }
-                let payload = &entry.envelope.event.payload;
-                let is_deletion = matches!(
-                    payload.action,
-                    Action::Delete { .. } | Action::Erased { .. }
-                );
-                let permitted = |party: &str| match self.state.access(party, &payload.community) {
-                    Some(Access::Active) => true,
-                    Some(Access::Suspended) => is_deletion,
-                    None => false,
-                };
-                if !permitted(&id) || !permitted(&payload.home) {
-                    continue;
-                }
-                self.state.validate_import(&entry.envelope)?;
-                accepted.push(entry.clone());
+            // A deliberate local deny is different from an invalid/untrusted page:
+            // verify its bytes, skip that origin, and keep other hosts progressing.
+            entry.envelope.validate()?;
+            previous = entry.cursor;
+            if self
+                .state
+                .auto
+                .blocked_hosts
+                .contains(&entry.envelope.event.payload.home)
+            {
+                continue;
             }
-            self.state
+            let payload = &entry.envelope.event.payload;
+            let is_deletion = matches!(
+                payload.action,
+                Action::Delete { .. } | Action::Erased { .. }
+            );
+            let permitted = |party: &str| match self.state.access(party, &payload.community) {
+                Some(Access::Active) => true,
+                Some(Access::Suspended) => is_deletion,
+                None => false,
+            };
+            if !permitted(&id) || !permitted(&payload.home) {
+                continue;
+            }
+            self.state.validate_import(&entry.envelope)?;
+            accepted.push(entry.clone());
+        }
+        self.state
+            .store()?
+            .import_scoped_page(&id, &generation, next, &accepted, &scope)?;
+        Ok((entries.len(), more))
+    }
+
+    async fn sync_peer_metadata(&self, peer: &PeerConfig) -> Result<()> {
+        let id = peer.address.id.to_string();
+        let current = self.state.peer_for_pull(&id)?;
+        for community in &current.communities {
+            if self.state.access(&id, community) != Some(Access::Active) {
+                continue;
+            }
+            let owners: Vec<_> = self
+                .state
                 .store()?
-                .import_scoped_page(&id, &generation, next, &accepted, &scope)?;
-            count += entries.len();
-            if !more {
-                for community in &current.communities {
-                    if self.state.access(&id, community) != Some(Access::Active) {
-                        continue;
-                    }
-                    let owners: Vec<_> = self
-                        .state
-                        .store()?
-                        .named_authors(&id, community)?
-                        .into_iter()
-                        .collect();
-                    for batch in owners.chunks(100) {
-                        let known = {
-                            let store = self.state.store()?;
-                            batch
-                                .iter()
-                                .map(|owner| {
-                                    Ok((
-                                        owner.clone(),
-                                        store
-                                            .current_profile(&id, owner)?
-                                            .map_or(0, |p| p.revision),
-                                    ))
-                                })
-                                .collect::<Result<std::collections::BTreeMap<_, _>>>()?
-                        };
-                        let Response::Social { result } = transport::rpc(
-                            &self.endpoint,
-                            peer.address.clone(),
-                            &Request::PeerProfiles {
-                                community: community.clone(),
-                                known,
-                            },
-                        )
-                        .await?
-                        else {
-                            bail!("invalid profile response")
-                        };
-                        let records: std::collections::BTreeMap<
-                            String,
-                            crate::profiles::ProfileRecord,
-                        > = serde_json::from_value(result)?;
-                        let store = self.state.store()?;
-                        for (owner, record) in records {
-                            ensure!(batch.contains(&owner), "unrequested profile");
-                            store.import_profile(&id, &owner, record)?;
-                        }
-                    }
+                .named_authors(&id, community)?
+                .into_iter()
+                .collect();
+            for batch in owners.chunks(100) {
+                let known = {
+                    let store = self.state.store()?;
+                    batch
+                        .iter()
+                        .map(|owner| {
+                            Ok((
+                                owner.clone(),
+                                store.current_profile(&id, owner)?.map_or(0, |p| p.revision),
+                            ))
+                        })
+                        .collect::<Result<std::collections::BTreeMap<_, _>>>()?
+                };
+                let Response::Social { result } = transport::rpc(
+                    &self.endpoint,
+                    peer.address.clone(),
+                    &Request::PeerProfiles {
+                        community: community.clone(),
+                        known,
+                    },
+                )
+                .await?
+                else {
+                    bail!("invalid profile response")
+                };
+                let records: std::collections::BTreeMap<String, crate::profiles::ProfileRecord> =
+                    serde_json::from_value(result)?;
+                let store = self.state.store()?;
+                for (owner, record) in records {
+                    ensure!(batch.contains(&owner), "unrequested profile");
+                    store.import_profile(&id, &owner, record)?;
                 }
-                if self.state.access(&id, &format!("{id}/public")) == Some(Access::Active) {
-                    self.refresh_public_projection(&current).await?;
-                }
-                break;
             }
         }
-        Ok(count)
+        if self.state.access(&id, &format!("{id}/public")) == Some(Access::Active) {
+            self.refresh_public_projection(&current).await?;
+        }
+        Ok(())
     }
     /// Change only this instance's materialized view; signed history is retained.
     pub fn moderate(&self, event: &str, hide: bool) -> Result<()> {
@@ -1282,5 +1433,23 @@ impl Server {
     pub async fn close(self) {
         self.accept_task.abort();
         self.endpoint.close().await;
+    }
+}
+
+#[cfg(test)]
+mod feed_page_tests {
+    use super::*;
+
+    #[test]
+    fn long_account_history_leaves_a_valid_deletion_cursor() -> Result<()> {
+        let mut ids = (0..20).map(|n| format!("{n:064x}")).collect::<Vec<_>>();
+        assert!(fit_feed_page(
+            &mut vec![],
+            &mut ids,
+            MAX_FRAME - 1024 - 3 * 67
+        )?);
+        assert_eq!(ids.len(), 3);
+        assert_eq!(ids.last().unwrap(), &format!("{:064x}", 2));
+        Ok(())
     }
 }

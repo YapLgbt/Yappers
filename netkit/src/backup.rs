@@ -335,6 +335,38 @@ pub(crate) fn publish(bytes: &[u8], output: &Path) -> Result<()> {
 }
 
 impl Store {
+    /// Back up an initialized standalone store without running database creation or migrations.
+    pub fn backup_existing(source: &Path, output: &Path) -> Result<()> {
+        ensure!(
+            !source.with_added_extension("ha-managed").try_exists()?,
+            "use ha-export for an HA home"
+        );
+        let db = Connection::open_with_flags(source, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .context("open existing backup source")?;
+        let version: i64 = db
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .context("unrecognized standalone backup source")?;
+        ensure!(
+            version == 1
+                && !db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='head')",
+                    [],
+                    |r| r.get::<_, bool>(0)
+                )?,
+            "unsupported standalone backup source"
+        );
+        let guard = source
+            .with_added_extension("deletion-guard")
+            .canonicalize()
+            .context("missing current backup guard")?;
+        db.execute(
+            "ATTACH DATABASE ? AS guard",
+            [guard.to_str().context("invalid guard path")?],
+        )?;
+        db.execute_batch("PRAGMA guard.secure_delete=ON; PRAGMA guard.synchronous=EXTRA")?;
+        Self { db }.backup(output)
+    }
+
     /// A coherent offline backup encrypted under this home's current deletion epoch.
     pub fn backup(&self, output: &Path) -> Result<()> {
         let tx = self.db.unchecked_transaction()?;

@@ -53,13 +53,6 @@ impl Store {
     }
     pub fn host_group(&self, group: &str) -> Result<()> {
         ensure!(self.group(group)?.is_some(), "unknown group");
-        let count: usize = self
-            .db
-            .query_row("SELECT COUNT(*) FROM hosted_groups", [], |r| r.get(0))?;
-        ensure!(
-            self.hosts_group(group)? || count < 24,
-            "home group capacity reached"
-        );
         self.db
             .execute("INSERT OR IGNORE INTO hosted_groups VALUES(?1)", [group])?;
         Ok(())
@@ -93,6 +86,14 @@ impl Store {
     }
     /// Validate the whole snapshot and its capacity before any catalog row is written.
     pub fn import_directory(&mut self, incoming: &DirectorySnapshot) -> Result<()> {
+        self.merge_directory(incoming, None)
+    }
+
+    pub(crate) fn merge_directory(
+        &mut self,
+        incoming: &DirectorySnapshot,
+        local_home: Option<&str>,
+    ) -> Result<()> {
         ensure!(
             incoming.groups.len() <= MAX_GROUPS
                 && incoming.permits.len() <= MAX_PROVIDERS
@@ -109,7 +110,17 @@ impl Store {
             group.validate()?;
             groups.insert(group.id.clone(), group.clone());
         }
-        ensure!(groups.len() <= MAX_GROUPS, "group catalog capacity reached");
+        // Bound what unsolicited gossip may allocate. A group signed by this home
+        // has already passed its own creation policy.
+        let foreign: std::collections::BTreeSet<_> = groups
+            .values()
+            .filter(|g| Some(g.payload.owner.as_str()) != local_home)
+            .map(|g| g.id.as_str())
+            .collect();
+        ensure!(
+            foreign.len() <= MAX_GROUPS,
+            "foreign group catalog capacity reached"
+        );
         let mut permits: BTreeMap<_, _> = existing
             .permits
             .into_iter()
@@ -124,12 +135,19 @@ impl Store {
             permits.insert((permit.group.clone(), permit.host.clone()), permit.clone());
         }
         ensure!(
-            permits.len() <= MAX_PROVIDERS,
+            permits
+                .keys()
+                .filter(|(g, _)| foreign.contains(g.as_str()))
+                .count()
+                <= MAX_PROVIDERS,
             "provider catalog capacity reached"
         );
-        for group in groups.keys() {
+        let mut provider_counts = BTreeMap::new();
+        for (group, _) in permits.keys() {
+            let count = provider_counts.entry(group).or_insert(0usize);
+            *count += 1;
             ensure!(
-                permits.keys().filter(|(g, _)| g == group).count() <= MAX_GROUP_PROVIDERS,
+                *count <= MAX_GROUP_PROVIDERS,
                 "group provider capacity reached"
             );
         }
@@ -161,8 +179,12 @@ impl Store {
             }
         }
         ensure!(
-            hosts.len() <= MAX_PROVIDERS,
-            "host catalog capacity reached"
+            hosts
+                .keys()
+                .filter(|(g, _)| foreign.contains(g.as_str()))
+                .count()
+                <= MAX_PROVIDERS,
+            "foreign host catalog capacity reached"
         );
         let tx = self.db.transaction()?;
         for group in incoming.groups.iter() {

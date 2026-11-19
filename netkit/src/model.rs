@@ -636,8 +636,16 @@ pub enum Request {
     PublicReplicaFeed {
         community: String,
     },
+    DeletionsAfter {
+        community: String,
+        token: Option<String>,
+        after: String,
+    },
     /// Current profile revisions from the authenticated origin for named authors in a shared scope.
-    PeerProfiles { community: String, known: std::collections::BTreeMap<String,u64> },
+    PeerProfiles {
+        community: String,
+        known: std::collections::BTreeMap<String, u64>,
+    },
     /// Peer-only conditional pull of the founding home's public moderation projection.
     PullPublicProjection {
         community: String,
@@ -695,6 +703,11 @@ pub enum Request {
         token: String,
         community: String,
     },
+    GroupsAfter {
+        token: String,
+        community: String,
+        after: String,
+    },
     CreateGroup {
         token: String,
         community: String,
@@ -748,6 +761,13 @@ pub enum Response {
         #[serde(rename = "asOf")]
         as_of: i64,
     },
+    FeedWithMoreDeletions {
+        feed: Box<Response>,
+    },
+    DeletionPage {
+        ids: Vec<String>,
+        more: bool,
+    },
     ProjectionUnchanged,
     Social {
         result: serde_json::Value,
@@ -775,6 +795,9 @@ pub enum Response {
         permit: crate::groups::HostPermit,
     },
     Groups {
+        groups: Vec<crate::groups::GroupSummary>,
+    },
+    GroupPage {
         groups: Vec<crate::groups::GroupSummary>,
     },
     GroupJoined {
@@ -946,6 +969,33 @@ pub fn project_nearby(
             *entry = (order, value);
         }
     }
+    let mut scores = BTreeMap::new();
+    for ((target, _), (_, value)) in &votes {
+        *scores.entry(*target).or_insert(0i64) += i64::from(*value);
+    }
+    let mut replies_by_parent: BTreeMap<&str, Vec<_>> = BTreeMap::new();
+    for reply in &events {
+        if let Action::Reply {
+            parent,
+            body,
+            display_name,
+        } = &reply.event.payload.action
+            && !deleted.contains(&reply.event.id)
+        {
+            replies_by_parent.entry(parent).or_default().push((
+                reply.accepted_at,
+                RemoteReply {
+                    profile: None,
+                    username: None,
+                    visibility: None,
+                    mine: false,
+                    id: reply.event.id.clone(),
+                    author: display_name.clone(),
+                    body: body.clone(),
+                },
+            ));
+        }
+    }
     let mut posts = Vec::new();
     for e in &events {
         if let Action::Post {
@@ -978,35 +1028,9 @@ pub fn project_nearby(
             if deleted.contains(&e.event.id) {
                 continue;
             }
-            let mut replies: Vec<_> = events
-                .iter()
-                .filter_map(|r| {
-                    if deleted.contains(&r.event.id) {
-                        return None;
-                    }
-                    if let Action::Reply {
-                        parent,
-                        body,
-                        display_name,
-                    } = &r.event.payload.action
-                        && parent == &e.event.id
-                    {
-                        return Some((
-                            r.accepted_at,
-                            RemoteReply {
-                                profile: None,
-                                username: None,
-                                visibility: None,
-                                mine: false,
-                                id: r.event.id.clone(),
-                                author: display_name.clone(),
-                                body: body.clone(),
-                            },
-                        ));
-                    }
-                    None
-                })
-                .collect();
+            let mut replies = replies_by_parent
+                .remove(e.event.id.as_str())
+                .unwrap_or_default();
             replies.sort_by(|a, b| (a.0, &a.1.id).cmp(&(b.0, &b.1.id)));
             // Keep the newest bounded window, still displayed in chronological order.
             // Taking the oldest 200 would make newly submitted comments disappear on sync.
@@ -1021,11 +1045,7 @@ pub fn project_nearby(
                 author: display_name.clone(),
                 body: body.clone(),
                 topic: topic.clone(),
-                score: votes
-                    .iter()
-                    .filter(|((target, _), _)| *target == e.event.id)
-                    .map(|(_, (_, v))| *v as i64)
-                    .sum(),
+                score: scores.get(e.event.id.as_str()).copied().unwrap_or(0),
                 vote: votes
                     .get(&(e.event.id.as_str(), viewer))
                     .map(|(_, v)| *v)

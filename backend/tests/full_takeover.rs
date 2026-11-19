@@ -15,7 +15,7 @@ use yappers_netkit::{
     takeover::FullHomeStandby,
 };
 
-struct Processes(Vec<Child>, PathBuf);
+struct Processes(Vec<Child>, PathBuf, std::net::SocketAddr);
 impl Drop for Processes {
     fn drop(&mut self) {
         for child in &mut self.0 {
@@ -38,7 +38,11 @@ impl Processes {
         if addr.exists() {
             fs::remove_file(&addr)?;
         }
-        let child = Command::new(env!("CARGO_BIN_EXE_yappers-server"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_yappers-server"));
+        if extra.contains(&"--ledger") {
+            command.env("YAP_WORKER_HEALTH_ADDR", self.2.to_string());
+        }
+        let child = command
             .current_dir(dir)
             .args(["ha-run", "--config", "config.json", "--grant", "grant.json"])
             .env("YAP_REPORT_INBOX", dir.join("reports.sqlite"))
@@ -68,6 +72,23 @@ impl Processes {
         Ok(())
     }
 }
+fn health_status(address: std::net::SocketAddr, path: &str) -> Result<u16> {
+    use std::io::{BufRead, BufReader, Write};
+    let mut stream = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line)?;
+    Ok(line
+        .split_whitespace()
+        .nth(1)
+        .context("missing health status")?
+        .parse()?)
+}
+
 async fn call(c: &Client, command: Value) -> Result<Value> {
     c.command(serde_json::from_value(command)?).await
 }
@@ -104,7 +125,8 @@ async fn encrypted_mail_and_private_policy_survive_crash_partition_and_failback(
     let s = base.join("fly");
     fs::create_dir_all(&p)?;
     fs::create_dir(&s)?;
-    let mut processes = Processes(vec![], base);
+    let health_addr = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+    let mut processes = Processes(vec![], base, health_addr);
     let owner_secret = new_secret();
     let backup_secret = new_secret();
     let home = key(&owner_secret);
@@ -129,6 +151,7 @@ async fn encrypted_mail_and_private_policy_survive_crash_partition_and_failback(
     )?;
     let fly_args = ["--standby-config", "node.json", "--ledger", "authority.db"];
     let (fly, backup) = processes.launch(&s, &fly_args).await?;
+    assert_eq!(health_status(health_addr, "/ready")?, 503);
     grant.standby = serde_json::from_value(backup)?;
     json_file(&p.join("grant.json"), &grant)?;
     // A fresh test home starts with a genuine initialized SQLite store.
@@ -146,6 +169,8 @@ async fn encrypted_mail_and_private_policy_survive_crash_partition_and_failback(
             .status()
     };
     ensure!(seed()?.success(), "initial seed failed");
+    assert_eq!(health_status(health_addr, "/ready")?, 200);
+    assert_eq!(health_status(health_addr, "/capacity")?, 200);
     ensure!(!seed()?.success(), "second seed must be denied");
     let (primary, primary_addr) = processes.launch(&p, &[]).await?;
     let mut join: JoinConfig = serde_json::from_value(
@@ -186,9 +211,9 @@ async fn encrypted_mail_and_private_policy_survive_crash_partition_and_failback(
     call(&b, prefs).await?;
     let before = a.prepare(note("Before crash"))?.event;
     a.submit(before.clone()).await?;
-    let inbox=json!({"type":"social","op":{"kind":"notificationInbox"}});
-    let unread=call(&b,inbox.clone()).await?["messages"][0].clone();
-    assert_eq!(unread["unread"],1);
+    let inbox = json!({"type":"social","op":{"kind":"notificationInbox"}});
+    let unread = call(&b, inbox.clone()).await?["messages"][0].clone();
+    assert_eq!(unread["unread"], 1);
     call(&b,json!({"type":"social","op":{"kind":"readNotification","category":"message","target":aid,"through":unread["through"]}})).await?;
     processes.crash(primary)?;
     let standby_status = Request::HomeOperation {
@@ -207,7 +232,7 @@ async fn encrypted_mail_and_private_policy_survive_crash_partition_and_failback(
     assert_eq!(sb["messages"][0]["body"], "before crash");
     let status = call(&b, json!({"type":"social","op":{"kind":"privacyStatus"}})).await?;
     assert_eq!(status["settings"]["hideAnonymous"], true);
-    assert_eq!(status["notifications"]["messages"],json!([]));
+    assert_eq!(status["notifications"]["messages"], json!([]));
     direct(&a, &replay, sync.clone()).await?;
     sb = direct(&b, &sb, sync.clone()).await?;
     assert_eq!(sb["messages"].as_array().unwrap().len(), 1);
@@ -274,6 +299,7 @@ async fn encrypted_mail_and_private_policy_survive_crash_partition_and_failback(
     ));
     processes.crash(partitioned)?;
     processes.crash(fly)?;
+    assert!(health_status(health_addr, "/ready").is_err());
     let (_, address) = processes.launch(&s, &fly_args).await?;
     grant.standby = serde_json::from_value(address)?;
     json_file(&p.join("grant.json"), &grant)?;

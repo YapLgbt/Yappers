@@ -21,7 +21,7 @@ Group discovery, enrollment and replication use transport v5 (`yappers/netkit/5`
 
 Homes store the catalog, host permits, addresses and local hosting choices in SQLite. A change to a peer’s authorized communities triggers a rescan so the home can retrieve older posts in a newly joined group. iPhone stores group invitations, the home-feed invitation and the selected city in Keychain.
 
-The catalog holds up to 64 groups and 128 host permits and announcements each. Each group supports 16 providers, and a home can host 24 groups. A catalog reflects the homes reachable through its configured seeds.
+Unsolicited discovery can populate up to 64 foreign groups and 128 foreign permits and announcements each. Locally founded groups have separate accounting. Each group admits up to 16 federation providers. Large catalogs rotate through self-contained announcement pages. A catalog reflects the homes reachable through its configured seeds.
 
 ## Testing
 
@@ -51,4 +51,4 @@ Homes store encrypted titles, post and reply bodies, and author display labels. 
 
 Group keys live on the approved device. The original owner device manages membership, and recovering an account requires joining again on the replacement device. The per-group Olm fallback keys allow an approved device to receive session keys while offline. Compromise of its local keys can expose previously delivered envelopes addressed to that device. A removed device may retain content and keys it already received.
 
-Creation, approval, and posting require a home connection. If delivery fails after preparation, the device keeps the draft and offers **Retry pending post**. A group supports up to 16 approved devices and 2,000 posts and replies. The roster holds up to 100 signed revisions, after which the group is read-only.
+Creation, approval, and posting require a home connection. If delivery fails after preparation, the device keeps the draft and offers **Retry pending post**. Posting and membership changes continue as history grows. The client retrieves large roster histories in pages and verifies the complete signed chain. A single signed roster and the key delivery for one sending session must each fit a transport frame.

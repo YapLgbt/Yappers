@@ -504,6 +504,12 @@ async fn private_mailbox_ratchets_offline_and_enforces_account_blocks() {
     let send = |peer: &str, name: &str, body: &str| json!({"kind":"prepare","peer":peer,"label":"Friend","name":name,"body":body});
     sa = step(&a, &sa, send(bid, "Alice", "Private greeting")).await;
     assert!(!sa["outbox"].to_string().contains("Private greeting"));
+    // Offline preparation keeps the ratchet and all queued packets past sixteen sends.
+    let mut offline = sa.clone();
+    for _ in 0..16 {
+        offline = step(&a, &offline, send(bid, "Alice", "Queued offline")).await;
+    }
+    assert_eq!(offline["outbox"].as_array().unwrap().len(), 17);
     let before_ack = sa.clone();
     sa = step(&a, &sa, sync.clone()).await;
     step(&a, &before_ack, sync.clone()).await;
@@ -960,48 +966,89 @@ async fn account_inbox_groups_replies_and_monotonically_reconciles_reads() -> an
     let dir = tempfile::tempdir()?;
     let home = Server::start(config(&dir.path().join("home"), new_secret(), "public")).await?;
     let origin = home.endpoint.id().to_string();
-    let alice = portable_client(&home,"public",&wallet(&origin)).await;
-    let bob = portable_client(&home,"public",&wallet(&origin)).await;
+    let alice = portable_client(&home, "public", &wallet(&origin)).await;
+    let bob = portable_client(&home, "public", &wallet(&origin)).await;
     alice.feed().await?;
     bob.feed().await?;
     let post = alice.prepare(action("First thread"))?.event;
     let target = post.id.clone();
     alice.submit(post).await?;
-    let reply = || Action::Reply {parent:target.clone(),body:"Hello".into(),display_name:"Anonymous neighbor".into()};
+    let reply = || Action::Reply {
+        parent: target.clone(),
+        body: "Hello".into(),
+        display_name: "Anonymous neighbor".into(),
+    };
     alice.submit(alice.prepare(reply())?.event).await?;
     let inbox = json!({"type":"social","op":{"kind":"notificationInbox"}});
-    assert_eq!(command(&alice,inbox.clone()).await?["activity"],json!([]));
-    let first=bob.prepare(reply())?.event;
-    let first_id=first.id.clone();
+    assert_eq!(command(&alice, inbox.clone()).await?["activity"], json!([]));
+    let first = bob.prepare(reply())?.event;
+    let first_id = first.id.clone();
     bob.submit(first.clone()).await?;
     bob.submit(first).await?;
-    let row=command(&alice,inbox.clone()).await?["activity"][0].clone();
-    assert_eq!(row["first"],first_id);
-    assert_eq!(row["unread"],1);
+    let row = command(&alice, inbox.clone()).await?["activity"][0].clone();
+    assert_eq!(row["first"], first_id);
+    assert_eq!(row["unread"], 1);
     assert!(row.get("actor").is_none());
-    assert_eq!(row["byline"],"Anonymous neighbor");
-    assert_eq!(row["preview"],"Hello");
-    assert_eq!(row["anonymous"],true);
+    assert_eq!(row["byline"], "Anonymous neighbor");
+    assert_eq!(row["preview"], "Hello");
+    assert_eq!(row["anonymous"], true);
     assert!(row["photo"].is_null());
     assert!(row["created"].as_i64().unwrap() > 0);
-    let second=bob.prepare(reply())?.event;
-    let second_id=second.id.clone();
+    let second = bob.prepare(reply())?.event;
+    let second_id = second.id.clone();
     bob.submit(second).await?;
-    assert_eq!(command(&alice,inbox.clone()).await?["activity"][0]["unread"],2);
-    let read = |through:&Value| json!({"type":"social","op":{"kind":"readNotification","category":"reply","target":target,"through":through}});
-    command(&alice,read(&row["through"])).await?;
-    let next=command(&alice,inbox.clone()).await?["activity"][0].clone();
-    assert_eq!(next["unread"],1);
-    assert_eq!(next["first"],second_id);
-    command(&alice,read(&next["through"])).await?;
-    command(&alice,read(&row["through"])).await?;
-    assert_eq!(command(&alice,inbox.clone()).await?["activity"][0]["unread"],0);
-    assert_eq!(command(&bob,inbox.clone()).await?["activity"],json!([]));
-    let mute=|muted|json!({"type":"social","op":{"kind":"muteNotifications","target":target,"muted":muted}});
-    command(&alice,mute(true)).await?;
-    assert_eq!(command(&alice,inbox.clone()).await?["activity"],json!([]));
-    command(&alice,mute(false)).await?;
-    alice.submit(alice.prepare(Action::Delete{target})?.event).await?;
-    assert_eq!(command(&alice,inbox).await?["activity"],json!([]));
+    assert_eq!(
+        command(&alice, inbox.clone()).await?["activity"][0]["unread"],
+        2
+    );
+    let read = |through: &Value| json!({"type":"social","op":{"kind":"readNotification","category":"reply","target":target,"through":through}});
+    command(&alice, read(&row["through"])).await?;
+    let next = command(&alice, inbox.clone()).await?["activity"][0].clone();
+    assert_eq!(next["unread"], 1);
+    assert_eq!(next["first"], second_id);
+    command(&alice, read(&next["through"])).await?;
+    command(&alice, read(&row["through"])).await?;
+    assert_eq!(
+        command(&alice, inbox.clone()).await?["activity"][0]["unread"],
+        0
+    );
+    assert_eq!(command(&bob, inbox.clone()).await?["activity"], json!([]));
+    let mute = |muted| json!({"type":"social","op":{"kind":"muteNotifications","target":target,"muted":muted}});
+    command(&alice, mute(true)).await?;
+    assert_eq!(command(&alice, inbox.clone()).await?["activity"], json!([]));
+    command(&alice, mute(false)).await?;
+    alice
+        .submit(alice.prepare(Action::Delete { target })?.event)
+        .await?;
+    assert_eq!(command(&alice, inbox).await?["activity"], json!([]));
+    Ok(())
+}
+
+#[test]
+fn recovery_reads_previous_age_release() -> anyhow::Result<()> {
+    let bundle = decrypt_recovery(
+        include_bytes!("fixtures/recovery-age-0.12.1.age"),
+        "public test fixture".into(),
+    )?;
+    assert_eq!(bundle.wallet.root_secret, "01".repeat(32));
+    bundle.validate()
+}
+
+#[test]
+fn existing_registry_accepts_account_1001() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("home");
+    let mut store = Store::open(&path)?;
+    let db = rusqlite::Connection::open(path)?;
+    db.execute_batch(
+        "WITH RECURSIVE seed(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM seed WHERE i<1000)
+        INSERT INTO account_states SELECT printf('%064x',i),'[]' FROM seed",
+    )?;
+    let account = wallet(&key(&new_secret()));
+    store.register_account(&account.chain)?;
+    assert_eq!(
+        store.account_chain(&account.chain[0].payload.account)?,
+        account.chain
+    );
     Ok(())
 }

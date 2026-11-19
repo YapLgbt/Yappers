@@ -9,9 +9,6 @@ use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-pub const MAX_ACCOUNT_REVISIONS: usize = 64;
-pub const MAX_DEVICES: usize = 16;
-pub const MAX_ARCHIVE_EVENTS: usize = 10_000;
 pub const MAX_ARCHIVE_BYTES: usize = 16 * 1024 * 1024;
 const STATE_DOMAIN: &[u8] = b"yap:account-state:v1\0";
 const ARCHIVE_DOMAIN: &[u8] = b"yap:personal-archive:v1\0";
@@ -48,10 +45,7 @@ impl AccountRecord {
         );
         public_key(&p.account)?;
         public_key(&p.home)?;
-        ensure!(
-            !p.devices.is_empty() && p.devices.len() <= MAX_DEVICES,
-            "invalid device count"
-        );
+        ensure!(!p.devices.is_empty(), "invalid device count");
         for device in &p.devices {
             public_key(device)?;
         }
@@ -108,10 +102,7 @@ impl AccountRecord {
     }
 }
 pub fn validate_chain(chain: &[AccountRecord]) -> Result<&AccountRecord> {
-    ensure!(
-        !chain.is_empty() && chain.len() <= MAX_ACCOUNT_REVISIONS,
-        "invalid account chain length"
-    );
+    ensure!(!chain.is_empty(), "invalid account chain length");
     for (index, record) in chain.iter().enumerate() {
         record.validate()?;
         ensure!(
@@ -174,7 +165,6 @@ impl AccountWallet {
             record.payload.devices.contains(&device),
             "device is not authorized"
         );
-        ensure!(self.pending.len() <= 100, "account outbox full");
         let mut sequences = BTreeSet::new();
         for event in &self.pending {
             event.validate()?;
@@ -212,10 +202,6 @@ impl AccountWallet {
         retain_devices: bool,
     ) -> Result<Self> {
         let old = validate_chain(&chain)?;
-        ensure!(
-            chain.len() < MAX_ACCOUNT_REVISIONS,
-            "account revision capacity reached"
-        );
         let root = signing_key(&root_secret)?;
         ensure!(
             hex::encode(root.verifying_key().as_bytes()) == old.payload.account,
@@ -330,10 +316,7 @@ impl PersonalArchive {
             "archive too large"
         );
         let p = &self.payload;
-        ensure!(
-            p.version == 1 && p.events.len() <= MAX_ARCHIVE_EVENTS,
-            "unsupported archive or capacity"
-        );
+        ensure!(p.version == 1, "unsupported archive version");
         ensure!(
             validate_chain(&p.chain)?.payload.account == p.account,
             "archive identity mismatch"

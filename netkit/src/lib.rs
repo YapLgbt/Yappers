@@ -24,20 +24,20 @@ mod mailbox;
 pub mod messaging;
 pub mod model;
 #[cfg(feature = "server")]
+mod notifications;
+#[cfg(feature = "server")]
 pub mod peering;
 pub mod portability;
 #[cfg(feature = "server")]
 mod privacy;
-#[cfg(feature = "server")]
-mod push;
-#[cfg(feature = "server")]
-mod notifications;
-#[cfg(feature = "server")]
-mod profiles;
 mod private_group_client;
 #[cfg(feature = "server")]
 mod private_group_store;
 pub mod private_groups;
+#[cfg(feature = "server")]
+mod profiles;
+#[cfg(feature = "server")]
+mod push;
 #[cfg(feature = "server")]
 mod redaction;
 pub mod report;
@@ -65,3 +65,6 @@ pub const MAX_PAGE_ENTRIES: u32 = 100;
 
 /// Transport RPC version; new submissions and replication require committed v4 events.
 pub const PROTOCOL_VERSION: u8 = 6;
+
+// Fits beside feed metadata in one wire frame, including on older homes.
+pub(crate) const DELETION_PAGE: usize = 10_000;

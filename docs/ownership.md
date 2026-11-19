@@ -60,7 +60,7 @@ an active-device proof are required. Ownership permits exporting one's own event
 home's communities; it does not export other members' private conversations. References to
 other people's posts remain references. Personal imports are included in later owned exports.
 
-Exports use **age 0.12.1**, with passphrase encryption and authenticated ciphertext. The current
+Exports use **age 0.11.5**, with passphrase encryption and authenticated ciphertext. The current
 scrypt work factor is fixed at 18, with a matching decryption maximum (approximately 256 MiB
 of KDF memory). Use a long unique passphrase; keep it separate from the backup. Desktop and
 mobile performance at this bound must be validated before a public recovery UI launch.
@@ -70,10 +70,9 @@ The encrypted recovery contains the root key. Do not publish its plaintext or gi
 home operator. A portable archive can be decrypted locally without any server. These are
 sensitive recovery files, not public profile-sharing files.
 
-Capacity is explicit: 10,000 authored events, 16 MiB plaintext recovery, 256 KiB local metadata,
-50 events per network import/export page, bounded account registry/personal-history storage,
-and the existing 1 MiB transport frame. Smaller pages are selected for large events. Local
-ABI buffers have a separate archive bound; network limits are not relaxed. Personal history
+A recovery file supports 16 MiB of plaintext and 256 KiB of local metadata. Network
+imports and exports carry up to 50 events per page within the 1 MiB transport frame.
+Local ABI buffers have a separate archive size bound. Personal history
 imports commit one complete validated chunk at a time. Repeating an import deduplicates exact
 event IDs and resumes; conflicting attestations and partial invalid chunks fail closed.
 
@@ -200,4 +199,4 @@ forged account/device records, stale/forked state and revoked writers. The Kotli
 fixture checks offline receipts, local profile data, import retry, previous-home notice and
 explicit pending-draft recovery.
 
-Recovery file encryption uses [age](https://docs.rs/age/0.12.1/age/).
+Recovery file encryption uses [age](https://docs.rs/age/0.11.5/age/).

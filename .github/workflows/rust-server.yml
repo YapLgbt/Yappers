@@ -1,0 +1,30 @@
+name: Rust server
+on:
+  push:
+    paths: &server_paths
+      - 'backend/**'
+      - 'netkit/**'
+      - 'deploy/**'
+      - '.cargo/**'
+      - 'Cargo.*'
+      - 'rust-toolchain.toml'
+      - 'fly.toml'
+      - '.github/workflows/rust-server.yml'
+  pull_request:
+    paths: *server_paths
+permissions:
+  contents: read
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --features yappers-netkit/server --locked -- -D warnings
+      - run: cargo test --workspace --features yappers-netkit/server --locked
+      - run: cargo build --locked --release -p yappers-backend
+      - run: cargo doc --workspace --features yappers-netkit/server --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - run: cargo install --locked cargo-audit --version 0.23.0
+      - run: cargo audit
