@@ -71,6 +71,12 @@ module.exports = async function verifyFeedMotion(browser, base) {
     assert.equal(await update('insert','reduced'), 0, 'Reduce Motion should suppress visible insert animation');
     await page.setViewportSize({width:1280,height:840});
     await row.evaluate(el => window.scrollBy(0, el.getBoundingClientRect().top - 80));
+    const bar = page.locator('.bar');
+    await bar.evaluate(el => { el.style.minHeight = '100px'; });
+    const rail = await page.locator('.app-nav').boundingBox();
+    const header = await page.locator('.app-header').boundingBox();
+    assert(rail.y >= header.y + header.height - 1, 'Sidebar crossed the header while scrolling');
+    await bar.evaluate(el => el.style.removeProperty('min-height'));
     const desktop = await position();
     await update('insert','desktop');
     assert(Math.abs(await position()-desktop) <= 1, 'Desktop reading position changed');

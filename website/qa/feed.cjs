@@ -98,7 +98,21 @@ const stop=()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnec
   }
   await page.locator('#welcome-alias').fill('Library neighbor');
   if (process.env.YAP_QA_SCREENSHOTS) await page.screenshot({path:path.join(process.env.YAP_QA_SCREENSHOTS,'welcome-name-'+engine+'.png')});
+  if (!upgradeFrom) {
+    await page.evaluate(() => new Promise(locked => {
+      navigator.locks.request('yap-web-delivery-v1', () => new Promise(release => {
+        window.resumeUsernameCheck = release;
+        locked();
+      }));
+    }));
+  }
   await page.locator('#welcome-join').click();
+  if (!upgradeFrom) {
+    const draft = page.locator('#welcome-username-local:focus');
+    await draft.fill('early_draft');
+    assert(await page.locator('#welcome-username-form button[type=submit]').isDisabled());
+    await page.evaluate(() => window.resumeUsernameCheck());
+  }
   if (process.env.YAP_QA_UNSUPPORTED_ONLY) {
     const unsupported = page.getByRole('alert').filter({hasText:'This home does not support usernames'});
     await unsupported.waitFor({timeout:65000});
@@ -114,7 +128,9 @@ const stop=()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnec
   }
   if (!upgradeFrom) {
     const username = page.locator('#welcome-username-local');
-    await username.waitFor({timeout:65000});
+    await page.locator('#welcome-username-form button[type=submit]:enabled').waitFor({timeout:65000});
+    assert.equal(await username.inputValue(), 'early_draft');
+    assert(await username.evaluate(field => document.activeElement === field));
     assert.equal(await page.locator('#welcome-enter').isVisible(), false);
     if (process.env.YAP_QA_SCREENSHOTS) await page.screenshot({path:path.join(process.env.YAP_QA_SCREENSHOTS,'welcome-username-'+engine+'.png')});
     await page.evaluate(async () => {

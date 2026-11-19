@@ -394,7 +394,12 @@
     <span id="connection" class="sr-only" role="status">{connection}</span>
     {#if mode !== 'inbox' && mode !== 'groups'}<ActionButton id="compose" variant="filled" disabled={!ready || groupChanges > 0} onclick={event => composer?.open(null, event.currentTarget)}><AppIcon name="post" />Post</ActionButton>{/if}
   </div>
-</div></header>
+</div>
+{#if ready && step === null}
+  <NeighborhoodNav current={mode === 'inbox' ? null : destination}
+    select={id => navigate(id)} />
+{/if}
+</header>
 <Welcome {client} bind:step create={async (name,invitation) => { if (!client || !await client.start('create',name,invitation)) throw new Error('Couldn’t join your home. Try again.'); readProfile(); }} {enter} recovery={openRecovery} />
 {#snippet feedPost(post: Post, current: Profile, detail: boolean)}
   <FeedPost {detail} {openThread} report={(kind,id,text)=>reportDialog?.open(kind,id,text)} {vote} {mute} {message}
@@ -519,10 +524,6 @@
   {/if}
   <noscript>Turn on JavaScript to connect to the neighborhood.</noscript>
 </main>
-{#if ready && step === null}
-  <NeighborhoodNav current={mode === 'inbox' ? null : destination}
-    select={id => navigate(id)} />
-{/if}
 <Filters bind:this={filters} apply={(s,t) => { sort = s; topic = t; }} />
 <Recovery bind:this={recovery} />
 {#if client && profile}

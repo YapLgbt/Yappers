@@ -276,9 +276,11 @@ h3 { font: var(--type-label) }
   .app-header.enrolled .bar-start { grid-area: 1 / 2; justify-self: end }
   .app-header.enrolled .bar-end { grid-area: 1 / 3 }
   .app-nav {
-    inset: var(--header-height) auto 0 var(--rail-inset);
+    position: absolute;
+    inset: calc(100% + 1px) auto auto var(--rail-inset);
     width: var(--rail-width);
-    height: auto;
+    height: calc(100dvh - 100% - 1px);
+    overflow-y: auto;
     padding: 1.5rem .75rem;
     background: var(--bg);
     border-block-start: 0;

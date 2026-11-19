@@ -16,7 +16,8 @@
     recovery: (mode: RecoveryMode) => void;
   } = $props();
   let alias = $state(''), nameError = $state(''), message = $state(''), busy = $state(false), failed = $state(false);
-  let invitation=$state('');
+  let invitation=$state(''), joining = $state(false), newAccount = $state(false);
+  let handleForm = $state<Username>();
   let domain = $state(''), checking = $state(false), checkError = $state('');
   async function verified(home: Community) {
     if (home.profile?.setupStep === 'restored-username') await enter();
@@ -33,29 +34,42 @@
     } finally { checking = false; }
   }
   $effect(() => {
-    if (step === 'username' && client) void checkUsername(client);
+    if (step === 'username' && client && !joining) void checkUsername(client);
   });
-  let field: HTMLInputElement, heading: HTMLHeadingElement;
+  let field = $state<HTMLInputElement>();
+  let heading: HTMLHeadingElement;
   async function go(next: WelcomeStep) {
     step = next; message = ''; nameError = ''; failed = false;
     await tick();
-    if (next) (next === 'name' ? field : heading).focus();
+    if (next) window.scrollTo({top: 0, behavior: 'instant'});
+    if (next === 'username' && newAccount) handleForm?.focus();
+    else if (next) (next === 'name' ? field : heading)?.focus();
   }
   async function join(event: SubmitEvent) {
     event.preventDefault();
-    if (busy) return;
+    if (busy || joining) return;
     const name = alias.trim();
     if (name.length < 2) {
       nameError = name ? 'Use at least two characters for your display name.' : 'Choose a display name to continue.';
       await tick();
-      field.focus();
+      field?.focus();
       return;
     }
     failed = false;
-    busy = true; message = invitation.trim()?'Joining your home…':'Joining yap.lgbt…';
-    try { await create(name,invitation);invitation=''; await go('username'); }
-    catch (problem) { failed = true; message = errorMessage(problem); }
-    finally { busy = false; }
+    joining = true;
+    newAccount = true;
+    domain = '';
+    checkError = '';
+    try {
+      await go('username');
+      await create(name, invitation);
+      invitation = '';
+    } catch (problem) {
+      newAccount = false;
+      await go('name');
+      failed = true;
+      message = errorMessage(problem);
+    } finally { joining = false; }
   }
   async function finish() {
     if (busy) return;
@@ -87,13 +101,14 @@
 <div id="welcome-returning" hidden={step !== "returning"}><p>Your account is already on this device. You can post by name or anonymously in your neighborhood.</p>
 <ActionButton type="button" variant="filled" onclick={() => go("backup")} id="guide-continue">Continue with my account</ActionButton>
 <ActionButton type="button" onclick={() => go(null)} id="guide-exit">Return to neighborhood</ActionButton></div>
-<form class="task-form" id="welcome-name" novalidate hidden={step !== "name"} onsubmit={join}>
+{#if step === 'name'}
+<form class="task-form" id="welcome-name" novalidate autocomplete="off" onsubmit={join}>
   <p id="welcome-name-help">Use a name you’re comfortable posting with. You can also post anonymously.</p>
   <div class="form-field">
     <label for="welcome-alias">Display name (required)</label>
-    <input id="welcome-alias" bind:value={alias} bind:this={field} required minlength="2" maxlength="30" autocomplete="nickname" readonly={busy} aria-invalid={nameError ? true : undefined} aria-describedby={nameError ? 'welcome-alias-error welcome-name-help' : 'welcome-name-help'} oninput={() => nameError = ''}>
+    <input id="welcome-alias" bind:value={alias} bind:this={field} required minlength="2" maxlength="30" name="display-name" autocomplete="off" enterkeyhint="next" data-1p-ignore data-bwignore="true" data-lpignore="true" readonly={busy} aria-invalid={nameError ? true : undefined} aria-describedby={nameError ? 'welcome-alias-error welcome-name-help' : 'welcome-name-help'} oninput={() => nameError = ''}>
     {#if nameError}<p class="form-error" id="welcome-alias-error">{nameError}</p>{/if}
-    <div class="form-actions"><ActionButton onclick={() => { alias = suggestName(alias); nameError = ''; field.focus(); field.select(); }} id="suggest-name" type="button" disabled={busy}>Suggest a name</ActionButton></div>
+    <div class="form-actions"><ActionButton onclick={() => { alias = suggestName(alias); nameError = ''; field?.focus(); field?.select(); }} id="suggest-name" type="button" disabled={busy}>Suggest a name</ActionButton></div>
   </div>
   <details class="home-invitation"><summary>Have an invitation to another home?</summary>
     <div class="form-field">
@@ -103,17 +118,19 @@
   </details>
   <div class="form-actions form-actions--footer">
     <ActionButton type="button" disabled={busy} onclick={() => go("intro")} id="welcome-back">Back</ActionButton>
-    <ActionButton type="submit" variant="filled" disabled={busy} id="welcome-join">{invitation.trim()?'Join this home':'Join yap.lgbt'}</ActionButton>
+    <ActionButton type="submit" variant="filled" disabled={busy} id="welcome-join">Continue</ActionButton>
   </div>
 </form>
+{/if}
 {#if step === 'username'}
+  {#if client && (newAccount || domain)}
+    <Username bind:this={handleForm} {client} domain={domain || null} inline connecting={joining || checking} onclaimed={() => verified(client!)} />
+  {/if}
   {#if checkError}
     <p class="form-feedback form-error" role="alert">{checkError}</p>
     <ActionButton type="button" disabled={checking || !client} onclick={() => client && checkUsername(client)}>Try again</ActionButton>
-  {:else if checking}
+  {:else if checking && !newAccount}
     <p role="status">Checking your username with your home…</p>
-  {:else if client && domain}
-    <Username {client} {domain} inline onclaimed={() => verified(client!)} />
   {/if}
 {/if}
 <div id="welcome-backup" hidden={step !== "backup"}><p>Your account is ready. Save a recovery key in your password manager to use it on another device.</p>
