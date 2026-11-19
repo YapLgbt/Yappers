@@ -58,6 +58,23 @@ private data class ConnectionPreference(val enabled: Boolean, val join: JsonObje
 class NetkitController(private val storage: NetkitStorage, private val engine: NetkitEngine,
                        private val defaultHome: (suspend () -> String)? = null) {
     private val json = Json { encodeDefaults = true }
+    // A v5 invitation for the retired public home cannot deliver its pending events to v6.
+    private val retiredPublicInstall = run {
+        val previous = runCatching { json.decodeFromString<ConnectionPreference>(storage.readSecret(CONNECTION_KEY)) }.getOrNull()
+        val join = previous?.join
+        val retired = join?.get("serverAddr")?.jsonObject?.get("id")?.jsonPrimitive?.content ==
+            "114f92b50e66dd84a14e0ff9b857b0c254565609b00b0cb9ef85f29e864efe5b" &&
+            (join["protocolVersion"]?.jsonPrimitive?.intOrNull ?: 1) < 6
+        if (retired) {
+            storage.writeState(MISSING_VALUE)
+            for (key in listOf(IDENTITY_KEY, GROUPS_KEY, PUBLIC_ROUTE_KEY, "welcome-device-v1", WELCOME_STAGE_KEY))
+                storage.writeSecret(key, MISSING_VALUE)
+            storage.writeSecret(WELCOME_STAGE_KEY, "fresh-public-home")
+            storage.writeSecret(CONNECTION_KEY, MISSING_VALUE)
+        }
+        retired
+    }
+
     private val mutex = Mutex()
     private val foreground = MutableStateFlow(true)
     private var handle: Long? = null
@@ -238,6 +255,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
             engine.request(active, buildJsonObject { put("type", "accountRegister"); put("wallet", wallet) })
             social("privacyStatus")
         } else null
+        (result?.get("currentProfile") as? JsonObject)?.let { applyProfile(it) }
         val domain = result?.get("usernameDomain")?.jsonPrimitive?.contentOrNull
         if (domain.isNullOrBlank()) {
             mutableWelcomeUsername.value = WelcomeUsername.Unsupported
@@ -254,8 +272,11 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
     private val mutableBackupStep = MutableStateFlow(false)
     internal val backupStep = mutableBackupStep.asStateFlow()
 
-    internal suspend fun enterNeighborhood() {
+    internal suspend fun enterNeighborhood() = mutex.withLock {
         check(!mutableBackupStep.value || mutableWelcomeUsername.value == WelcomeUsername.Confirmed) { "Claim a username before entering the neighborhood." }
+        if (mutableBackupStep.value && !finishingRestore) {
+            adoptOrCreateProfile(cache.snapshot.alias, cache.snapshot.profile)
+        }
         writeSecret(WELCOME_STAGE_KEY, MISSING_VALUE)
         finishingRestore = false
         mutableBackupStep.value = false
@@ -269,7 +290,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         val stage = runCatching { storage.readSecret(WELCOME_STAGE_KEY) }.getOrNull()
         finishingRestore = stage == "restore"
         mutableBackupStep.value = stage == "pending" || finishingRestore || stage?.startsWith(PROFILE_STAGE_PREFIX) == true
-        mutableWelcome.value = !hasLocalProfile && runCatching {
+        mutableWelcome.value = (!hasLocalProfile || retiredPublicInstall || stage == "fresh-public-home") && runCatching {
             storage.readSecret(IDENTITY_KEY) == MISSING_VALUE && storage.readSecret(CONNECTION_KEY) == MISSING_VALUE
         }.getOrDefault(false)
     }
@@ -278,6 +299,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         val stage = secret(WELCOME_STAGE_KEY) ?: return@withLock
         if (stage.startsWith(PROFILE_STAGE_PREFIX)) {
             val draft = json.decodeFromString<WelcomeProfile>(stage.removePrefix(PROFILE_STAGE_PREFIX))
+            commit(cache.copy(snapshot = cache.snapshot.copy(alias = draft.name, profile = draft.profile)))
             save(draft, state.value.messagingScope)
             // Retrying after an interruption writes the same profile before advancing the checkpoint.
             writeSecret(WELCOME_STAGE_KEY, "pending")
@@ -771,17 +793,16 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         }
     }
 
-    suspend fun publish(body: String, topic: String, anonymous: Boolean, alias: String, headline: String = "", profile: CommunityProfile = CommunityProfile(), area: PostArea? = null) = enqueue(buildJsonObject {
+    suspend fun publish(body: String, topic: String, anonymous: Boolean, alias: String, headline: String = "", area: PostArea? = null) = enqueue(buildJsonObject {
         put("kind", if (headline.isBlank()) "post" else "postV2")
         if (headline.isNotBlank()) {
             area?.let { put("area", json.encodeToJsonElement(it)) }
             put("headline", headline.trim())
-            if (!anonymous) put("profile", json.encodeToJsonElement(profile.cleaned()))
         }
         put("body", body.trim())
         put("topic", topic)
         put("anonymous", anonymous)
-        put("displayName", if (anonymous) "Anonymous neighbor" else alias)
+        put("displayName", if (anonymous) "Anonymous neighbor" else "Neighbor")
     })
 
     suspend fun reply(id: Long, body: String, anonymous: Boolean = false) {
@@ -791,7 +812,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
             put("kind", "reply")
             put("parent", parent)
             put("body", body.trim())
-            put("displayName", if (anonymous) "Anonymous neighbor" else state.value.snapshot.alias)
+            put("displayName", if (anonymous) "Anonymous neighbor" else "Neighbor")
         })
     }
 
@@ -961,6 +982,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         }
         attempt {
             val result = social("privacyStatus")
+            (result["currentProfile"] as? JsonObject)?.let { applyProfile(it) }
             waiting = json.decodeFromJsonElement(result.getValue("requests"))
             val settings = if (policy.pendingSettings) policy.settings else json.decodeFromJsonElement<PrivacySettings>(result.getValue("settings"))
             val hasBlocks = result["hasBlocks"]?.jsonPrimitive?.booleanOrNull
@@ -1026,10 +1048,39 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         savePolicy(policy.copy(revoked = policy.revoked - contact.peer, approved = policy.approved + contact.peer))
     }
 
-    suspend fun setAlias(alias: String) = mutex.withLock {
-        val clean = alias.trim()
-        require(clean.length in 2..30)
-        commit(cache.copy(snapshot = cache.snapshot.copy(alias = clean)))
+    private suspend fun applyProfile(record: JsonObject) {
+        val snapshot = cache.snapshot.copy(alias = record.getValue("name").jsonPrimitive.content,
+            profile = json.decodeFromJsonElement<CommunityProfile>(record.getValue("profile")),
+            profileRevision = record.getValue("revision").jsonPrimitive.long)
+        if (snapshot != cache.snapshot) commit(cache.copy(snapshot = snapshot))
+    }
+
+    private suspend fun writeProfile(alias: String, profile: CommunityProfile, expected: Long) {
+        val record = social("setProfile") {
+            put("expected", expected)
+            put("name", alias.trim())
+            put("profile", json.encodeToJsonElement(profile.cleaned()))
+        }
+        applyProfile(record)
+    }
+
+    private suspend fun adoptOrCreateProfile(alias: String, profile: CommunityProfile) {
+        val record = social("privacyStatus")["currentProfile"] as? JsonObject
+        if (record != null) applyProfile(record) else writeProfile(alias, profile, 0)
+    }
+
+    suspend fun restorePublicProfile(alias: String, profile: CommunityProfile) = mutex.withLock {
+        adoptOrCreateProfile(alias, profile)
+    }
+
+    suspend fun setPublicProfile(alias: String, profile: CommunityProfile, expected: Long) = mutex.withLock {
+        try {
+            writeProfile(alias, profile, expected)
+        } catch (failure: Exception) {
+            if (failure is CancellationException) throw failure
+            (social("privacyStatus")["currentProfile"] as? JsonObject)?.let { applyProfile(it) }
+            throw failure
+        }
     }
 
     suspend fun discardPending() = mutex.withLock {

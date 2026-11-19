@@ -84,10 +84,7 @@ async fn real_iroh_two_home_federation_roundtrip_restart_and_authority() {
             topic: "Chatter".into(),
             anonymous: false,
             display_name: "Tender comet".into(),
-            profile: Some(Box::new(CommunityProfile {
-                pronouns: "they / them".into(),
-                ..Default::default()
-            })),
+            profile: None,
         })
         .unwrap()
         .event;
@@ -115,7 +112,7 @@ async fn real_iroh_two_home_federation_roundtrip_restart_and_authority() {
             .unwrap();
         assert_eq!(response["posts"].as_array().unwrap().len(), count);
     }
-    assert_eq!(seen[0].profile.as_ref().unwrap().pronouns, "they / them");
+    assert!(seen[0].profile.is_none());
     cb.submit(
         cb.prepare(Action::Reply {
             parent: created.id.clone(),

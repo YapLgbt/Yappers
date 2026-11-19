@@ -32,7 +32,7 @@ internal data class NetkitDiskState(
 )
 
 @Serializable
-internal data class WireReply(val id: String, val author: String, val body: String, val mine: Boolean = false, val visibility: AuthorVisibility? = null, val username: String? = null)
+internal data class WireReply(val id: String, val author: String, val body: String, val mine: Boolean = false, val visibility: AuthorVisibility? = null, val username: String? = null, val profile: CommunityProfile? = null)
 
 /** Authenticated home projection, not an independently verified inclusion proof. */
 @Serializable
@@ -88,12 +88,12 @@ internal fun NetkitCache.overlay(event: JsonObject): NetkitCache {
         "post", "postV2" -> if (posts.none { it.remoteId == remoteId }) {
             posts.add(0, Post(
                 id = allocator.allocate(remoteId),
-                author = action.getValue("displayName").jsonPrimitive.content,
+                author = if (action.getValue("displayName").jsonPrimitive.content == "Anonymous neighbor") "Anonymous neighbor" else snapshot.alias,
                 body = action.getValue("body").jsonPrimitive.content,
                 topic = action.getValue("topic").jsonPrimitive.content,
                 headline = action["headline"]?.jsonPrimitive?.content ?: "",
                 area = action["area"]?.let { Json.decodeFromJsonElement<PostArea>(it) },
-                profile = action["profile"]?.let { Json.decodeFromJsonElement<CommunityProfile>(it) },
+                profile = snapshot.profile.takeUnless { action["anonymous"]?.jsonPrimitive?.boolean == true },
                 distance = "Pending upload",
                 mine = true,
                 remoteId = remoteId,
@@ -108,8 +108,9 @@ internal fun NetkitCache.overlay(event: JsonObject): NetkitCache {
             if (index >= 0 && posts[index].replies.none { it.remoteId == remoteId }) {
                 val reply = Reply(
                     id = allocator.allocate(remoteId),
-                    author = action.getValue("displayName").jsonPrimitive.content,
+                    author = if (action.getValue("displayName").jsonPrimitive.content == "Anonymous neighbor") "Anonymous neighbor" else snapshot.alias,
                     body = action.getValue("body").jsonPrimitive.content,
+                    mine = true, profile = snapshot.profile.takeUnless { action.getValue("displayName").jsonPrimitive.content == "Anonymous neighbor" },
                     remoteId = remoteId,
                     pending = true
                 )
@@ -154,7 +155,7 @@ internal fun NetkitCache.withFeed(remote: List<WirePost>, replicaAsOf: Long? = n
             saved = post.id in bookmarks,
             hidden = post.id in hidden,
             replies = post.replies.map { reply ->
-                Reply(allocator.allocate(reply.id), reply.author, reply.body, remoteId = reply.id, mine = reply.mine || reply.id in ownReplies, visibility = reply.visibility, username = reply.username)
+                Reply(allocator.allocate(reply.id), reply.author, reply.body, remoteId = reply.id, mine = reply.mine || reply.id in ownReplies, visibility = reply.visibility, username = reply.username, profile = reply.profile)
             }
         )
     }

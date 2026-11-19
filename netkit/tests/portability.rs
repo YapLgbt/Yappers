@@ -4,7 +4,7 @@ use yappers_netkit::{
     client::{Client, ClientConfig},
     model::*,
     portability::*,
-    server::{Server, ServerConfig},
+    server::{PeerConfig, Server, ServerConfig},
     store::Store,
 };
 
@@ -745,13 +745,14 @@ async fn ios_messaging_fixture() -> anyhow::Result<()> {
     let sync = json!({"kind":"sync"});
     let mut state = step(&client, &Value::Null, json!({"kind":"initialize"})).await;
     state = step(&client, &state, sync.clone()).await;
+    command(&client,json!({"type":"social","op":{"kind":"setProfile","name":"DM test neighbor","expected":0,"profile":CommunityProfile {
+            photo: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAkElEQVR4nO3RwQ2AIAyFYQZxO28cHMjEERzGqxO4hTYxMVgLLbQciCT/kb7vgJu3o2quA80D5+7v7IFnOqwdgFwnjd8CGX8wrQtUHdAzsQcvoMxIhwFzhgYMjShgwsACA2iM+5wHCpjwUArIDXTlhtGHaRjyPQYknnwdFhgg4ZHT35M8AAXr7BsVIKkDHdB3AeNMX2gQjeJ6AAAAAElFTkSuQmCC".into(),
+            ..Default::default()
+        }}})).await?;
     let post = client.prepare(Action::PostV2 {
         headline: "Hello from a neighbor".into(),
         area: None,
-        profile: Some(Box::new(CommunityProfile {
-            photo: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAkElEQVR4nO3RwQ2AIAyFYQZxO28cHMjEERzGqxO4hTYxMVgLLbQciCT/kb7vgJu3o2quA80D5+7v7IFnOqwdgFwnjd8CGX8wrQtUHdAzsQcvoMxIhwFzhgYMjShgwsACA2iM+5wHCpjwUArIDXTlhtGHaRjyPQYknnwdFhgg4ZHT35M8AAXr7BsVIKkDHdB3AeNMX2gQjeJ6AAAAAElFTkSuQmCC".into(),
-            ..Default::default()
-        })),
+        profile: None,
         body: "Say hello to the messaging fixture.".into(),
         topic: "Chatter".into(),
         display_name: "DM test neighbor".into(),
@@ -861,5 +862,95 @@ async fn rotated_device_can_erase_but_revoked_device_cannot() -> anyhow::Result<
     client.close().await;
     replacement.close().await;
     home.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_bylines_follow_account_edits_across_devices_and_homes() -> anyhow::Result<()> {
+    use std::collections::BTreeSet;
+    let dir = tempfile::tempdir()?;
+    let community = "shared";
+    let home = Server::start(config(&dir.path().join("home"), new_secret(), community)).await?;
+    let mirror = Server::start(config(&dir.path().join("mirror"), new_secret(), community)).await?;
+    for (a, b) in [(&home, &mirror), (&mirror, &home)] {
+        a.set_peers(vec![PeerConfig {
+            address: b.endpoint.addr(),
+            communities: BTreeSet::from([community.into()]),
+        }])?;
+    }
+    let id = home.endpoint.id().to_string();
+    let first = wallet(&id);
+    let author = portable_client(&home, community, &first).await;
+    let reader = portable_client(&home, community, &wallet(&id)).await;
+    let remote = portable_client(
+        &mirror,
+        community,
+        &wallet(&mirror.endpoint.id().to_string()),
+    )
+    .await;
+    let edit = |expected: u64, name: &str, bio: &str| {
+        json!({"type":"social","op":{"kind":"setProfile",
+        "expected":expected,"name":name,"profile":CommunityProfile{bio:bio.into(),..Default::default()}}})
+    };
+    author.feed().await?;
+    reader.feed().await?;
+    assert_eq!(
+        command(&author, edit(0, "First name", "Old bio")).await?["revision"],
+        1
+    );
+    let post = author.prepare(action("Keep this post"))?.event;
+    let post_id = post.id.clone();
+    author.submit(post).await?;
+    for display_name in ["Neighbor", "Anonymous neighbor"] {
+        author
+            .submit(
+                author
+                    .prepare(Action::Reply {
+                        parent: post_id.clone(),
+                        body: display_name.into(),
+                        display_name: display_name.into(),
+                    })?
+                    .event,
+            )
+            .await?;
+    }
+    mirror.sync_once().await?;
+    let second = first.transition(id, true)?;
+    let another_device = portable_client(&home, community, &second).await;
+    another_device.feed().await?;
+    assert_eq!(
+        command(&another_device, edit(1, "Current name", "")).await?["revision"],
+        2
+    );
+    assert_eq!(
+        command(&another_device, edit(1, "Current name", "")).await?["revision"],
+        2
+    );
+    assert!(
+        command(&author, edit(1, "Stale draft", "Old bio"))
+            .await
+            .is_err()
+    );
+    command(&reader, edit(0, "Reader", "Separate account")).await?;
+    mirror.sync_once().await?;
+    for c in [&reader, &remote] {
+        let feed = command(c, json!({"type":"feed"})).await?;
+        let row = &feed["posts"][0];
+        assert_eq!(row["id"], post_id);
+        assert_eq!(row["author"], "Current name");
+        assert_eq!(row["profile"]["bio"], "");
+        for reply in row["replies"].as_array().unwrap() {
+            if reply["body"] == "Anonymous neighbor" {
+                assert!(
+                    reply["visibility"]["peer"].is_null()
+                        && reply["profile"].is_null()
+                        && reply["username"].is_null()
+                );
+            } else {
+                assert_eq!(reply["author"], "Current name");
+                assert_eq!(reply["profile"]["bio"], "");
+            }
+        }
+    }
     Ok(())
 }

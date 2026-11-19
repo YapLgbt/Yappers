@@ -42,7 +42,7 @@ impl Store {
             .context("post or reply unavailable")?
             .event;
         ensure!(event.payload.community == community, "wrong community");
-        let name = match &event.payload.action {
+        let fallback = match &event.payload.action {
             Action::Post {
                 display_name,
                 anonymous,
@@ -72,7 +72,16 @@ impl Store {
             }
             _ => bail!("choose a post or reply"),
         };
-        Ok((event.owner_id().to_string(), name.to_owned()))
+        let name = if crate::usernames::named(&event) {
+            self.current_profile(&event.payload.home, event.owner_id())?
+                .map(|record| record.name)
+        } else {
+            None
+        };
+        Ok((
+            event.owner_id().to_string(),
+            name.unwrap_or_else(|| fallback.to_owned()),
+        ))
     }
     fn unavailable(&self, owner: &str, peer: &str) -> Result<bool> {
         Ok(self.db.query_row("SELECT EXISTS(SELECT 1 FROM user_blocks WHERE (owner=?1 AND peer=?2) OR (owner=?2 AND peer=?1))", [owner,peer], |r| r.get(0))?)
@@ -117,7 +126,7 @@ impl Store {
                 });
                 let mut posts =
                     project_nearby(&events, community, owner, &self.hidden()?, nearby.as_ref());
-                self.add_usernames(&mut posts, &events)?;
+                self.apply_current_bylines(&mut posts, &events)?;
                 let by_id: std::collections::HashMap<_, _> =
                     events.iter().map(|e| (e.event.id.as_str(), e)).collect();
                 for post in &mut posts {
@@ -151,8 +160,39 @@ impl Store {
                     privacy: enhanced,
                 });
             }
+            SocialOp::SetProfile {
+                expected,
+                name,
+                profile,
+            } => serde_json::to_value(self.set_profile(home, owner, expected, name, profile)?)?,
+            SocialOp::Profiles { events } => {
+                ensure!(events.len() <= 100, "too many profile references");
+                let hidden = self.hidden()?;
+                let mut profiles = serde_json::Map::new();
+                for id in events {
+                    if hidden.contains(&id) {
+                        continue;
+                    }
+                    let Some(envelope) = self.existing(&id)? else {
+                        continue;
+                    };
+                    let event = envelope.event;
+                    let peer = event.owner_id();
+                    if event.payload.community == community
+                        && crate::usernames::named(&event)
+                        && !self.unavailable(owner, peer)?
+                        && !profiles.contains_key(peer)
+                        && let Some(record) = self.current_profile(&event.payload.home, peer)?
+                    {
+                        profiles.insert(peer.to_owned(), serde_json::to_value(record)?);
+                    }
+                }
+                serde_json::Value::Object(profiles)
+            }
             SocialOp::PrivacyStatus => {
                 let mut result = self.privacy_status(owner)?;
+                result["currentProfile"] =
+                    serde_json::to_value(self.current_profile(home, owner)?)?;
                 if let Some(domain) = crate::usernames::domain(home) {
                     result["usernameDomain"] = json!(domain);
                     result["username"] = json!(

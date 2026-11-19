@@ -468,6 +468,8 @@ impl Client {
                             | Block { .. }
                             | Unblock { .. }
                             | ClaimUsername { .. }
+                            | SetProfile { .. }
+                            | Profiles { .. }
                             | PrivacyStatus
                             | SetPrivacy { .. }
                             | Approve { .. }

@@ -158,6 +158,16 @@ impl State {
     }
     fn validate_import(&self, envelope: &Envelope) -> Result<()> {
         envelope.validate()?;
+        ensure!(
+            !matches!(
+                envelope.event.payload.action,
+                Action::PostV2 {
+                    profile: Some(_),
+                    ..
+                }
+            ),
+            "federated posts must omit profile details"
+        );
         if let Some(proof) = &envelope.deletion {
             self.validate_import(proof)?;
         }
@@ -500,6 +510,27 @@ impl State {
             }
             Request::JoinGroup { .. } => bail!("async group admission required"),
             Request::PublicReplicaFeed { community } => self.replica_feed(&community),
+            Request::PeerProfiles { community, known } => {
+                ensure!(
+                    known.len() <= 100 && self.peer(remote)?.communities.contains(&community),
+                    "profile scope denied"
+                );
+                let store = self.store()?;
+                let home = self.logical_addr().id.to_string();
+                let owners = store.named_authors(&home, &community)?;
+                let mut records = std::collections::BTreeMap::new();
+                for (owner, revision) in known {
+                    if owners.contains(&owner)
+                        && let Some(record) = store.current_profile(&home, &owner)?
+                        && record.revision > revision
+                    {
+                        records.insert(owner, record);
+                    }
+                }
+                Ok(Response::Social {
+                    result: serde_json::to_value(records)?,
+                })
+            }
             Request::PullPublicProjection { community, digest } => {
                 self.public_projection(remote, &community, digest.as_deref())
             }
@@ -561,7 +592,7 @@ impl State {
                 }
                 let mut posts =
                     project_nearby(&events, &community, "", &store.hidden()?, nearby.as_ref());
-                store.add_usernames(&mut posts, &events)?;
+                store.apply_current_bylines(&mut posts, &events)?;
                 let account_chain = Vec::new();
                 let deleted = store.erased_ids(&community)?;
                 let account_bytes =
@@ -586,6 +617,16 @@ impl State {
                 account_chain,
             } => {
                 self.member(&event.payload.community, &token)?;
+                ensure!(
+                    !matches!(
+                        event.payload.action,
+                        Action::PostV2 {
+                            profile: Some(_),
+                            ..
+                        }
+                    ),
+                    "save public profiles separately from posts"
+                );
                 event.validate()?;
                 ensure!(
                     event.payload.version == 4
@@ -952,7 +993,7 @@ impl Server {
                             Ok(call)=>state.dispatch(&remote,call).await.unwrap_or_else(|e|Response::Error{code:"rejected".into(),message:e.to_string()}),
                             Err(e)=>Response::Error{code:"rejected".into(),message:e.to_string()},
                         };
-                        let mut response = serde_json::to_vec(&response)?;
+                        let mut response = crate::transport::encode_response(&response)?;
                         if response.len() > MAX_FRAME {
                             response = serde_json::to_vec(&Response::Error {
                                 code: "capacity".into(),
@@ -1149,6 +1190,54 @@ impl Server {
                 .import_scoped_page(&id, &generation, next, &accepted, &scope)?;
             count += entries.len();
             if !more {
+                for community in &current.communities {
+                    if self.state.access(&id, community) != Some(Access::Active) {
+                        continue;
+                    }
+                    let owners: Vec<_> = self
+                        .state
+                        .store()?
+                        .named_authors(&id, community)?
+                        .into_iter()
+                        .collect();
+                    for batch in owners.chunks(100) {
+                        let known = {
+                            let store = self.state.store()?;
+                            batch
+                                .iter()
+                                .map(|owner| {
+                                    Ok((
+                                        owner.clone(),
+                                        store
+                                            .current_profile(&id, owner)?
+                                            .map_or(0, |p| p.revision),
+                                    ))
+                                })
+                                .collect::<Result<std::collections::BTreeMap<_, _>>>()?
+                        };
+                        let Response::Social { result } = transport::rpc(
+                            &self.endpoint,
+                            peer.address.clone(),
+                            &Request::PeerProfiles {
+                                community: community.clone(),
+                                known,
+                            },
+                        )
+                        .await?
+                        else {
+                            bail!("invalid profile response")
+                        };
+                        let records: std::collections::BTreeMap<
+                            String,
+                            crate::profiles::ProfileRecord,
+                        > = serde_json::from_value(result)?;
+                        let store = self.state.store()?;
+                        for (owner, record) in records {
+                            ensure!(batch.contains(&owner), "unrequested profile");
+                            store.import_profile(&id, &owner, record)?;
+                        }
+                    }
+                }
                 if self.state.access(&id, &format!("{id}/public")) == Some(Access::Active) {
                     self.refresh_public_projection(&current).await?;
                 }

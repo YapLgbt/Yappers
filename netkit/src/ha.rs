@@ -633,6 +633,7 @@ impl Ha {
         let bytes = if matches!(
             call,
             Request::Pull { .. }
+                | Request::PeerProfiles { .. }
                 | Request::PullPublicProjection { .. }
                 | Request::EnrollHost { .. }
         ) {

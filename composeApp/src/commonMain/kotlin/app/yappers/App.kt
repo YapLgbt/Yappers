@@ -149,6 +149,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
             nearbyScroll.requestScrollToItem(0)
         }
     }
+    var editingRevision by remember { mutableStateOf(0L) }
     var editingProfile by remember { mutableStateOf(false) }
     var postDraft by retain(identityScope, connection.activeGroup?.id) { mutableStateOf<PostDraft?>(null) }
     var shownAuthor by remember(connection.messagingScope) { mutableStateOf<SharedAuthor?>(null) }
@@ -221,7 +222,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
         shownAuthor = SharedAuthor(post.author, post.username, post.profile, post.remoteId, "post-${post.id}", post.mine, post.visibility?.peer)
     }
     fun showAuthor(reply: Reply) {
-        shownAuthor = SharedAuthor(reply.author, reply.username, null, reply.remoteId, "reply-${reply.id}", reply.mine, reply.visibility?.peer)
+        shownAuthor = SharedAuthor(reply.author, reply.username, reply.profile, reply.remoteId, "reply-${reply.id}", reply.mine, reply.visibility?.peer)
     }
     fun navigate(destination: String) {
         privateGroupsOpen = false
@@ -252,7 +253,10 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
         if (live) act { networking.save(post.id) } else change { repository.save(post.id) }
     }
     suspend fun saveProfile(name: String, profile: CommunityProfile) {
-        if (networking?.state?.value?.enabled == true) networking.setAlias(name)
+        if (networking?.state?.value?.enabled == true) {
+            networking.setPublicProfile(name, profile, if (editingProfile) editingRevision else state.profileRevision)
+            return
+        }
         repository.setProfile(name, profile)
         demoState = repository.snapshot
     }
@@ -344,9 +348,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                     returningName = if (installationWelcome && !offerBackup) connection.snapshot.alias else null,
                     onSaveName = { alias ->
                         check(live) { "Reconnect to your home to change your name, or continue with your current name." }
-                        networking.setAlias(alias)
-                        repository.setAlias(alias)
-                        demoState = repository.snapshot
+                        networking.setPublicProfile(alias, state.profile, state.profileRevision)
                     }, onDone = { onWelcomeComplete(); revisitGuide = false; navigate("Nearby") })
                 return@YapTheme
         }
@@ -414,7 +416,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
             } else if (page == MaterialPage.EditProfile || (page == null && editingProfile && !nativeForms)) {
                 Surface(Modifier.fillMaxSize(), color = colors.background) {
                     Box(Modifier.fillMaxSize().safeDrawingPadding(), contentAlignment = Alignment.TopCenter) {
-                        ProfileEditor(state.alias, demoState.profile, photoLibrary,
+                        ProfileEditor(state.alias, state.profile, photoLibrary,
                             onDismiss = { editingProfile = false }, onSave = ::saveProfile)
                     }
                 }
@@ -590,14 +592,14 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                                     returnToNearby(); scope.launch { networking?.sync() }
                                                 }, onError = { error = it },
                                                 onHome = { networking?.openHomeFeed(); returnToNearby(); scope.launch { networking?.sync() } })
-                                            visibleTab == "You" -> Profile(state.copy(profile = demoState.profile), live = live, connection = connection, networking = networking,
+                                            visibleTab == "You" -> Profile(state, live = live, connection = connection, networking = networking,
                                                 recoveryFiles = recoveryFiles, listState = profileScroll,
                                                 settingsOnly = platformNavigation?.profileSettings == true, onSettings = platformNavigation?.openProfileSettings,
                                                 onPrivacy = {
                                                     if (platformNavigation != null) platformNavigation.openInbox(InboxPage.Privacy, null)
                                                     else privacyOpen = true
                                                 }, onGuide = platformNavigation?.openGuide ?: { revisitGuide = true },
-                                                onEdit = { editingProfile = true }, onProfile = ::saveProfile,
+                                                onEdit = { editingRevision = state.profileRevision; editingProfile = true },
                                                 onCompose = { postDraft = PostDraft() }, onReset = { resetConfirm = true }, onPost = { openConversation(it) },
                                                 onJoin = { invitation -> networking!!.connect(invitation, demoState.alias); returnToNearby(); scope.launch { networking.sync() } },
                                                 onDemo = { act { networking!!.useDemo(); selectedId = null } }, onSync = { act { networking!!.sync() } },
@@ -716,7 +718,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
         if (materialNavigation == null) Screen(null) else {
             materialNavigation.Pages(materialStack, ::goBack) { Screen(it) }
         }
-        if (editingProfile && nativeForms) ProfileEditor(state.alias, demoState.profile, photoLibrary,
+        if (editingProfile && nativeForms) ProfileEditor(state.alias, state.profile, photoLibrary,
             onDismiss = { editingProfile = false }, onSave = ::saveProfile)
         postDraft?.let { draft ->
             ComposeSheet(draft, namedIdentity, anonymous, ::chooseIdentity,
@@ -724,14 +726,23 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                 networked = live, needsUsername = live && connection.needsUsername, usernameClaim = editorUsernameClaim,
                 usernameControl = { UsernameControl(connection, networking) }, onDismiss = { postDraft = null }
             ) { headline, body, category, asAnonymous ->
-                if (live) { networking.publish(body, category, asAnonymous, state.alias, headline, demoState.profile, nearby.center.takeUnless { connection.activeGroup != null }); scope.launch { networking.sync() } }
+                if (live) { networking.publish(body, category, asAnonymous, state.alias, headline, nearby.center.takeUnless { connection.activeGroup != null }); scope.launch { networking.sync() } }
                 else { repository.publish(body, category, asAnonymous, headline); demoState = repository.snapshot }
                 postDraft = null
                 inform(if (live) "Post saved." else "Post added to the demo.")
                 returnToNearby()
             }
         }
-        shownAuthor?.let { author ->
+        shownAuthor?.let { selected ->
+            val post = state.posts.firstOrNull { "post-${it.id}" == selected.localKey }
+            val reply = if (post == null) state.posts.firstNotNullOfOrNull { row ->
+                row.replies.firstOrNull { "reply-${it.id}" == selected.localKey }
+            } else null
+            val author = when {
+                post != null -> selected.copy(name = post.author, username = post.username, profile = post.profile)
+                reply != null -> selected.copy(name = reply.author, username = reply.username, profile = reply.profile)
+                else -> selected
+            }
             val event = author.event
             val actionable = !author.mine && (!live || event != null)
             AuthorProfileSheet(author.name, author.username, author.profile, onDismiss = { shownAuthor = null },
@@ -1305,7 +1316,7 @@ private fun ComposeSheet(draft: PostDraft, namedIdentity: String, anonymous: Boo
 
 @Composable
 private fun Profile(state: FeedSnapshot, live: Boolean, connection: NetkitState, networking: NetkitController?,
-                    recoveryFiles: RecoveryFiles?, listState: LazyListState, settingsOnly: Boolean, onSettings: (() -> Unit)?, onEdit: () -> Unit, onProfile: suspend (String, CommunityProfile) -> Unit,
+                    recoveryFiles: RecoveryFiles?, listState: LazyListState, settingsOnly: Boolean, onSettings: (() -> Unit)?, onEdit: () -> Unit,
                     onPrivacy: () -> Unit, onGuide: () -> Unit, onCompose: () -> Unit, onReset: () -> Unit, onPost: (Long) -> Unit,
                     onJoin: suspend (String) -> Unit, onDemo: () -> Unit, onSync: () -> Unit, onDiscard: () -> Unit, onError: (String) -> Unit) {
     val native = LocalFeedControl.current
@@ -1434,7 +1445,7 @@ private fun Profile(state: FeedSnapshot, live: Boolean, connection: NetkitState,
                             error("History was recovered, but profile data could not be applied. The original data is retained in your private recovery state.")
                         }
                     } ?: state.profile
-                    onProfile(restoredAlias, restoredProfile)
+                    networking.restorePublicProfile(restoredAlias, restoredProfile)
                 }, onError = onError)
         }
         if (android) item {

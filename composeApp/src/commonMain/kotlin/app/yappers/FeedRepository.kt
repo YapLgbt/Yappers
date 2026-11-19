@@ -25,7 +25,7 @@ internal fun suggestName(previous: String = ""): String {
 }
 
 @Serializable
-data class Reply(val id: Long, val author: String, val body: String, val remoteId: String? = null, val pending: Boolean = false, val mine: Boolean = false, val visibility: AuthorVisibility? = null, val username: String? = null)
+data class Reply(val id: Long, val author: String, val body: String, val remoteId: String? = null, val pending: Boolean = false, val mine: Boolean = false, val visibility: AuthorVisibility? = null, val username: String? = null, val profile: CommunityProfile? = null)
 @Serializable
 data class Post(
     val id: Long, val author: String, val body: String, val topic: String,
@@ -40,7 +40,7 @@ data class Post(
 data class FeedSnapshot(val posts: List<Post>, val nextId: Long = 100, val alias: String = "Tender comet",
                         val profile: CommunityProfile = CommunityProfile(), val nearby: NearbyPreference = NearbyPreference(),
                         val demoBlocks: Map<String, String> = emptyMap(), val privacy: DevicePrivacy = DevicePrivacy(),
-                        val replicaAsOf: Long? = null, val namedPostingScopes: Set<String> = emptySet())
+                        val replicaAsOf: Long? = null, val namedPostingScopes: Set<String> = emptySet(), val profileRevision: Long = 0)
 
 interface LocalStorage { fun read(): String?; fun write(value: String) }
 
@@ -75,7 +75,7 @@ class FeedRepository(private val storage: LocalStorage) {
     }
     fun reply(id: Long, body: String, anonymous: Boolean = false) {
         val clean = validate(body)
-        val reply = Reply(snapshot.nextId, if (anonymous) "Anonymous neighbor" else snapshot.alias, clean, mine = true)
+        val reply = Reply(snapshot.nextId, if (anonymous) "Anonymous neighbor" else snapshot.alias, clean, mine = true, profile = if (anonymous) null else snapshot.profile)
         val post = snapshot.posts.first { it.id == id }
         require(!post.hidden) { "This conversation is hidden." }
         commit(snapshot.copy(nextId = snapshot.nextId + 1, posts = snapshot.posts.map {
@@ -98,13 +98,20 @@ class FeedRepository(private val storage: LocalStorage) {
         require(clean.length in 2..30) { "Use a name between 2 and 30 characters." }
         commit(snapshot.copy(alias = clean))
     }
-    /** Profile edits affect future posts; published posts retain their signed identity snapshot. */
+    /** Refresh named demo bylines when the local profile changes. */
     fun setProfile(alias: String, profile: CommunityProfile, initialNamedScope: String? = null) {
         val clean = alias.trim()
         require(clean.length in 2..30) { "Use a name between 2 and 30 characters." }
         val validated = profile.cleaned()
         val namedScopes = initialNamedScope?.let { snapshot.namedPostingScopes + it } ?: snapshot.namedPostingScopes
-        commit(snapshot.copy(alias = clean, profile = validated, namedPostingScopes = namedScopes))
+        val posts = snapshot.posts.map { post ->
+            val replies = post.replies.map { reply ->
+                if (reply.mine && reply.author != "Anonymous neighbor") reply.copy(author = clean, profile = validated) else reply
+            }
+            if (post.mine && post.author != "Anonymous neighbor") post.copy(author = clean, profile = validated, replies = replies)
+            else post.copy(replies = replies)
+        }
+        commit(snapshot.copy(alias = clean, profile = validated, posts = posts, namedPostingScopes = namedScopes))
     }
     fun setPostingIdentity(scope: String, anonymous: Boolean) {
         val named = snapshot.namedPostingScopes

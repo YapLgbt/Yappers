@@ -20,7 +20,8 @@
   let comments = $derived<{author: Author; queued: boolean}[]>([
     ...replies.map(author => ({ author, queued: false })),
     ...pending.map(event => ({
-      author: {id: event.id, mine: true, author: event.payload.action.displayName,
+      author: {id: event.id, mine: true, author: event.payload.action.displayName === 'Anonymous neighbor' ? 'Anonymous neighbor' : profile.alias,
+        profile: event.payload.action.displayName === 'Anonymous neighbor' ? undefined : profile.publicProfile,
         username: event.payload.action.displayName === 'Anonymous neighbor' ? undefined : profile.username,
         body: event.payload.action.body || ''},
       queued: true

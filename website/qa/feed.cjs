@@ -44,7 +44,7 @@ const stop=()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnec
   assert.equal(await page.evaluate(async()=>await (await import('./store.js')).load()),null);
   if (!upgradeFrom) {
     const storedEntries = await page.evaluate(() => new Promise((resolve, reject) => {
-      const open = indexedDB.open('yap-web-v1');
+      const open = indexedDB.open('yap-web-v6');
       open.onerror = () => reject(open.error);
       open.onsuccess = () => {
         const db = open.result;

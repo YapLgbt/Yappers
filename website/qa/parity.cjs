@@ -310,6 +310,25 @@ module.exports = async function (page, ctx, base, engine) {
   await dialog.locator('canvas:not([hidden])').waitFor();
   await page.keyboard.press('Escape');await dialog.waitFor({state:'hidden'});
 
+  await button('Save', named).click();
+  // Refresh the saved group article while viewing the home feed.
+  await page.evaluate(async () => {
+    const home = await import('/app/network.js');
+    const original = home.profile.publicProfile;
+    const group = home.profile.activeGroup;
+    const id = home.profile.posts.find(p => p.headline === 'Signed profile in the group').id;
+    await home.selectGroup(null);
+    await home.setPublicProfile('Updated neighbor', {...original, photo:'', bio:'Revised bio'}, home.profile.profileRevision);
+    await home.sync();
+    const post = home.profile.savedPosts[id];
+    if (post.author !== 'Updated neighbor' || post.profile.photo || post.profile.bio !== 'Revised bio')
+      throw new Error('Historical group post retained stale profile details');
+    await home.selectGroup(group);
+    await home.setPublicProfile('Library neighbor', original, home.profile.profileRevision);
+    await home.sync();
+  });
+
+  await button('Saved', named).click();
   await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'Groups',exact:true}).click();
   await page.getByRole('tab',{name:'Local',exact:true}).click();
   await button('Choose a town').click();

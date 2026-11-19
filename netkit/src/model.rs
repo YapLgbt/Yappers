@@ -79,7 +79,7 @@ fn id(value: &str) -> Result<()> {
     Ok(())
 }
 
-/// A signed, optional author snapshot; edits do not rewrite historical posts.
+/// Details of a public account profile, resolved separately from signed posts.
 /// Photos are small JPEG thumbnails (base64, at most 4096 ASCII bytes), not URLs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -92,7 +92,7 @@ pub struct CommunityProfile {
     pub photo: String,
 }
 impl CommunityProfile {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         for (value, max) in [
             (&self.pronouns, 40),
             (&self.bio, 280),
@@ -369,7 +369,7 @@ impl SignedEvent {
     }
     fn sign_domain(&self) -> &'static [u8] {
         if self.payload.version == 4 {
-            b"yap:author:v4\0"
+            b"yap:author:v4:profiles-1\0"
         } else if self.payload.version == 3 {
             b"yap:author:v3\0"
         } else if self.payload.version == 2 {
@@ -404,7 +404,7 @@ impl SignedEvent {
         Ok(blake3::hash(
             &[
                 if self.payload.version == 4 {
-                    b"yap:event:v4\0"
+                    b"yap:event:v4:profiles-1\0"
                 } else if self.payload.version == 3 {
                     b"yap:event:v3\0"
                 } else if self.payload.version == 2 {
@@ -636,6 +636,8 @@ pub enum Request {
     PublicReplicaFeed {
         community: String,
     },
+    /// Current profile revisions from the authenticated origin for named authors in a shared scope.
+    PeerProfiles { community: String, known: std::collections::BTreeMap<String,u64> },
     /// Peer-only conditional pull of the founding home's public moderation projection.
     PullPublicProjection {
         community: String,
@@ -839,6 +841,8 @@ pub struct AuthorVisibility {
 #[serde(rename_all = "camelCase")]
 pub struct RemoteReply {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<CommunityProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility: Option<AuthorVisibility>,
@@ -990,6 +994,7 @@ pub fn project_nearby(
                         return Some((
                             r.accepted_at,
                             RemoteReply {
+                                profile: None,
                                 username: None,
                                 visibility: None,
                                 mine: false,

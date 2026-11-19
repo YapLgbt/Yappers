@@ -72,6 +72,7 @@ impl Store {
         db.execute_batch(crate::directory::SCHEMA)?;
         db.execute_batch(crate::mailbox::SCHEMA)?;
         db.execute_batch(crate::private_group_store::SCHEMA)?;
+        db.execute_batch(crate::profiles::SCHEMA)?;
         db.execute_batch(crate::usernames::SCHEMA)?;
         crate::privacy::install(&db)?;
         crate::backup::attach(&mut db, path)?;
@@ -353,6 +354,7 @@ impl Store {
 
         self.db.execute_batch(crate::redaction::SCHEMA)?;
         self.db.execute_batch(crate::usernames::SCHEMA)?;
+        self.db.execute_batch(crate::profiles::SCHEMA)?;
         Ok(())
     }
 }

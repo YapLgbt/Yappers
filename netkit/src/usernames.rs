@@ -44,7 +44,7 @@ fn valid_name(name: &str) -> bool {
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
 }
-fn named(event: &SignedEvent) -> bool {
+pub(crate) fn named(event: &SignedEvent) -> bool {
     match &event.payload.action {
         Action::Post { anonymous, .. } | Action::PostV2 { anonymous, .. } => !anonymous,
         Action::Reply { display_name, .. } => display_name != "Anonymous neighbor",
@@ -160,7 +160,7 @@ impl Store {
             envelope,
         })
     }
-    pub(crate) fn add_usernames(
+    pub(crate) fn apply_current_bylines(
         &self,
         posts: &mut [RemotePost],
         events: &[Envelope],
@@ -169,22 +169,40 @@ impl Store {
             .iter()
             .map(|e| (e.event.id.as_str(), &e.event))
             .collect();
-        let byline = |id: &str| -> Result<Option<String>> {
-            let Some(event) = by_id.get(id) else {
-                return Ok(None);
+        let mut profiles =
+            std::collections::HashMap::<_, Option<crate::profiles::ProfileRecord>>::new();
+        let mut byline =
+            |id: &str| -> Result<(Option<String>, Option<crate::profiles::ProfileRecord>)> {
+                let Some(event) = by_id.get(id).filter(|event| named(event)) else {
+                    return Ok((None, None));
+                };
+                let key = (event.payload.home.as_str(), event.owner_id());
+                let profile = match profiles.entry(key) {
+                    std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(self.current_profile(key.0, key.1)?).clone()
+                    }
+                };
+                let username = self.username_receipt(id)?.and_then(|receipt| {
+                    domain(&event.payload.home).map(|domain| format!("{}@{}", receipt.name, domain))
+                });
+                Ok((username, profile))
             };
-            if !named(event) {
-                return Ok(None);
-            }
-            let Some(receipt) = self.username_receipt(id)? else {
-                return Ok(None);
-            };
-            Ok(domain(&event.payload.home).map(|domain| format!("{}@{}", receipt.name, domain)))
-        };
         for post in posts {
-            post.username = byline(&post.id)?;
+            let (username, record) = byline(&post.id)?;
+            post.username = username;
+            post.profile = None;
+            if let Some(record) = record {
+                post.author = record.name;
+                post.profile = Some(record.profile);
+            }
             for reply in &mut post.replies {
-                reply.username = byline(&reply.id)?;
+                let (username, record) = byline(&reply.id)?;
+                reply.username = username;
+                if let Some(record) = record {
+                    reply.author = record.name;
+                    reply.profile = Some(record.profile);
+                }
             }
         }
         Ok(())

@@ -138,6 +138,52 @@ export const submitReport = (receipt,evidence) => rpc({type:'submitReport',recei
 export function usernameDomain(state) {
   return state?.usernameDomain || (state?.join.serverAddr.id === '114f92b50e66dd84a14e0ff9b857b0c254565609b00b0cb9ef85f29e864efe5b' ? 'yap.lgbt' : null);
 }
+function currentProfile(state, record) {
+  if (!record || record.revision < (state.profileRevision || 0)) return state;
+  return {...state, alias:record.name, publicProfile:record.profile, profileRevision:record.revision};
+}
+function writeProfile(expected, name, profile) {
+  return rpc({type:'social', op:{kind:'setProfile', expected, name, profile}});
+}
+export async function setPublicProfile(name, details, expected) {
+  await navigator.locks.request('yap-web-delivery-v1', async () => {
+    await confirmAccount();
+    let record;
+    try {
+      record = await writeProfile(expected, name, details);
+    } catch (failure) {
+      const status = await rpc({type:'social',op:{kind:'privacyStatus'}}).catch(() => null);
+      if (status?.currentProfile) await modify(s => currentProfile(s, status.currentProfile));
+      throw new Error(String(failure));
+    }
+    await modify(s => currentProfile(s, record));
+  });
+}
+async function savedProfiles(savedPosts) {
+  const scopes = new Map();
+  for (const post of Object.values(savedPosts || {})) {
+    const scope = post.scope || profile.join.community;
+    if (scope !== profile.join.community && !profile.joinedGroups?.[scope]) continue;
+    const events = scopes.get(scope) || new Map();
+    for (const row of [post,...post.replies]) {
+      if (row.visibility?.peer && !row.visibility.anonymous) events.set(row.visibility.peer, row.id);
+    }
+    scopes.set(scope, events);
+  }
+  const records = new Map();
+  for (const [scope, authors] of scopes) {
+    const ids = [...authors.values()];
+    for (let i = 0; i < ids.length; i += 100) {
+      const result = await scopedRpc(scope,{type:'social',op:{kind:'profiles',events:ids.slice(i,i+100)}});
+      for (const [peer,record] of Object.entries(result)) records.set(peer, record);
+    }
+  }
+  return records;
+}
+function refreshByline(row, records) {
+  const record = !row.visibility?.anonymous && records.get(row.visibility?.peer);
+  return record ? {...row, author:record.name, profile:record.profile} : row;
+}
 // Account setup trusts the primary home's authenticated privacy status, including an explicit empty claim.
 export async function verifyWelcomeUsername(finish = false) {
   return navigator.locks.request('yap-web-delivery-v1', async () => {
@@ -152,9 +198,11 @@ export async function verifyWelcomeUsername(finish = false) {
         username !== username.split('@')[0] + '@' + domain))
       throw new Error('Your home returned an invalid username. Try again.');
     if (finish && !username) throw new Error('Claim a username before entering the neighborhood.');
+    const record = status.currentProfile || (finish && await writeProfile(0, profile.alias,
+      profile.publicProfile || {pronouns:'',bio:'',identity:'',interests:'',photo:'',hereFor:[]}));
     await modify(s => {
       if (s.wallet.deviceSecret !== wallet.deviceSecret) throw new Error('Your account changed. Reopen Yap.');
-      return {...s,usernameDomain:domain,username,setupStep:finish ? null : s.setupStep};
+      return {...currentProfile(s,record),usernameDomain:domain,username,setupStep:finish ? null : s.setupStep};
     });
     return {domain,username};
   });
@@ -191,8 +239,8 @@ export function queuedPosts(state, feed) {
     if (known.has(id) || payload.community !== scope || !['post', 'postV2'].includes(action.kind) ||
       (area && (!action.area || milesBetween(action.area, area.center) > area.radiusMiles))) return [];
     return [{
-      id, scope, pending: true, mine: true, author: action.displayName, visibility: { anonymous: action.anonymous },
-      username: action.anonymous ? undefined : state.username, profile: action.profile, area: action.area,
+      id, scope, pending: true, mine: true, author: action.anonymous ? action.displayName : state.alias, visibility: { anonymous: action.anonymous },
+      username: action.anonymous ? undefined : state.username, profile: action.anonymous ? undefined : state.publicProfile, area: action.area,
       headline: action.headline, body: action.body, topic: action.topic, createdAt: payload.createdAt, replies: []
     }];
   }).reverse();
@@ -236,7 +284,9 @@ export async function queue(action, _legacyAlias, scope = profile.activeGroup ||
     const target = action.target || action.parent;
     const savedTarget = target && Object.values(state.savedPosts||{}).some(p=>p.scope===scope && (p.id===target || p.replies.some(r=>r.id===target)));
     if (scope !== (state.activeGroup || state.join.community) && !savedTarget) throw new Error('The feed changed. Reopen the composer.');
-    const prepared = JSON.parse(prepare_action(JSON.stringify(state.wallet),scope,JSON.stringify(action)));
+    const named = action.anonymous === false || action.kind === 'reply' && action.displayName !== 'Anonymous neighbor';
+    const payload = named ? {...action,displayName:'Neighbor'} : action;
+    const prepared = JSON.parse(prepare_action(JSON.stringify(state.wallet),scope,JSON.stringify(payload)));
     eventId = prepared.event.id;
     return {...state, wallet:{...state.wallet,nextSequence:prepared.nextSequence},
       outbox:[...state.outbox,prepared.event]};
@@ -340,11 +390,15 @@ async function synchronize() {
     }
     const confirmedBlocks=blocks.blocks.map(b=>profile.blocks.find(local=>local.handle===b.id) || {event:'home-'+b.id,handle:b.id,label:b.label});
     const newlyBlocked=confirmedBlocks.some(b=>!profile.blocks.some(old=>old.handle===b.handle));
+    const records = await savedProfiles(newlyBlocked ? {} : profile.savedPosts);
     await modify(s => {
-      const savedPosts=newlyBlocked?{}:{...s.savedPosts};
+      const savedPosts = {};
+      for (const [id,post] of Object.entries(newlyBlocked ? {} : s.savedPosts || {})) {
+        savedPosts[id] = {...refreshByline(post, records), replies:post.replies.map(r => refreshByline(r, records))};
+      }
       const scope=s.activeGroup||s.join.community;
       for(const post of latest.posts)if(s.saved.includes(post.id))savedPosts[post.id]={...post,scope};
-      return purgeDeleted({...s,savedPosts,outbox:s.outbox.filter(event=>!acceptedFeedEvents.has(event.id)),feedCache:newlyBlocked ? {} : s.feedCache,blocks:[...confirmedBlocks,...s.blocks.filter(b=>!b.handle)], posts:latest.posts, lastSync:Date.now(), safeForPublic:safe,
+      return purgeDeleted({...currentProfile(s,privacy.currentProfile),savedPosts,outbox:s.outbox.filter(event=>!acceptedFeedEvents.has(event.id)),feedCache:newlyBlocked ? {} : s.feedCache,blocks:[...confirmedBlocks,...s.blocks.filter(b=>!b.handle)], posts:latest.posts, lastSync:Date.now(), safeForPublic:safe,
       directAvailable:latest.direct === true && !s.mailboxElsewhere, messageRequests:privacy.requests || [], inboxPolicy:s.pendingPrivacy || privacy.settings, hideAnonymous:s.pendingPrivacy?.hideAnonymous ?? (s.privacyManaged ? privacy.settings.hideAnonymous : s.hideAnonymous || privacy.settings.hideAnonymous),
       usernameDomain:privacy.usernameDomain || s.usernameDomain, username:privacy.username || s.username,
       wallet:latest.accountChain?.length ? {...s.wallet,chain:latest.accountChain} : s.wallet},latest.deleted);});
@@ -515,7 +569,7 @@ export async function restoreIdentity({account, home, root}) {
       await modify(state => {
         if (state.pendingRecovery?.deviceSecret !== wallet.deviceSecret || hasLocalActivity(state))
           throw new Error('This account changed during recovery. Retry with your file.');
-        return {...state,wallet,privateGroupState:null,directState:null,directAvailable:false,messageRequests:[],pendingApprovals:[],approvedContacts:[],revokedContacts:[],inboxPolicy:null,pendingRecovery:null,welcomePending:false,setupStep:'restored-username',username:null,usernameDomain:null,mailboxElsewhere:false,accountRestored:true,safeForPublic:false,posts:[],savedPosts:{},feedCache:{},lastSync:null};
+        return {...state,wallet,profileRevision:0,privateGroupState:null,directState:null,directAvailable:false,messageRequests:[],pendingApprovals:[],approvedContacts:[],revokedContacts:[],inboxPolicy:null,pendingRecovery:null,welcomePending:false,setupStep:'restored-username',username:null,usernameDomain:null,mailboxElsewhere:false,accountRestored:true,safeForPublic:false,posts:[],savedPosts:{},feedCache:{},lastSync:null};
       });
     } finally {await restored.close();}
   });
@@ -818,6 +872,7 @@ export async function importArchive(file, passphrase, invitation, allowDrafts) {
             accountRestored: true,
             alias: meta.client?.alias || s.alias,
             publicProfile: meta.client?.profile,
+            profileRevision: 0,
             username: sameAccount ? s.username : null,
             usernameDomain: sameHome ? s.usernameDomain : null,
             posts: [],

@@ -27,7 +27,7 @@ impl State {
         let events = store.events(community)?;
         let ages = store.ages()?;
         let mut posts = project(&events, community, "", &store.hidden()?);
-        store.add_usernames(&mut posts, &events)?;
+        store.apply_current_bylines(&mut posts, &events)?;
         let metadata: HashMap<_, _> = events.iter().map(|e| (e.event.id.as_str(), e)).collect();
         for p in &mut posts {
             p.visibility = metadata

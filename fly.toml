@@ -7,7 +7,7 @@ primary_region = "iad"
 [env]
   YAP_PEERING_POLICY = "/etc/yap/peering.json"
   YAP_SOURCE_BASE_URL = "https://yap.lgbt/source"
-  YAP_SERVICE_STATE = "/data/v5"
+  YAP_SERVICE_STATE = "/data/v6"
 
 [mounts]
   source = "yap_home_data"

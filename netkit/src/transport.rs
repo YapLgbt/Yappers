@@ -110,7 +110,7 @@ pub async fn rpc(
                     }
                     _ => anyhow::Error::new(error),
                 })?;
-            let response = serde_json::from_slice(&response).context("invalid response")?;
+            let response = decode_response(&response).context("invalid response")?;
             if matches!(&response, Response::Error { code, .. } if code == "ha_unavailable") {
                 return Err(anyhow::anyhow!(Unavailable));
             }
@@ -122,4 +122,71 @@ pub async fn rpc(
     })
     .await
     .context(Unavailable)?
+}
+
+/// The app consumes hydrated rows. On the wire each disclosed account contributes
+/// its profile once, even when it wrote many of the returned posts and replies.
+#[cfg(feature = "server")]
+pub(crate) fn encode_response(response: &Response) -> Result<Vec<u8>> {
+    if !matches!(
+        response,
+        Response::Feed { .. } | Response::PublicReplicaFeed { .. }
+    ) {
+        return Ok(serde_json::to_vec(response)?);
+    }
+    let mut value = serde_json::to_value(response)?;
+    let mut profiles = serde_json::Map::new();
+    for post in value["posts"].as_array_mut().unwrap() {
+        let mut pack = |row: &mut serde_json::Value| {
+            if let Some(peer) = row["visibility"]["peer"].as_str().map(str::to_owned)
+                && !row["profile"].is_null()
+            {
+                let profile = row.as_object_mut().unwrap().remove("profile").unwrap();
+                profiles.insert(peer, profile);
+            }
+        };
+        pack(post);
+        for reply in post["replies"].as_array_mut().unwrap() {
+            pack(reply);
+        }
+    }
+    value["profiles"] = serde_json::Value::Object(profiles);
+    Ok(serde_json::to_vec(&value)?)
+}
+
+fn decode_response(bytes: &[u8]) -> Result<Response> {
+    #[derive(serde::Deserialize)]
+    struct Dictionary {
+        #[serde(default)]
+        profiles: std::collections::HashMap<String, CommunityProfile>,
+    }
+    let mut response: Response = serde_json::from_slice(bytes)?;
+    if let Response::Feed { posts, .. } | Response::PublicReplicaFeed { posts, .. } = &mut response
+    {
+        let dictionary: Dictionary = serde_json::from_slice(bytes)?;
+        let mut budget = MAX_FRAME;
+        let mut hydrate = |vis: &Option<AuthorVisibility>,
+                           profile: &mut Option<CommunityProfile>|
+         -> Result<()> {
+            if let Some(peer) = vis
+                .as_ref()
+                .filter(|v| !v.anonymous)
+                .and_then(|v| v.peer.as_ref())
+                && let Some(shared) = dictionary.profiles.get(peer)
+            {
+                budget = budget
+                    .checked_sub(serde_json::to_vec(shared)?.len())
+                    .context("expanded feed too large")?;
+                *profile = Some(shared.clone());
+            }
+            Ok(())
+        };
+        for post in posts {
+            hydrate(&post.visibility, &mut post.profile)?;
+            for reply in &mut post.replies {
+                hydrate(&reply.visibility, &mut reply.profile)?;
+            }
+        }
+    }
+    Ok(response)
 }

@@ -29,7 +29,7 @@
     </dl>
   {/if}
   {#if !own}
-    <p class="source">{sharedDetails ? 'Shared with this post' : 'No further profile details shared with this post.'}</p>
+    <p class="source">{sharedDetails ? 'Current public profile' : 'No further public profile details.'}</p>
   {/if}
 </div>
 

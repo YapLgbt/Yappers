@@ -79,6 +79,8 @@ impl Payload for Letter {
 pub enum SocialOp {
     PrivacyFeed { nearby: Option<crate::Nearby> },
     PrivacyStatus,
+    SetProfile { expected: u64, name: String, profile: crate::CommunityProfile },
+    Profiles { events: Vec<String> },
     ClaimUsername { name: String },
     SetPrivacy { settings: PrivacySettings },
     Approve { peer: String },

@@ -28,6 +28,8 @@ pub mod peering;
 pub mod portability;
 #[cfg(feature = "server")]
 mod privacy;
+#[cfg(feature = "server")]
+mod profiles;
 mod private_group_client;
 #[cfg(feature = "server")]
 mod private_group_store;
@@ -49,7 +51,7 @@ pub use model::*;
 /// Pinned transport dependency; update together with Cargo.toml and Cargo.lock.
 pub const IROH_VERSION: &str = "1.4.1";
 /// Changing incompatible application wire rules requires a new ALPN.
-pub const ALPN: &[u8] = b"yappers/netkit/5";
+pub const ALPN: &[u8] = b"yappers/netkit/6";
 /// Maximum encoded JSON request or response, including signatures and framing data.
 pub const MAX_FRAME: usize = 1024 * 1024;
 /// Deadline for an entire request/response exchange.
@@ -58,4 +60,4 @@ pub const RPC_TIMEOUT_SECS: u64 = 20;
 pub const MAX_PAGE_ENTRIES: u32 = 100;
 
 /// Transport RPC version; new submissions and replication require committed v4 events.
-pub const PROTOCOL_VERSION: u8 = 5;
+pub const PROTOCOL_VERSION: u8 = 6;

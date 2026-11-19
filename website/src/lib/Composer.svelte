@@ -116,7 +116,6 @@
         ? { kind: 'reply', parent: parentId, ...fields }
         : {
             kind: 'postV2', headline: headline.trim(), topic, anonymous, ...fields,
-            ...(!anonymous && profile.publicProfile && { profile: profile.publicProfile }),
             ...(!profile.activeGroup && profile.nearby && { area: profile.nearby.center }),
           };
       const eventId = await queue(action, scope);

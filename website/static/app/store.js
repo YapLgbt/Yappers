@@ -1,6 +1,6 @@
 // One origin-scoped, non-extractable key protects the wallet, drafts in the outbox, and cache.
 const database = new Promise((resolve, reject) => {
-  const open = indexedDB.open('yap-web-v1', 1);
+  const open = indexedDB.open('yap-web-v6', 1);
   open.onupgradeneeded = () => open.result.createObjectStore('device');
   open.onsuccess = () => resolve(open.result);
   open.onerror = () => reject(open.error);

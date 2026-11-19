@@ -30,7 +30,7 @@ export interface Profile {
   inboxPolicy?: Privacy;
   nearby?:Nearby|null; activeGroup?:string|null;
   recoveredGroups?:Group[];groupDirectory?:Group[]; joinedGroups?:Record<string,{group:Group}>;
-  publicProfile?:PublicProfile; muted?:Record<string,string>;
+  profileRevision?:number; publicProfile?:PublicProfile; muted?:Record<string,string>;
   join:{community:string};
   alias: string;
   username?: string;
@@ -48,6 +48,7 @@ export type View = 'connecting' | 'offline' | 'primary' | 'replica';
 export type ReportSubject = 'post'|'reply'|'message'|'account';
 export interface ReportEvidence {subject: ReportSubject; category: string; text:string; reference:string|null}
 export interface Community {
+  setPublicProfile(name:string,profile:PublicProfile,expected:number):Promise<void>;
   exportArchive(passphrase:string,includeHome:boolean):Promise<Blob>;
   importArchive(file:File,passphrase:string,invitation:string,drafts:boolean):Promise<void>;
   discardUploads(ids:string[]):Promise<void>;

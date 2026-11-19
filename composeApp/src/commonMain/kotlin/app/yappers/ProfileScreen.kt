@@ -260,7 +260,7 @@ internal fun AuthorProfileSheet(name: String, username: String?, profile: Commun
                 if (profile != null) add(FormRow("photo", "Profile photo of $name", "photo", value = profile.photo))
                 profile?.pronouns?.takeIf { it.isNotBlank() }?.let { add(FormRow("pronouns", it, "text")) }
                 username?.let { add(FormRow("username", it, "text")) }
-                if (profile != null) add(FormRow("source", "Shared with this post", "text"))
+                if (profile != null) add(FormRow("source", "Current public profile", "text"))
                 profile?.bio?.takeIf { it.isNotBlank() }?.let { add(FormRow("bio", it, "text")) }
             }))
             if (profile != null) {
@@ -293,7 +293,7 @@ internal fun AuthorProfileSheet(name: String, username: String?, profile: Commun
                     Text(name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                     profile?.pronouns?.takeIf { it.isNotBlank() }?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
                     username?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                    if (profile != null) Text("Shared with this post", style = MaterialTheme.typography.bodySmall,
+                    if (profile != null) Text("Current public profile", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }

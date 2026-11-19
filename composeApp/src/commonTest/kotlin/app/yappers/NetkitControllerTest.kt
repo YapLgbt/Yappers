@@ -471,19 +471,18 @@ class NetkitControllerTest {
         assertEquals(1, server.accepted.size)
         controller.shutdown()
     }
-    @Test fun richOutboxRetainsProfileThroughRestartAndAnonymousPayloadLeavesItOut() = runBlocking {
+    @Test fun queuedSignedPostsOmitProfileDetailsAfterRestart() = runBlocking {
         val storage = Storage(); val server = Server().apply { offline = true }
         val first = NetkitController(storage, Engine(server))
         first.connect(join, "Comet")
-        val profile = CommunityProfile(pronouns = "they / them", bio = "My world", hereFor = listOf("Community"))
-        first.publish("Bring a blanket", "Friends", false, "Comet", "Quiet company", profile)
-        assertEquals(profile, first.state.value.snapshot.posts.first().profile)
+        first.publish("Bring a blanket", "Friends", false, "Comet", "Quiet company")
+        assertEquals(first.state.value.snapshot.profile, first.state.value.snapshot.posts.first().profile)
         first.shutdown()
         val restored = NetkitController(storage, Engine(server)); restored.restore()
         server.offline = false; restored.sync()
         assertEquals("Quiet company", restored.state.value.snapshot.posts.first().headline)
-        assertEquals(profile, restored.state.value.snapshot.posts.first().profile)
-        restored.publish("A thought", "Chatter", true, "Comet", "Hello", profile)
+        assertFalse(server.accepted.values.first().getValue("payload").jsonObject.getValue("action").jsonObject.containsKey("profile"))
+        restored.publish("A thought", "Chatter", true, "Comet", "Hello")
         restored.sync()
         val anonymous = server.accepted.values.last().getValue("payload").jsonObject.getValue("action").jsonObject
         assertFalse(anonymous.containsKey("profile"))

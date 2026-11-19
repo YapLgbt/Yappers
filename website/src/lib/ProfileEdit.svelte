@@ -33,7 +33,7 @@
     zoom = $state(1),
     x = $state(0.5),
     y = $state(0.5),
-    version = 0;
+    version = 0, expectedRevision = 0;
   let initial = $state(''), editing = $state(false);
   let closing = $state(false), reserveScrollbar = $state(false);
   let dialog: HTMLDialogElement;
@@ -103,6 +103,7 @@
     trigger = event.currentTarget;
     clearImage();
     alias = profile.alias;
+    expectedRevision = profile.profileRevision || 0;
     draft = {
       ...blankProfile(),
       ...profile.publicProfile,
@@ -225,7 +226,7 @@
         if (photo.length > 4096) throw Error('Couldn’t resize this photo. Choose another.');
       }
       const updated = { ...draft, photo, hereFor: [...draft.hereFor] };
-      await client.modify((s) => ({ ...s, alias: alias.trim(), publicProfile: updated }));
+      await client.setPublicProfile(alias.trim(), updated, expectedRevision);
       await dismiss();
     } catch (e) {
       error = e instanceof Error ? e.message : 'Couldn’t save your profile.';
