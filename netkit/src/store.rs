@@ -71,6 +71,7 @@ impl Store {
         ensure!(!db.query_row("SELECT EXISTS(SELECT 1 FROM events WHERE json_extract(envelope,'$.event.payload.version')<>4 UNION ALL SELECT 1 FROM personal_events WHERE json_extract(envelope,'$.event.payload.version')<>4)",[],|r|r.get::<_,bool>(0))?, "legacy content present; use a fresh v5 store");
         db.execute_batch(crate::directory::SCHEMA)?;
         db.execute_batch(crate::mailbox::SCHEMA)?;
+        db.execute_batch(crate::private_group_store::SCHEMA)?;
         db.execute_batch(crate::usernames::SCHEMA)?;
         crate::privacy::install(&db)?;
         crate::backup::attach(&mut db, path)?;

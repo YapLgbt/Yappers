@@ -30,7 +30,9 @@ fun GroupsScreen(
     onCreate: suspend (String, String, String, GroupLocality?) -> Unit,
     onError: (String) -> Unit,
     onRefresh: (() -> Unit)? = null,
-    onHome: suspend () -> Unit = {}
+    onHome: suspend () -> Unit = {},
+    privateGroups: NetkitController? = null,
+    openPrivateGroups: (() -> Unit)? = null
 ) {
     var tab by rememberSaveable { mutableStateOf("Joined") }
     var category by rememberSaveable { mutableStateOf<String?>(null) }
@@ -84,11 +86,22 @@ fun GroupsScreen(
     }
 
     val android = LocalMaterialNavigation.current != null
+    var showingPrivate by remember(connection.messagingScope) { mutableStateOf(false) }
+    val showPrivateGroups = openPrivateGroups ?: { showingPrivate = true }
+    if (showingPrivate && privateGroups != null && connection.enabled) {
+        PrivateGroupsScreen(privateGroups, connection.snapshot.alias, onBack = { showingPrivate = false })
+        return
+    }
+
     val native = LocalNativeForm.current
     if (native != null) {
         val sections = buildList {
             add(FormSection(title = "Discover groups", rows = buildList {
                 if (connection.enabled) {
+                    if (privateGroups != null && connection.ownershipReady) {
+                        add(FormRow("private-groups", "Private groups", kind = "disclosure", symbol = "lock",
+                            onTap = showPrivateGroups))
+                    }
                     add(FormRow("create", "Create group", enabled = canSwitch, symbol = "plus", onTap = { creating = true }))
                     if (connection.hasHomeFeed && connection.activeGroup != null) {
                         add(FormRow("home", "Home feed", enabled = canSwitch, onTap = { act { onHome() } }))
@@ -134,6 +147,9 @@ fun GroupsScreen(
                     YapButton(enabled = canSwitch, onClick = { creating = true }) {
                         if (android) ActionIcon("plus")
                         Text("Create group")
+                    }
+                    if (privateGroups != null && connection.ownershipReady) {
+                        FilledTonalButton(onClick = showPrivateGroups) { Text("Private groups") }
                     }
                     if (connection.hasHomeFeed && connection.activeGroup != null) TextButton(enabled = canSwitch,
                         onClick = { act { onHome() } }) { Text("Home feed") }

@@ -116,13 +116,15 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
     var revisitGuide by remember { mutableStateOf(false) }
     var tab by rememberSaveable(initialTab) { mutableStateOf(initialTab) }
     val materialNavigation = LocalMaterialNavigation.current
+    var privateGroupsOpen by retain(identityScope) { mutableStateOf(false) }
     val activeTab = platformNavigation?.activeTab?.invoke() ?: tab
     val nativeForms = LocalNativeForm.current != null
     val feedButton = LocalFeedControl.current
     val nativePost = platformNavigation?.post
     val inboxPage = platformNavigation?.inboxPage
-    LaunchedEffect(tab, live, activeTab) {
-        if (tab == "Groups" && tab == activeTab && live && nativePost == null && inboxPage == null) networking.refreshGroups()
+    LaunchedEffect(tab, live, activeTab, foreground, privateGroupsOpen) {
+        if (foreground && !privateGroupsOpen && tab == "Groups" && tab == activeTab && live &&
+            nativePost == null && inboxPage == null) networking.refreshGroups()
     }
     var reportTarget by remember(connection.messagingScope, live) { mutableStateOf<ReportTarget?>(null) }
     val openReport: ((ReportTarget) -> Unit)? = if (live) ({ reportTarget = it }) else null
@@ -215,6 +217,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
         shownAuthor = SharedAuthor(reply.author, reply.username, null, reply.remoteId, "reply-${reply.id}", reply.mine, reply.visibility?.peer)
     }
     fun navigate(destination: String) {
+        privateGroupsOpen = false
         privacyOpen = false
         inbox = false
         mailSection = InboxPage.Messages
@@ -251,11 +254,13 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
             inbox && mailSection != InboxPage.Messages -> mailSection = InboxPage.Messages
             inbox -> inbox = false
             selectedId != null -> selectedId = null
+            privateGroupsOpen -> privateGroupsOpen = false
             else -> navigate("Nearby")
         }
     }
     val materialStack = if (materialNavigation == null) emptyList() else buildList {
         add(MaterialPage.Home)
+        if (privateGroupsOpen && live && tab == "Groups") add(MaterialPage.PrivateGroups)
         selectedId?.takeIf { id -> state.posts.any { it.id == id && !it.hidden } }?.let {
             add(MaterialPage.Thread(it, openAtComments))
         }
@@ -320,6 +325,14 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
         }
         @Composable
         fun Screen(page: MaterialPage?) {
+            if (page == MaterialPage.PrivateGroups && networking != null) {
+                Surface(Modifier.fillMaxSize(), color = colors.background) {
+                    Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+                        PrivateGroupsScreen(networking, connection.snapshot.alias, onBack = ::goBack)
+                    }
+                }
+                return
+            }
             if (page == MaterialPage.Guide && networking != null) {
                 WelcomeBackupScreen(networking, connection.ownershipReady && live, replay = true,
                     vault = recoveryFiles as? RecoveryKeyVault, onDone = { revisitGuide = false; navigate("Nearby") })
@@ -529,6 +542,8 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                                     }
                                                 })
                                             visibleTab == "Groups" -> GroupsScreen(connection,
+                                                privateGroups = networking,
+                                                openPrivateGroups = materialNavigation?.let { { privateGroupsOpen = true } },
                                                 onRefresh = if (canRefresh) ::refreshContent else null,
                                                 onConnect = { navigate("You") },
                                                 onCity = { city -> act { networking?.selectLocality(city) } },

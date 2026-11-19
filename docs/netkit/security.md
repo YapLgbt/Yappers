@@ -59,7 +59,7 @@ On a self-hosted home with automatic federation enabled, members can create publ
 
 Permits are stable to validate retained origin history after address expiry or authority outage. There is no authority-wide signed revocation protocol yet. An operator's `blockedHosts` denies that origin prospectively and prevents contact/discovery with that endpoint, without erasing retained history or revoking all certificates it previously signed. Already admitted providers may continue serving that group's history. Losing the group authority key prevents future host enrollment; secure backup/recovery is an operator responsibility.
 
-Private group capabilities, home credentials, and author secrets never enter directory records. Hosting a discovered group is an explicit member action on a home whose operator enabled this feature. Discovery alone does not automatically host every catalog group or expose a private community. Local leaving/unhosting, private/invitation-only group creation, group-wide bans and a public exhaustive index remain follow-on work.
+Private group capabilities, home credentials, and author secrets never enter directory records. Hosting a discovered group is an explicit member action on a home whose operator enabled this feature. Discovery alone does not automatically host every catalog group or expose a private community. Local leaving and unhosting, group-wide bans, and a public exhaustive index remain follow-on work for the catalog. [End-to-end encrypted private groups](groups.md#end-to-end-encrypted-private-groups) use single-home, device-specific admission.
 
 ## Portable account ownership
 

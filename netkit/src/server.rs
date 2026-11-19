@@ -325,6 +325,31 @@ impl State {
                     chain: self.store()?.account_chain(&account)?,
                 })
             }
+            Request::PrivateGroup {
+                token,
+                community,
+                account,
+                proof,
+                op,
+            } => {
+                self.member(&community, &token)?;
+                let home = hex::encode(self.key.verifying_key().as_bytes());
+                let mut store = self.store()?;
+                let chain = store.account_chain(&account)?;
+                let record = chain
+                    .last()
+                    .context("register your account with this home first")?;
+                ensure!(
+                    record.payload.home == home,
+                    "private group account belongs to another home"
+                );
+                let digest = crate::portability::digest(&(remote, &community, &op))?;
+                proof.validate(record, "private-group-v1", &home, &digest)?;
+                let result = store.private_group(&home, &account, &proof.device, *op)?;
+                Ok(Response::PrivateGroup {
+                    result: Box::new(result),
+                })
+            }
             Request::AccountRegister {
                 token,
                 community,

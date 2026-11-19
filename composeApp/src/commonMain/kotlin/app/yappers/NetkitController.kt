@@ -534,8 +534,8 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
     }
 
     suspend fun refreshGroups() = mutex.withLock {
-        val active = checkNotNull(handle) { "Connect a home to discover groups." }
-        check(state.value.enabled) { "Connect a home to discover groups." }
+        // An activity can recreate while the previous window is closing its handle.
+        val active = handle?.takeIf { state.value.enabled } ?: return@withLock
         mutableState.update { it.copy(groupsBusy = true, groupsStatus = "Finding your people…") }
         try {
             val result = engine.request(active, buildJsonObject { put("type", "groups") })
@@ -969,6 +969,25 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
                 username = if ("username" in result) result["username"]?.jsonPrimitive?.contentOrNull else policy.username))
         }
         return complete
+    }
+
+    internal suspend fun privateGroupAction(action: JsonObject): JsonElement = mutex.withLock {
+        val active = checkNotNull(handle) { "Connect to your home to use private groups." }
+        check(state.value.enabled) { "Connect to your home to use private groups." }
+        val device = checkNotNull(activeDevice) { "Open your account to use private groups." }
+        val record = checkNotNull(identity?.wallet) { "Open your account to use private groups." }
+            .getValue("chain").jsonArray.last().jsonObject.getValue("payload").jsonObject
+        val home = record.getValue("home").jsonPrimitive.content
+        val key = "private-groups-v1-$home-$device"
+        val saved = secret(key)?.let { json.parseToJsonElement(it) } ?: JsonNull
+        val response = engine.request(active, buildJsonObject {
+            put("type", "privateGroup")
+            put("state", saved)
+            put("action", action)
+        })
+        val next = response.getValue("state")
+        if (saved != next) withContext(NonCancellable) { writeSecret(key, next.toString()) }
+        response.getValue("result")
     }
 
     private fun messageKey(): String {

@@ -648,6 +648,13 @@ pub enum Request {
         proof: crate::portability::AccountProof,
         op: Box<crate::messaging::SocialOp>,
     },
+    PrivateGroup {
+        token: String,
+        community: String,
+        account: String,
+        proof: crate::portability::AccountProof,
+        op: Box<crate::private_groups::Operation>,
+    },
     AnnounceAccount {
         chain: Vec<crate::portability::AccountRecord>,
     },
@@ -719,6 +726,9 @@ pub enum Request {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Response {
     ReportAvailable,
+    PrivateGroup {
+        result: Box<crate::private_groups::Outcome>,
+    },
     ReportResult {
         result: serde_json::Value,
     },

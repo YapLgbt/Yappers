@@ -5,6 +5,7 @@
   import { Tabs } from 'bits-ui';
   import AppIcon from './AppIcon.svelte';
   import Sheet from './Sheet.svelte';
+  import PrivateGroups from './PrivateGroups.svelte';
   import {
     topics,
     errorMessage,
@@ -19,8 +20,9 @@
   }: { client: Community; profile: Profile; openGroup: (id: string | null) => Promise<void> } =
     $props();
   const tabs = ['joined', 'local', 'world'];
+  let showingPrivate = $state(false);
   const formId = $props.id();
-  let searchInput: HTMLInputElement;
+  let searchInput = $state<HTMLInputElement>();
   let tab = $state('joined'),
     query = $state(''),
     browseCategory = $state(''),
@@ -136,8 +138,12 @@
   }
 </script>
 
+{#if showingPrivate}
+  <PrivateGroups {client} alias={profile.alias} onBack={() => showingPrivate = false} />
+{:else}
 <div class="heading">
   <h1>Groups</h1>
+  <ActionButton variant="tonal" onclick={() => showingPrivate = true}>Private groups</ActionButton>
   <Sheet
     title="Create a group"
     label="New group"
@@ -255,7 +261,7 @@
           {:else if !(awaitingDirectory && directoryFailed)}
             <div class="dm-empty">
               <h2>{query ? 'No matching groups' : tab === 'joined' ? 'No joined groups yet' : 'No groups here yet'}</h2>
-              {#if query}<ActionButton onclick={() => { query = ''; browseCategory = ''; searchInput.focus(); }}>Clear search</ActionButton>{/if}
+              {#if query}<ActionButton onclick={() => { query = ''; browseCategory = ''; searchInput?.focus(); }}>Clear search</ActionButton>{/if}
               {#if tab !== 'world' && !query}<ActionButton onclick={browseWorldwide}>Browse worldwide groups</ActionButton>{/if}
             </div>
           {/if}
@@ -274,6 +280,8 @@
   </div>
 {/if}
 {#if error}<p role="status">{error}</p>{/if}
+
+{/if}
 
 <style>
   .directory-state { margin: 1rem 0; color: var(--quiet); font: var(--type-small); }

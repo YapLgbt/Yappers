@@ -21,6 +21,7 @@ internal val destinations = listOf("Nearby" to "reply", "Groups" to "groups", "S
 
 internal sealed interface MaterialPage {
     data object Home : MaterialPage
+    data object PrivateGroups : MaterialPage
     data class Thread(val id: Long, val atComments: Boolean) : MaterialPage
     data class Mail(val section: InboxPage, val contact: MessageContact? = null) : MaterialPage
     data object Privacy : MaterialPage

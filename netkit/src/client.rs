@@ -51,6 +51,10 @@ pub enum Command {
         state: Option<serde_json::Value>,
         action: crate::dm_client::LocalAction,
     },
+    PrivateGroup {
+        state: Option<serde_json::Value>,
+        action: crate::private_groups::LocalAction,
+    },
     AccountNotify {
         chain: Vec<crate::portability::AccountRecord>,
         address: iroh::EndpointAddr,
@@ -453,6 +457,7 @@ impl Client {
                 self.report_request(Request::ReportStatus { receipt }).await
             }
             Command::Direct { state, action } => self.direct(state, action).await,
+            Command::PrivateGroup { state, action } => self.private_group(state, action).await,
             Command::Social { op } => {
                 use crate::messaging::SocialOp::*;
                 ensure!(

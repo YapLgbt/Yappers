@@ -63,6 +63,7 @@ export interface Community {
   sync(): Promise<'primary' | 'replica'>;
   modify(change: (profile: Profile) => Profile): Promise<void>;
   queue(action: Record<string, unknown>, legacyAlias?: null, scope?:string): Promise<string>;
+  privateGroupAction<T>(action: Record<string, unknown>): Promise<T>;
   listGroups():Promise<void>; joinGroup(id:string|null,details?:GroupDetails):Promise<string>;selectGroup(id:string|null):Promise<void>;
   setNearby(value:Nearby|null):Promise<void>;setPrivacy(change:Partial<Privacy>):Promise<void>;
   inboxError: string;

@@ -1,0 +1,215 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+#![cfg(feature = "server")]
+
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use yappers_netkit::{
+    JoinConfig, NetworkMode,
+    client::{Client, ClientConfig, Command},
+    new_secret,
+    portability::AccountWallet,
+    server::{AutoFederationConfig, Server, ServerConfig},
+};
+
+struct Device {
+    client: Client,
+    state: Value,
+}
+
+impl Device {
+    async fn open(join: JoinConfig) -> Self {
+        let wallet = AccountWallet::create(new_secret(), join.server_addr.id.to_string()).unwrap();
+        let client = Client::open(ClientConfig {
+            full_home_standby: None,
+            join,
+            author_secret: wallet.device_secret.clone(),
+            next_sequence: wallet.next_sequence,
+            account_chain: wallet.chain.clone(),
+        })
+        .await
+        .unwrap();
+        client.register_account(&wallet).await.unwrap();
+        Self {
+            client,
+            state: Value::Null,
+        }
+    }
+
+    async fn try_step(&mut self, action: Value) -> anyhow::Result<Value> {
+        let command: Command = serde_json::from_value(json!({
+            "type": "privateGroup", "state": self.state, "action": action
+        }))?;
+        let mut result = self.client.command(command).await?;
+        self.state = result["state"].take();
+        Ok(result["result"].take())
+    }
+
+    async fn step(&mut self, action: Value) -> Value {
+        self.try_step(action).await.unwrap()
+    }
+
+    async fn view(&mut self, group: &Value) -> Value {
+        self.step(json!({"kind":"open","group":group})).await
+    }
+
+    async fn prepare(&mut self, group: &Value, body: &str, parent: Option<&Value>) {
+        self.step(json!({"kind":"prepare","group":group,"draft":{
+            "author":"Neighbor", "headline":parent.is_none().then_some("Private headline"),
+            "body":body, "parent":parent
+        }}))
+        .await;
+    }
+
+    async fn publish(&mut self, group: &Value) -> Value {
+        self.step(json!({"kind":"publish","group":group})).await
+    }
+}
+
+#[tokio::test]
+async fn private_groups_enforce_membership_history_and_rotate_pending_posts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("home.sqlite");
+    let home = Server::start(ServerConfig {
+        public_replica_feeds: Default::default(),
+        private_key: new_secret(),
+        database_path: path.clone(),
+        communities: BTreeMap::from([("home".into(), new_secret())]),
+        peers: vec![],
+        network_mode: NetworkMode::Local,
+        auto_federation: AutoFederationConfig::default(),
+    })
+    .await
+    .unwrap();
+    let join = home.join("home", NetworkMode::Local).unwrap();
+    let mut owner = Device::open(join.clone()).await;
+    let mut member = Device::open(join.clone()).await;
+    let mut outsider = Device::open(join).await;
+    let group = owner
+        .step(json!({"kind":"create","name":"Reading group"}))
+        .await;
+    let invitation = owner.view(&group).await["invitation"].clone();
+    let mut forged = serde_json::from_str::<Value>(invitation.as_str().unwrap()).unwrap();
+    forged["value"]["name"] = json!("Substituted group");
+    assert!(
+        outsider
+            .try_step(json!({"kind":"import","invitation": forged.to_string()}))
+            .await
+            .is_err()
+    );
+
+    owner
+        .prepare(&group, "pre-join confidential sample", None)
+        .await;
+    let first = owner.publish(&group).await;
+    assert_eq!(
+        owner.view(&group).await["posts"][0]["body"],
+        "pre-join confidential sample"
+    );
+
+    for device in [&mut member, &mut outsider] {
+        assert_eq!(
+            device
+                .step(json!({"kind":"import","invitation":invitation}))
+                .await,
+            group
+        );
+        assert_eq!(device.view(&group).await["phase"], "pending");
+    }
+    let request = member.view(&group).await["joinRequest"].clone();
+    assert!(
+        outsider
+            .try_step(json!({"kind":"approve","group":group,"request":request}))
+            .await
+            .is_err()
+    );
+
+    // Prepare an event while offline from the roster update. A delayed upload
+    // must never send the existing ratchet to the home.
+    owner
+        .prepare(&group, "new member can read this", None)
+        .await;
+    owner
+        .step(json!({"kind":"approve","group":group,"request":request}))
+        .await;
+    assert!(
+        owner
+            .try_step(json!({"kind":"publish","group":group}))
+            .await
+            .is_err()
+    );
+    assert!(
+        member.view(&group).await["posts"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    owner.step(json!({"kind":"prepare","group":group})).await;
+    let second = owner.publish(&group).await;
+    let new_view = member.view(&group).await;
+    assert_eq!(new_view["posts"].as_array().unwrap().len(), 1);
+    assert_eq!(new_view["posts"][0]["id"], second);
+    assert_eq!(new_view["posts"][0]["body"], "new member can read this");
+    assert_eq!(outsider.view(&group).await["phase"], "pending");
+
+    member
+        .prepare(&group, "confidential reply sample", Some(&second))
+        .await;
+    let reply = member.publish(&group).await;
+    assert_eq!(owner.view(&group).await["posts"][0]["id"], reply);
+    assert_eq!(owner.view(&group).await["posts"][0]["parent"], second);
+
+    // Simulate a lost receipt, then retry from the persisted state after another
+    // membership change. The durable draft ID must still identify one event.
+    owner.prepare(&group, "accepted before removal", None).await;
+    let mut pending_state = owner.state.clone();
+    let accepted = owner.publish(&group).await;
+    let removed = member.client.author_id();
+    owner
+        .step(json!({"kind":"remove","group":group,"device":removed}))
+        .await;
+    pending_state["groups"][group.as_str().unwrap()]["tip"] =
+        owner.state["groups"][group.as_str().unwrap()]["tip"].clone();
+    owner.state = pending_state;
+    owner.step(json!({"kind":"prepare","group":group})).await;
+    assert_eq!(owner.publish(&group).await, accepted);
+    owner
+        .prepare(&group, "post-removal confidential sample", None)
+        .await;
+    let last = owner.publish(&group).await;
+    assert_eq!(member.view(&group).await["phase"], "removed");
+    assert!(
+        member
+            .try_step(json!({"kind":"prepare","group":group,"draft":{
+                "author":"Neighbor", "headline":"Forbidden", "body":"Removed", "parent":null
+            }}))
+            .await
+            .is_err()
+    );
+
+    let posts = owner.view(&group).await["posts"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        posts.iter().map(|p| p["id"].clone()).collect::<Vec<_>>(),
+        vec![last, accepted, reply, second, first]
+    );
+    let database = std::fs::read(&path).unwrap();
+    let contents = String::from_utf8_lossy(&database);
+    for plaintext in [
+        "pre-join confidential sample",
+        "confidential reply sample",
+        "Private headline",
+        "post-removal confidential sample",
+    ] {
+        assert!(!contents.contains(plaintext));
+    }
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let latest: String = db.query_row("SELECT packet FROM private_group_sessions WHERE json_extract(packet,'$.value.roster') = (SELECT json_extract(event,'$.value.header.roster') FROM private_group_events ORDER BY cursor DESC LIMIT 1)", [], |row| row.get(0)).unwrap();
+    let packet: Value = serde_json::from_str(&latest).unwrap();
+    assert!(packet["value"]["keys"].get(removed).is_none());
+    owner.client.close().await;
+    member.client.close().await;
+    outsider.client.close().await;
+    home.close().await;
+}

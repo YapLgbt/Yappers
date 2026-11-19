@@ -40,3 +40,15 @@ All records use closed serde schemas and compact UTF-8 JSON generated/verified i
 The app receives authenticated home-projected summaries, like its feed. It does not independently verify every catalog signature or an inclusion/completeness proof. The server performs those checks. Group homes are recently advertised providers, not verified online users or member totals. Bootstrap deployment, Internet relay/NAT behavior, and real-device network transitions require operational validation beyond the local tests.
 
 See [how a home handles denied origins](architecture.md#handling-denied-origins) during a group sync.
+
+## End-to-end encrypted private groups
+
+Open **Groups → Private groups**. The owner creates a group and shares its invitation with someone on the same home. The recipient opens it, copies their signed join request, and sends it directly to the owner. The owner approves the device. Approval starts that device's history, and additional or replacement devices join on their own. Owners remove devices from the group's member list.
+
+Netkit pins the owner's device signing key through the invitation. Each membership change extends the owner's signed roster with a new revision. Every sending device uses a vodozemac Megolm session for that revision and sends its key in an Olm envelope for each current device. A new revision requires fresh sessions, as do the session age and message limits. Before upload the client checks the current roster again. If membership changed, retrying re-encrypts the saved draft with the current recipient set and preserves its publication ID.
+
+Homes store encrypted titles, post and reply bodies, and author display labels. They can see group names, device rosters, event senders, reply links, timing, and sizes. Home databases and snapshots store ciphertext and wrapped keys. Access to a new roster revision still depends on the home delivering the owner's signed update. Clients reject rollbacks below a revision they've already seen.
+
+Group keys live on the approved device. The original owner device manages membership, and recovering an account requires joining again on the replacement device. The per-group Olm fallback keys allow an approved device to receive session keys while offline. Compromise of its local keys can expose previously delivered envelopes addressed to that device. A removed device may retain content and keys it already received.
+
+Creation, approval, and posting require a home connection. If delivery fails after preparation, the device keeps the draft and offers **Retry pending post**. A group supports up to 16 approved devices and 2,000 posts and replies. The roster holds up to 100 signed revisions, after which the group is read-only.

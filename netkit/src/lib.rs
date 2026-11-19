@@ -28,6 +28,10 @@ pub mod peering;
 pub mod portability;
 #[cfg(feature = "server")]
 mod privacy;
+mod private_group_client;
+#[cfg(feature = "server")]
+mod private_group_store;
+pub mod private_groups;
 #[cfg(feature = "server")]
 mod redaction;
 pub mod report;

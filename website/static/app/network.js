@@ -484,7 +484,7 @@ export async function confirmAccount() {
   return wallet;
 }
 function hasLocalActivity(state) {
-  return !!state.publicProfile || !!Object.keys(state.joinedGroups||{}).length || !!state.nearby || !!state.privacyManaged || !!state.directState?.messages.length || !!state.messageRequests?.length || !!state.username || state.wallet.nextSequence > 1 || state.outbox.length || state.saved.length || state.blocks.length ||
+  return !!Object.keys(state.privateGroupState?.groups || {}).length || !!state.publicProfile || !!Object.keys(state.joinedGroups||{}).length || !!state.nearby || !!state.privacyManaged || !!state.directState?.messages.length || !!state.messageRequests?.length || !!state.username || state.wallet.nextSequence > 1 || state.outbox.length || state.saved.length || state.blocks.length ||
     state.pendingUnblocks.length || state.hideAnonymous || state.recoveryFileCreated || state.recoveryKeyIssued || state.accountRestored;
 }
 export function canRestoreHere() {
@@ -515,7 +515,7 @@ export async function restoreIdentity({account, home, root}) {
       await modify(state => {
         if (state.pendingRecovery?.deviceSecret !== wallet.deviceSecret || hasLocalActivity(state))
           throw new Error('This account changed during recovery. Retry with your file.');
-        return {...state,wallet,directState:null,directAvailable:false,messageRequests:[],pendingApprovals:[],approvedContacts:[],revokedContacts:[],inboxPolicy:null,pendingRecovery:null,welcomePending:false,setupStep:'restored-username',username:null,usernameDomain:null,mailboxElsewhere:false,accountRestored:true,safeForPublic:false,posts:[],savedPosts:{},feedCache:{},lastSync:null};
+        return {...state,wallet,privateGroupState:null,directState:null,directAvailable:false,messageRequests:[],pendingApprovals:[],approvedContacts:[],revokedContacts:[],inboxPolicy:null,pendingRecovery:null,welcomePending:false,setupStep:'restored-username',username:null,usernameDomain:null,mailboxElsewhere:false,accountRestored:true,safeForPublic:false,posts:[],savedPosts:{},feedCache:{},lastSync:null};
       });
     } finally {await restored.close();}
   });
@@ -570,6 +570,17 @@ export function discardUploads(ids) {
   return accountTask(() => modify(state => ({
     ...state, outbox: state.outbox.filter(event => !reviewed.has(event.id))
   })));
+}
+// The encrypted device store owns ratchets and drafts. Prepare commits the
+// advanced ratchet and exact packet under the same lock used by other tabs.
+export function privateGroupAction(action) {
+  return accountTask(async () => {
+    const saved = profile.privateGroupState || null;
+    const {state, result} = await rpc({type:'privateGroup', state:saved, action});
+    if (JSON.stringify(state) !== JSON.stringify(saved))
+      await modify(profile => ({...profile, privateGroupState:state}));
+    return result;
+  });
 }
 export function listGroups() {
   return accountTask(async () => {
@@ -801,6 +812,7 @@ export async function importArchive(file, passphrase, invitation, allowDrafts) {
             wallet,
             pendingTransfer: null,
             welcomePending: false,
+            privateGroupState: null,
             setupStep: 'restored-username',
             mailboxElsewhere: false,
             accountRestored: true,
