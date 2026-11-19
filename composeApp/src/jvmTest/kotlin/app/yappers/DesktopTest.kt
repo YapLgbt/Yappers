@@ -33,6 +33,35 @@ class DesktopTest {
         override val scaleFactor get() = motionScale.floatValue
     })
 
+    @Test fun votingKeepsTheScoreCenteredAcrossDigitBoundaries() {
+        val neutral = mutableStateOf(9)
+        val vote = mutableStateOf(0)
+        compose.setContent {
+            YapTheme {
+                VoteControl(neutral.value + vote.value, vote.value) { direction ->
+                    vote.value = if (vote.value == direction) 0 else direction
+                }
+            }
+        }
+        fun center(score: Int): Float {
+            val number = compose.onNodeWithText(score.toString()).fetchSemanticsNode().boundsInRoot.center.x
+            val up = compose.onNodeWithContentDescription("Upvote").fetchSemanticsNode().boundsInRoot.center.x
+            val down = compose.onNodeWithContentDescription("Downvote").fetchSemanticsNode().boundsInRoot.center.x
+            assertEquals((up + down) / 2f, number, 1f)
+            return number
+        }
+        for (base in listOf(9, 99, 9999, -10, -1000)) {
+            compose.runOnIdle { neutral.value = base }
+            val start = center(base)
+            compose.onNodeWithContentDescription("Upvote").performClick()
+            assertEquals(start, center(base + 1), 1f)
+            compose.onNodeWithContentDescription("Downvote").performClick()
+            assertEquals(start, center(base - 1), 1f)
+            compose.onNodeWithContentDescription("Downvote").performClick()
+            assertEquals(start, center(base), 1f)
+        }
+    }
+
     @Test fun onboardingFlagFollowsSystemMotionPreference() {
         compose.mainClock.autoAdvance = false
         var systemReducesMotion = false

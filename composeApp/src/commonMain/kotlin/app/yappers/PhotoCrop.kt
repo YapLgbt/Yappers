@@ -51,7 +51,7 @@ internal fun PhotoCropEditor(image: CropSource, onCancel: () -> Unit, onCrop: (S
     Column(Modifier.fillMaxSize().padding(horizontal = 22.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(onClick = onCancel) { Text("Cancel") }
-            Button(onClick = {
+            YapButton(onClick = {
                 runCatching { image.encode(framing.bounds) }.onSuccess(onCrop).onFailure { error = it.message }
             }) { Text("Use crop") }
         }

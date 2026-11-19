@@ -10,6 +10,7 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
@@ -50,12 +51,14 @@ internal fun PrivacyScreen(policy: DevicePrivacy, status: String?, onClose: () -
         form(NativeFormModel("Privacy", sections), "screen", Modifier.fillMaxSize())
         return
     }
-    Column(Modifier.fillMaxSize().padding(horizontal = 22.dp)) {
-        if (!nativeTitle) Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+    val navigation = LocalMaterialNavigation.current
+    Column(Modifier.fillMaxSize()) {
+        if (navigation != null) navigation.UpBar("Privacy", onClose)
+        else if (!nativeTitle) Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 22.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Privacy", Modifier.weight(1f), style = MaterialTheme.typography.headlineLarge)
             TextButton(onClick = onClose) { Text("Done") }
         }
-        LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(bottom = 12.dp)) {
+        LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(start = 22.dp, end = 22.dp, bottom = 12.dp)) {
             if (status != null) item {
                 Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -106,13 +109,21 @@ internal fun PrivacyScreen(policy: DevicePrivacy, status: String?, onClose: () -
 
 @Composable
 private fun PrivacyHeading(title: String) {
-    Text(title, Modifier.padding(top = 24.dp, bottom = 4.dp), style = MaterialTheme.typography.titleMedium,
+    val android = LocalMaterialNavigation.current != null
+    Text(title, Modifier.padding(top = 24.dp, bottom = if (android) 8.dp else 4.dp),
+        style = if (android) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleMedium,
         color = MaterialTheme.colorScheme.primary)
-    HorizontalDivider()
+    if (!android) HorizontalDivider()
 }
 
 @Composable
 private fun PrivacySwitch(label: String, detail: String, selected: Boolean, onChange: (Boolean) -> Unit) {
+    if (LocalMaterialNavigation.current != null) {
+        PrivacyListItem(label, detail, Modifier.toggleable(selected, role = Role.Switch, onValueChange = onChange)) {
+            Switch(selected, onCheckedChange = null)
+        }
+        return
+    }
     Row(Modifier.fillMaxWidth().toggleable(selected, role = Role.Switch, onValueChange = onChange)
         .padding(vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f).padding(end = 12.dp)) {
@@ -125,6 +136,12 @@ private fun PrivacySwitch(label: String, detail: String, selected: Boolean, onCh
 
 @Composable
 private fun AgeRow(label: String, days: Int, detail: String, onClick: () -> Unit) {
+    if (LocalMaterialNavigation.current != null) {
+        PrivacyListItem(label, detail, Modifier.clickable(role = Role.Button, onClick = onClick)) {
+            Text(ageLabel(days), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        }
+        return
+    }
     Column(Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick).padding(vertical = 14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(label, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
@@ -132,4 +149,15 @@ private fun AgeRow(label: String, days: Int, detail: String, onClick: () -> Unit
         }
         Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
+}
+
+@Composable
+private fun PrivacyListItem(label: String, detail: String, action: Modifier, trailing: @Composable () -> Unit) {
+    ListItem(
+        headlineContent = { Text(label) },
+        supportingContent = { Text(detail) },
+        trailingContent = trailing,
+        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp).clip(MaterialTheme.shapes.medium).then(action)
+    )
 }

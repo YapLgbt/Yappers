@@ -8,6 +8,9 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
@@ -194,7 +197,7 @@ internal fun ProfileEditor(initialName: String, initial: CommunityProfile, libra
         Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(enabled = !saving && !choosingPhoto, onClick = { close() }) { Text("Cancel") }
             Spacer(Modifier.weight(1f))
-            Button(enabled = canSave, onClick = ::save) { Text(if (saving) "Saving…" else "Save profile") }
+            YapButton(enabled = canSave, onClick = ::save) { Text(if (saving) "Saving…" else "Save profile") }
         }
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(22.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             item { Text("Edit your profile", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold) }
@@ -214,7 +217,7 @@ internal fun ProfileEditor(initialName: String, initial: CommunityProfile, libra
             item { ProfileField("Identity, in your words", profile.identity, 80, "Queer, trans, questioning, wonderfully you…") { profile = profile.copy(identity = it) } }
             item { Text("Here for", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    profileIntentions.forEach { value -> FilterChip(selected = value in profile.hereFor,
+                    profileIntentions.forEach { value -> YapFilterChip(selected = value in profile.hereFor,
                         onClick = { intention(value) }, label = { Text(value) }) }
                 }
             }
@@ -308,4 +311,37 @@ internal fun AuthorProfileSheet(name: String, username: String?, profile: Commun
             }
         }
     }
+}
+
+@Composable
+internal fun ProfileSection(title: String, rows: @Composable ColumnScope.() -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(title, style = MaterialTheme.typography.titleLarge)
+        Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp), content = rows)
+        }
+    }
+}
+
+@Composable
+internal fun ProfileOption(label: String, icon: String, expanded: Boolean? = null, external: Boolean = false, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    ListItem(
+        modifier = Modifier.fillMaxWidth().clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onClick)
+            .semantics {
+                if (expanded != null) stateDescription = if (expanded) "Expanded" else "Collapsed"
+            },
+        headlineContent = { Text(label) },
+        leadingContent = { LineIcon(icon, null, tint = colors.primary) },
+        trailingContent = {
+            val indicator = when {
+                external -> "external"
+                expanded == null -> "forward"
+                expanded -> "up"
+                else -> "down"
+            }
+            LineIcon(indicator, null, Modifier.size(20.dp), tint = colors.onSurfaceVariant)
+        },
+        colors = ListItemDefaults.colors(containerColor = colors.surfaceContainer)
+    )
 }

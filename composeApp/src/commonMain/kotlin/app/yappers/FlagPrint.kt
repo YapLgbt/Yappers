@@ -20,7 +20,7 @@ internal expect val supportsFlagAnimation: Boolean
 
 @OptIn(ExperimentalResourceApi::class)
 @Composable
-internal fun EstuaryOnboardingSurface(header: (@Composable () -> Unit)? = null, footer: (@Composable () -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
+internal fun EstuaryOnboardingSurface(step: String = "", header: (@Composable () -> Unit)? = null, footer: (@Composable () -> Unit)? = null, content: @Composable ColumnScope.(String) -> Unit) {
     val motionScale = rememberCoroutineScope().coroutineContext[MotionDurationScale]
     val systemReducesMotion = platformReducesMotion() || motionScale?.scaleFactor == 0f
     var phase by remember { mutableFloatStateOf(0f) }
@@ -48,8 +48,14 @@ internal fun EstuaryOnboardingSurface(header: (@Composable () -> Unit)? = null, 
             Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding(), horizontalAlignment = Alignment.CenterHorizontally) {
                 if (header != null) Box(Modifier.widthIn(max = 480.dp).fillMaxWidth().padding(horizontal = 20.dp)) { header() }
                 Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                    Column(Modifier.widthIn(max = 480.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(28.dp),
-                        verticalArrangement = Arrangement.spacedBy(15.dp), content = content)
+                    val navigation = LocalMaterialNavigation.current
+                    val page: @Composable (String) -> Unit = { visibleStep ->
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(Modifier.widthIn(max = 480.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(28.dp),
+                                verticalArrangement = Arrangement.spacedBy(15.dp)) { content(visibleStep) }
+                        }
+                    }
+                    if (step.isNotEmpty() && navigation != null) navigation.Step(step, page) else page(step)
                 }
                 if (footer != null) Box(Modifier.widthIn(max = 480.dp).fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) { footer() }
             }

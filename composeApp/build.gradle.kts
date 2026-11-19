@@ -38,6 +38,8 @@ kotlin {
         iosMain { kotlin.srcDir("src/skiaMain/kotlin") }
         jvmMain { kotlin.srcDir("src/skiaMain/kotlin") }
         androidMain.dependencies {
+            implementation("androidx.navigation3:navigation3-ui:1.2.1")
+            implementation("androidx.compose.material3:material3-adaptive-navigation-suite:1.5.0-rc01")
             implementation("androidx.activity:activity-compose:1.12.0")
             implementation("androidx.credentials:credentials:1.5.0")
             implementation("androidx.credentials:credentials-play-services-auth:1.5.0")

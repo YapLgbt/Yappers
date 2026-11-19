@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.credentials.*
@@ -33,7 +34,7 @@ internal class AndroidFiles(private val activity: ComponentActivity) : ProfilePh
         }
     }
 
-    private val pickPhoto = activity.registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+    private val pickPhoto = activity.registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         val callback = photo
         photo = null
         if (uri == null) { callback?.invoke(null, null); return@registerForActivityResult }
@@ -78,7 +79,10 @@ internal class AndroidFiles(private val activity: ComponentActivity) : ProfilePh
             } ?: "Yap recovery file"
         }
     }
-    override fun choosePhoto(onResult: FileResult) { photo = onResult; pickPhoto.launch("image/*") }
+    override fun choosePhoto(onResult: FileResult) {
+        photo = onResult
+        pickPhoto.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+    }
     override fun saveRecovery(ciphertext: String, onResult: FileResult) {
         save = ciphertext to onResult
         create.launch("yap-recovery.age")

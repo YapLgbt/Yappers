@@ -153,7 +153,7 @@ internal fun ReportDialog(target: ReportTarget, controller: NetkitController, on
         } },
         confirmButton = {
             if (phase == "done") TextButton(onClick = onClose) { Text("Done") }
-            else Button(onClick = ::advance, enabled = !busy && when (phase) {
+            else YapButton(onClick = ::advance, enabled = !busy && when (phase) {
                 "edit" -> text.isNotBlank() || include
                 "lookup" -> receipt.isNotBlank()
                 else -> true

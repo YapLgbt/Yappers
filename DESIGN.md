@@ -19,8 +19,17 @@ The light theme uses plum actions on pale lavender. The dark theme uses lilac ac
 | Surface | Conventions |
 |---|---|
 | iPhone | UIKit owns the tab bar, navigation stacks, menus, sheets and text editing. Inline form rows share the page background. Individual inputs can use a rounded system fill. Present the system photo picker before the crop editor. |
-| Android and Mac | Use Compose Material controls. Editor actions stay reachable while fields scroll and the keyboard is open. On desktop, a sidebar replaces bottom navigation at 900 dp. Wide windows can show a thread beside its feed. |
+| Android | Compose Material 3 provides the compact navigation bar, adaptive navigation rail, app bars and snackbars. Detail screens use a leading Up action and system Back. Editors keep actions reachable above the system keyboard. Use the Android photo picker for profile images and adaptive launcher icon layers for the Yap wordmark. |
+| Mac | Use Compose Material controls. A sidebar replaces bottom navigation at 900 dp. Wide windows can show a thread beside its feed. |
 | PWA | Use the Yap theme for Skeleton components, with native HTML controls for text entry and selection. Keep navigation destinations stable as the bottom bar becomes a sidebar. Keep keyboard focus inside open dialogs and return it to the trigger on dismissal. |
+
+On Android, use the Material expressive motion scheme and rounded Material Symbols for navigation and in-content actions. Reserve solid plum for primary actions and selected controls. Use tonal surfaces for supporting actions and settings rows, and a scalloped symbol for empty destinations. Writing and reading share the same Geist Serif styles.
+
+Android keeps its destination bar or rail in place during tab changes. Detail screens run in AndroidX Navigation 3, with Material spatial springs for scale and effects springs for opacity. Back gestures use the navigation host’s predictive transition. Use paired press and selected shapes on buttons, chips and related choices.
+
+In the Android feed, group both vote controls around a centered tabular score. The reply bubble shows its count and exposes a full accessibility label. Put the primary writing action within thumb reach, with space to scroll the last post clear of it. In the editor, keep the publish action above the keyboard.
+
+On You, use the Estuary print to frame the profile portrait. Show the person’s posts first, then group privacy, community and recovery under Settings. The guide and the two legal links belong together under Help & about.
 
 ## Website imagery
 

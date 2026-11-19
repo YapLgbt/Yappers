@@ -22,12 +22,14 @@ class YapActivity : ComponentActivity() {
         val preferences = getSharedPreferences("installation", MODE_PRIVATE)
         setContent {
             var welcome by remember { mutableStateOf(!preferences.getBoolean("welcomed", false)) }
-            YappersApp(yap.storage.local, yap.controller, foreground = foreground,
-                photoLibrary = files, recoveryFiles = files, nearbyServices = nearby,
-                installationWelcome = welcome, onWelcomeComplete = {
-                    preferences.edit().putBoolean("welcomed", true).apply()
-                    welcome = false
-                })
+            CompositionLocalProvider(LocalMaterialNavigation provides AndroidNavigation) {
+                YappersApp(yap.storage.local, yap.controller, foreground = foreground,
+                    photoLibrary = files, recoveryFiles = files, nearbyServices = nearby,
+                    installationWelcome = welcome, onWelcomeComplete = {
+                        preferences.edit().putBoolean("welcomed", true).apply()
+                        welcome = false
+                    })
+            }
         }
     }
 

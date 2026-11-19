@@ -17,7 +17,43 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private val destinations = listOf("Nearby" to "reply", "Groups" to "groups", "Saved" to "bookmark", "You" to "person")
+internal val destinations = listOf("Nearby" to "reply", "Groups" to "groups", "Saved" to "bookmark", "You" to "person")
+
+internal sealed interface MaterialPage {
+    data object Home : MaterialPage
+    data class Thread(val id: Long, val atComments: Boolean) : MaterialPage
+    data class Mail(val section: InboxPage, val contact: MessageContact? = null) : MaterialPage
+    data object Privacy : MaterialPage
+    data object EditProfile : MaterialPage
+    data object Guide : MaterialPage
+}
+
+internal interface MaterialNavigation {
+    @Composable
+    fun Pages(stack: List<MaterialPage>, onBack: () -> Unit, content: @Composable (MaterialPage) -> Unit)
+
+    @Composable
+    fun Step(selected: String, content: @Composable (String) -> Unit)
+
+    @Composable
+    fun Layout(selected: String, onSelect: (String) -> Unit, content: @Composable (String) -> Unit)
+
+    @Composable
+    fun UpBar(title: String, onUp: () -> Unit, actions: @Composable RowScope.() -> Unit = {})
+}
+
+internal val LocalMaterialNavigation = androidx.compose.runtime.staticCompositionLocalOf<MaterialNavigation?> { null }
+
+@Composable
+internal fun AppNavigationLayout(selected: String, onSelect: (String) -> Unit, desktopSidebar: Boolean, showDestinations: Boolean, content: @Composable (String) -> Unit) {
+    val material = LocalMaterialNavigation.current
+    if (material != null) {
+        if (showDestinations) material.Layout(selected, onSelect, content) else content(selected)
+    } else Row(Modifier.fillMaxSize()) {
+        if (desktopSidebar) YappersSidebar(selected, onSelect)
+        content(selected)
+    }
+}
 
 /** Four equal, fully tappable destinations; the safe-area gutter is separate from the controls. */
 @Composable

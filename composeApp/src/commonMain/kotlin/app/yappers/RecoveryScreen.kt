@@ -87,8 +87,8 @@ internal fun DataOwnershipSection(controller: NetkitController, connection: Netk
         }
         native(NativeFormModel(sections = sections), "inline", Modifier.fillMaxWidth())
     } else Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        HorizontalDivider()
-        Text("Account recovery", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        if (LocalMaterialNavigation.current == null) HorizontalDivider()
+        if (LocalMaterialNavigation.current == null) Text("Account recovery", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         Text(if (connection.ownershipReady) "Save a recovery key so you can use this account on a new device."
             else "Connect to your community to get your recovery key.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -240,7 +240,7 @@ internal fun DataOwnershipSection(controller: NetkitController, connection: Netk
                 Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(enabled = !working, onClick = { close() }) { Text("Cancel") }
                     Spacer(Modifier.weight(1f))
-                    Button(enabled = canSubmit, onClick = ::submit) { Text(if (working) "Working…" else if (exporting) "Save backup" else "Move account") }
+                    YapButton(enabled = canSubmit, onClick = ::submit) { Text(if (working) "Working…" else if (exporting) "Save backup" else "Move account") }
                 }
                 LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(22.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     item { Text(if (exporting) "Save a backup file" else "Move to another community", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold) }

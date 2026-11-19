@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
@@ -31,9 +32,9 @@ fun GroupsScreen(
     onRefresh: (() -> Unit)? = null,
     onHome: suspend () -> Unit = {}
 ) {
-    var tab by remember { mutableStateOf("Joined") }
-    var category by remember { mutableStateOf<String?>(null) }
-    var query by remember { mutableStateOf("") }
+    var tab by rememberSaveable { mutableStateOf("Joined") }
+    var category by rememberSaveable { mutableStateOf<String?>(null) }
+    var query by rememberSaveable { mutableStateOf("") }
     var choosingCity by remember { mutableStateOf(false) }
     var creating by remember { mutableStateOf(false) }
     var acting by remember { mutableStateOf(false) }
@@ -82,6 +83,7 @@ fun GroupsScreen(
         if (canOpen(group, joined)) act { if (joined) onOpen(group.id) else onJoin(group) }
     }
 
+    val android = LocalMaterialNavigation.current != null
     val native = LocalNativeForm.current
     if (native != null) {
         val sections = buildList {
@@ -129,27 +131,25 @@ fun GroupsScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Discover groups", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                 if (connection.enabled) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(enabled = canSwitch, onClick = { creating = true }) { Text("Create group") }
+                    YapButton(enabled = canSwitch, onClick = { creating = true }) {
+                        if (android) ActionIcon("plus")
+                        Text("Create group")
+                    }
                     if (connection.hasHomeFeed && connection.activeGroup != null) TextButton(enabled = canSwitch,
                         onClick = { act { onHome() } }) { Text("Home feed") }
                 } else {
                     Text("Join a community to browse groups.", style = MaterialTheme.typography.bodyMedium)
-                    Button(onClick = onConnect) { Text("Community settings") }
+                    YapButton(onClick = onConnect) { Text("Community settings") }
                 }
                 if (connection.pendingCount > 0) Text("Your posts are still sending. You can switch groups when they finish.",
                     style = MaterialTheme.typography.bodyMedium)
                 BoxWithConstraints(Modifier.fillMaxWidth()) {
                     if (maxWidth >= 324.dp * LocalDensity.current.fontScale) {
-                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                            scopes.forEachIndexed { index, label ->
-                                SegmentedButton(selected = tab == label, onClick = { selectScope(label) },
-                                    shape = SegmentedButtonDefaults.itemShape(index, scopes.size)) { Text(label) }
-                            }
-                        }
+                        YapSegments(scopes, tab, ::selectScope)
                     } else {
                         FlowRow(Modifier.selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             scopes.forEach { label ->
-                                FilterChip(selected = tab == label, onClick = { selectScope(label) },
+                                YapFilterChip(selected = tab == label, onClick = { selectScope(label) },
                                     label = { Text(label) })
                             }
                         }
@@ -159,18 +159,20 @@ fun GroupsScreen(
                     Text(connection.locality?.label ?: "Choose a city")
                 }
                 OutlinedTextField(value = query, onValueChange = ::search, singleLine = true,
-                    label = { Text("Search groups") }, modifier = Modifier.fillMaxWidth())
+                    label = { Text("Search groups") },
+                    leadingIcon = if (android) ({ LineIcon("search", null, tint = LocalContentColor.current) }) else null,
+                    modifier = Modifier.fillMaxWidth())
                 if (showCategories) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = category == null || category !in categories, onClick = { category = null },
+                    YapFilterChip(selected = category == null || category !in categories, onClick = { category = null },
                         label = { Text("All categories") })
                     categories.forEach { value ->
-                        FilterChip(selected = category == value, onClick = { category = if (category == value) null else value },
+                        YapFilterChip(selected = category == value, onClick = { category = if (category == value) null else value },
                             label = { Text(value) })
                     }
                 }
                 if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (connection.groupsBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (connection.groupsBusy) GroupLoadingIndicator()
             }
         }
         items(groups, key = { it.id }) { group ->
@@ -191,6 +193,7 @@ fun GroupsScreen(
         }
         if (groups.isEmpty() && !connection.groupsBusy) item {
             Column(Modifier.padding(horizontal = 22.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (android) EmptyStateEmblem("groups")
                 Text(emptyTitle, style = MaterialTheme.typography.titleMedium)
                 if (tab == "Joined" && query.isBlank() && connection.enabled) TextButton(onClick = { selectScope("Local") }) {
                     Text("Browse local groups")
@@ -324,7 +327,7 @@ private fun CreateGroupSheet(initialCity: GroupLocality?, onDismiss: () -> Unit,
         Column(Modifier.fillMaxWidth().imePadding()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 TextButton(enabled = !saving, onClick = { dismissDraft() }) { Text("Cancel") }
-                Button(enabled = valid && !saving, onClick = ::save) { Text(if (saving) "Creating…" else "Create group") }
+                YapButton(enabled = valid && !saving, onClick = ::save) { Text(if (saving) "Creating…" else "Create group") }
             }
             LazyColumn(contentPadding = PaddingValues(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 item { Text("New group", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold) }
@@ -334,7 +337,7 @@ private fun CreateGroupSheet(initialCity: GroupLocality?, onDismiss: () -> Unit,
                 item { OutlinedTextField(description, { if (it.length <= 300) description = it }, enabled = !saving, label = { Text("What brings you together?") }, minLines = 3, modifier = Modifier.fillMaxWidth()) }
                 item { Text("A group for…", style = MaterialTheme.typography.titleMedium) }
                 item { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    topics.drop(1).forEach { value -> FilterChip(enabled = !saving, selected = category == value, onClick = { category = value }, label = { Text(value) }) }
+                    topics.drop(1).forEach { value -> YapFilterChip(enabled = !saving, selected = category == value, onClick = { category = value }, label = { Text(value) }) }
                 } }
                 item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("Worldwide group", Modifier.weight(1f).padding(top = 12.dp))

@@ -20,8 +20,8 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
-private const val TERMS_URL = "https://yap.lgbt/terms/"
-private const val PRIVACY_URL = "https://yap.lgbt/privacy-policy/"
+internal const val TERMS_URL = "https://yap.lgbt/terms/"
+internal const val PRIVACY_URL = "https://yap.lgbt/privacy-policy/"
 
 @Composable
 private fun WelcomePolicyFooter() {
@@ -120,13 +120,13 @@ internal fun WelcomeScreen(controller: NetkitController, files: RecoveryFiles?, 
         }
         return
     }
-    EstuaryOnboardingSurface(
+    EstuaryOnboardingSurface(step = step,
         header = if (nativeRestore) ({
             control(FormRow("back", "Back", "back", symbol = "chevron.backward", enabled = !busy) { go("welcome") }, Modifier)
         }) else null,
         footer = if (step == "welcome") ({ WelcomePolicyFooter() }) else null
-    ) {
-        if (step == "welcome") {
+    ) { visibleStep ->
+        if (visibleStep == "welcome") {
             YapWordmark(Modifier.align(Alignment.CenterHorizontally), prominent = true)
             Text("Welcome to Yap", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
             Text("Yap is a neighborhood for queer conversation. Join yap.lgbt to share a plan, ask a question or find your people.")
@@ -135,7 +135,7 @@ internal fun WelcomeScreen(controller: NetkitController, files: RecoveryFiles?, 
                 control(FormRow("create", "Create an account", "primary", identifier = "welcome-create") { go("name") }, Modifier.fillMaxWidth())
                 control(FormRow("restore", "Restore an existing account", "secondary", identifier = "welcome-restore") { go("restore") }, Modifier.align(Alignment.CenterHorizontally))
             } else {
-                Button(onClick = { go("name") }, modifier = Modifier.fillMaxWidth()) { Text("Create an account") }
+                YapButton(onClick = { go("name") }, modifier = Modifier.fillMaxWidth()) { Text("Create an account") }
                 OutlinedButton(onClick = { go("restore") }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Restore an existing account") }
             }
             return@EstuaryOnboardingSurface
@@ -158,10 +158,10 @@ internal fun WelcomeScreen(controller: NetkitController, files: RecoveryFiles?, 
                         detail = "Open a backup file with its passphrase.", symbol = "doc.badge.clock") { go("file") }, Modifier.fillMaxWidth())
                 }
             }
-            if (step == "restore") {
+            if (visibleStep == "restore") {
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             } else {
-                val fromFile = step == "file"
+                val fromFile = visibleStep == "file"
                 val rows = buildList {
                     if (fromFile) {
                         add(FormRow("choose-file", if (file == null) "Choose backup file" else "Change backup file",
@@ -185,17 +185,17 @@ internal fun WelcomeScreen(controller: NetkitController, files: RecoveryFiles?, 
             return@EstuaryOnboardingSurface
         }
         YapWordmark()
-        Text(when (step) {
+        Text(when (visibleStep) {
             "name" -> "What should neighbors call you?"
             else -> "Welcome back"
         }, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-        when (step) {
+        when (visibleStep) {
             "name" -> {
                 Text("Use a name you’re comfortable posting with. You can also post anonymously.")
                 OutlinedTextField(name, { if (it.length <= 30) name = it }, label = { Text("Display name (optional)") },
                     singleLine = true, enabled = !busy, modifier = Modifier.fillMaxWidth())
                 TextButton(enabled = !busy, onClick = { name = suggestName(name) }) { Text("Suggest another name") }
-                Button(enabled = !busy && name.trim().length != 1, onClick = ::finish) { Text(if (busy) "Joining…" else "Join yap.lgbt") }
+                YapButton(enabled = !busy && name.trim().length != 1, onClick = ::finish) { Text(if (busy) "Joining…" else "Join yap.lgbt") }
             }
             "restore" -> {
                 Text("Use your saved recovery key to add this device to your account.")
@@ -203,7 +203,7 @@ internal fun WelcomeScreen(controller: NetkitController, files: RecoveryFiles?, 
                 OutlinedTextField(key, { if (it.length <= 128) key = it }, label = { Text("Recovery key") },
                     singleLine = true, enabled = !busy, visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
-                Button(enabled = !busy && key.isNotBlank(), onClick = ::finish) { Text(if (busy) "Restoring…" else "Restore account") }
+                YapButton(enabled = !busy && key.isNotBlank(), onClick = ::finish) { Text(if (busy) "Restoring…" else "Restore account") }
                 if (files != null) TextButton(enabled = !busy, onClick = { go("file") }) { Text("Use an encrypted app backup") }
             }
             "file" -> {
@@ -212,11 +212,11 @@ internal fun WelcomeScreen(controller: NetkitController, files: RecoveryFiles?, 
                 OutlinedTextField(passphrase, { passphrase = it }, label = { Text("Backup passphrase") },
                     singleLine = true, enabled = !busy, visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
-                Button(enabled = !busy && file != null && passphrase.isNotEmpty(), onClick = ::finish) { Text(if (busy) "Restoring…" else "Restore account") }
+                YapButton(enabled = !busy && file != null && passphrase.isNotEmpty(), onClick = ::finish) { Text(if (busy) "Restoring…" else "Restore account") }
             }
         }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        if (step != "welcome") TextButton(enabled = !busy, onClick = { go(if (step == "file" || step == "key") "restore" else "welcome") }) { Text("Back") }
+        if (visibleStep != "welcome") TextButton(enabled = !busy, onClick = { go(if (visibleStep == "file" || visibleStep == "key") "restore" else "welcome") }) { Text("Back") }
     }
 }
 
@@ -247,9 +247,9 @@ internal fun WelcomeBackupScreen(controller: NetkitController, accountReady: Boo
     fun getKey() = act { key = controller.recoveryKey() }
     fun enter() = act { if (!replay) controller.enterNeighborhood(); onDone() }
     val native = LocalNativeForm.current
-    EstuaryOnboardingSurface {
+    EstuaryOnboardingSurface(step = step) { visibleStep ->
         val control = LocalFeedControl.current
-        if (step == "backup" && control != null) {
+        if (visibleStep == "backup" && control != null) {
             YapWordmark(Modifier.align(Alignment.CenterHorizontally), prominent = true)
             Text("Keep your account", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
             Text("Save your recovery key to use this account on another device.")
@@ -260,7 +260,7 @@ internal fun WelcomeBackupScreen(controller: NetkitController, accountReady: Boo
             return@EstuaryOnboardingSurface
         }
         if (control != null) YapWordmark(Modifier.align(Alignment.CenterHorizontally), prominent = true) else YapWordmark()
-        if (step == "intro") {
+        if (visibleStep == "intro") {
             Text("Welcome to Yap", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
             Text("Your account is already on this device. You can post by name or anonymously in your neighborhood.")
             val proceed = { step = if (returningName == null) "backup" else "name" }
@@ -268,10 +268,10 @@ internal fun WelcomeBackupScreen(controller: NetkitController, accountReady: Boo
                 control(FormRow("continue", "Continue with my account", "primary", onTap = proceed), Modifier.fillMaxWidth())
                 control(FormRow("return", "Return to neighborhood", "secondary", onTap = onDone), Modifier.align(Alignment.CenterHorizontally))
             } else {
-                Button(onClick = proceed) { Text("Continue with my account") }
+                YapButton(onClick = proceed) { Text("Continue with my account") }
                 TextButton(onClick = onDone) { Text("Return to neighborhood") }
             }
-        } else if (step == "name") {
+        } else if (visibleStep == "name") {
             Text("What should neighbors call you?", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
             Text("Keep your display name, pick a suggestion, or write your own.")
             val valid = !busy && name.trim().length in 2..30
@@ -285,14 +285,14 @@ internal fun WelcomeBackupScreen(controller: NetkitController, accountReady: Boo
                 OutlinedTextField(name, { if (it.length <= 30) name = it }, label = { Text("Display name") },
                     enabled = !busy, singleLine = true, modifier = Modifier.fillMaxWidth())
                 TextButton(enabled = !busy, onClick = { name = suggestName(name) }) { Text("Suggest another name") }
-                Button(enabled = valid, onClick = ::saveName) { Text("Continue") }
+                YapButton(enabled = valid, onClick = ::saveName) { Text("Continue") }
             }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         } else {
             Text("Keep your account", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
             Text("Your account is ready. Save your recovery key to use this account on another device.")
             OutlinedButton(enabled = accountReady && !busy, onClick = ::getKey) { Text("Get recovery key") }
-            Button(enabled = !busy, onClick = ::enter) { Text("Enter neighborhood") }
+            YapButton(enabled = !busy, onClick = ::enter) { Text("Enter neighborhood") }
             Text("You can back up later in You → Account recovery.", style = MaterialTheme.typography.bodyMedium)
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
@@ -359,7 +359,7 @@ internal fun RecoveryKeyDialog(key: String, alias: String, vault: RecoveryKeyVau
                     Text(if (vault is PasswordManagerVault) "Saved to password manager" else "Saved to Keychain")
                     if (vault !is PasswordManagerVault) TextButton(onClick = { removing = true }) { Text("Remove saved key") }
                 } else {
-                    Button(onClick = ::saveKey) { Text(if (vault is PasswordManagerVault) "Save to password manager" else "Save to Keychain") }
+                    YapButton(onClick = ::saveKey) { Text(if (vault is PasswordManagerVault) "Save to password manager" else "Save to Keychain") }
                 }
                 if (vault !is PasswordManagerVault) Text("With iCloud Keychain on, you can restore from Yap on another iPhone.", style = MaterialTheme.typography.bodySmall)
             }
@@ -431,7 +431,7 @@ internal fun WelcomeUsernameScreen(controller: NetkitController, connection: Net
             if (registration != null) {
                 OutlinedTextField(name, { name = registration.normalize(it); error = null }, label = { Text("Username") },
                     singleLine = true, enabled = !working, keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Ascii))
-                Button(enabled = !working && registration.isValid(name), onClick = ::submit) { Text(if (working) "Claiming…" else "Claim username") }
+                YapButton(enabled = !working && registration.isValid(name), onClick = ::submit) { Text(if (working) "Claiming…" else "Claim username") }
             } else if (!working) TextButton(onClick = retry) { Text("Check again") }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
@@ -526,5 +526,5 @@ internal fun UsernameControl(connection: NetkitState, controller: NetkitControll
             Text("Use 2–24 letters, numbers, or underscores. Start with a letter.", style = MaterialTheme.typography.bodySmall)
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         } }, dismissButton = { TextButton(enabled = !busy, onClick = { open = false }) { Text("Cancel") } },
-        confirmButton = { Button(enabled = !busy && claim.isValid(name), onClick = ::submit) { Text(if (busy) "Claiming…" else "Claim username") } })
+        confirmButton = { YapButton(enabled = !busy && claim.isValid(name), onClick = ::submit) { Text(if (busy) "Claiming…" else "Claim username") } })
 }
