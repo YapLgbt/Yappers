@@ -17,6 +17,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconToggleButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -27,9 +28,11 @@ import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleButton
 import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.material3.toShape
@@ -129,6 +132,22 @@ internal actual fun YapButton(onClick: () -> Unit, modifier: Modifier, enabled: 
                               content: @Composable RowScope.() -> Unit) {
     Button(onClick = onClick, modifier = modifier, enabled = enabled,
         shapes = ButtonDefaults.shapes(), contentPadding = contentPadding, content = content)
+}
+
+@Composable
+internal actual fun YapOutlinedButton(onClick: () -> Unit, contentPadding: PaddingValues, content: @Composable RowScope.() -> Unit) {
+    OutlinedButton(onClick = onClick, shapes = ButtonDefaults.shapes(), contentPadding = contentPadding, content = content)
+}
+
+@Composable
+internal actual fun YapFilledTonalButton(onClick: () -> Unit, contentPadding: PaddingValues, modifier: Modifier,
+                                        content: @Composable RowScope.() -> Unit) {
+    FilledTonalButton(onClick = onClick, modifier = modifier, shapes = ButtonDefaults.shapes(), contentPadding = contentPadding, content = content)
+}
+
+@Composable
+internal actual fun YapCancelButton(onClick: () -> Unit, enabled: Boolean, label: String) {
+    TextButton(onClick = onClick, shapes = ButtonDefaults.shapes(), contentPadding = ButtonDefaults.TextButtonContentPadding, enabled = enabled) { Text(label) }
 }
 
 @Composable

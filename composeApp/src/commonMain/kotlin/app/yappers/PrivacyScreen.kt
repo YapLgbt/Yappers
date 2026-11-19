@@ -103,7 +103,7 @@ internal fun PrivacyScreen(policy: DevicePrivacy, status: String?, onClose: () -
                         Text(ageLabel(days), Modifier.padding(start = 12.dp))
                     }
                 }
-            } }, confirmButton = { TextButton(onClick = { agePicker = null }) { Text("Cancel") } })
+            } }, confirmButton = { YapCancelButton(onClick = { agePicker = null }) })
     }
 }
 

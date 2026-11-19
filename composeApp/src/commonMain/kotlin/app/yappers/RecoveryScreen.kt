@@ -238,7 +238,7 @@ internal fun DataOwnershipSection(controller: NetkitController, connection: Netk
         EditorSheet(onDismissRequest = { close() }, sheetState = sheet) {
             Column(Modifier.fillMaxSize().imePadding().padding(top = 12.dp)) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(enabled = !working, onClick = { close() }) { Text("Cancel") }
+                    YapCancelButton(enabled = !working, onClick = { close() })
                     Spacer(Modifier.weight(1f))
                     YapButton(enabled = canSubmit, onClick = ::submit) { Text(if (working) "Working…" else if (exporting) "Save backup" else "Move account") }
                 }

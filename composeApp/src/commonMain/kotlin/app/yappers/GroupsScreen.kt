@@ -326,7 +326,7 @@ private fun CreateGroupSheet(initialCity: GroupLocality?, onDismiss: () -> Unit,
     EditorSheet(onDismissRequest = { dismissDraft() }, sheetState = sheet) {
         Column(Modifier.fillMaxWidth().imePadding()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                TextButton(enabled = !saving, onClick = { dismissDraft() }) { Text("Cancel") }
+                YapCancelButton(enabled = !saving, onClick = { dismissDraft() })
                 YapButton(enabled = valid && !saving, onClick = ::save) { Text(if (saving) "Creating…" else "Create group") }
             }
             LazyColumn(contentPadding = PaddingValues(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {

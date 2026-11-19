@@ -581,7 +581,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                                                 val count = (if (popular) 1 else 0) + (if (topic != "All") 1 else 0)
                                                                 feedButton(FormRow("filter", if (count == 0) "Filter" else "Filter ($count)",
                                                                     symbol = "line.3.horizontal.decrease", onTap = { filtersOpen = true }), Modifier)
-                                                            } else if (!saved) OutlinedButton(onClick = { filtersOpen = true },
+                                                            } else if (!saved) YapOutlinedButton(onClick = { filtersOpen = true },
                                                                 contentPadding = PaddingValues(horizontal = 12.dp)) {
                                                                 val count = (if (popular) 1 else 0) + (if (topic != "All") 1 else 0)
                                                                 if (materialNavigation != null) ActionIcon("filter")
@@ -808,7 +808,7 @@ private fun postTime(post: Post): String? {
 
 internal val LocalRepliesButton = staticCompositionLocalOf<@Composable (Int, () -> Unit) -> Unit> {
     { count, open ->
-        FilledTonalButton(onClick = open, contentPadding = PaddingValues(horizontal = 12.dp)) {
+        YapFilledTonalButton(onClick = open, contentPadding = PaddingValues(horizontal = 12.dp)) {
             LineIcon("reply", null, Modifier.size(18.dp), tint = LocalContentColor.current)
             Spacer(Modifier.width(6.dp))
             Text("Replies ($count)")
@@ -873,7 +873,7 @@ private fun PostRow(post: Post, onReport: ((ReportTarget) -> Unit)?, onOpen: (()
                 itemVerticalAlignment = Alignment.CenterVertically) {
                 if (LocalMaterialNavigation.current != null && onOpen != null) {
                     val count = post.replies.size
-                    FilledTonalButton(onClick = onComment, contentPadding = PaddingValues(horizontal = 12.dp),
+                    YapFilledTonalButton(onClick = onComment, contentPadding = PaddingValues(horizontal = 12.dp),
                         modifier = Modifier.semantics { contentDescription = "Replies ($count)" }) {
                         LineIcon("reply", null, Modifier.size(18.dp), tint = LocalContentColor.current)
                         Spacer(Modifier.width(6.dp))
@@ -1083,7 +1083,7 @@ private fun IdentityPicker(action: String, namedIdentity: String, anonymous: Boo
                     }
                 }
                 if (networked) Text("Your home can identify anonymous posts.", style = MaterialTheme.typography.bodySmall)
-            } }, confirmButton = { TextButton(onClick = { open = false }) { Text("Cancel") } })
+            } }, confirmButton = { YapCancelButton(onClick = { open = false }) })
     }
 }
 
@@ -1114,7 +1114,7 @@ private fun FeedFilterDialog(topic: String, popular: Boolean, onDismiss: () -> U
             } }
         }
     }, confirmButton = { YapButton(onClick = { onApply(selected, popularFirst) }) { Text("Apply") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+        dismissButton = { YapCancelButton(onClick = onDismiss) })
 }
 
 @Composable
@@ -1157,7 +1157,7 @@ private fun ComposeSheet(draft: PostDraft, namedIdentity: String, anonymous: Boo
         Column(Modifier.fillMaxSize().imePadding().padding(top = 12.dp)) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (android) Text("New post", Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium)
-                TextButton(enabled = !submitting, onClick = ::close) { Text("Cancel") }
+                YapCancelButton(enabled = !submitting, onClick = ::close)
                 if (!android) {
                     Spacer(Modifier.weight(1f))
                     YapButton(enabled = canPublish, onClick = ::publish) { Text(publishLabel) }
@@ -1398,7 +1398,7 @@ private fun NetworkSettings(connection: NetkitState, onJoin: suspend (String) ->
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().fillMaxHeight(0.9f).imePadding()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(enabled = !joining, onClick = { editing = false; invitation = "" }) { Text("Cancel") }
+                YapCancelButton(enabled = !joining, onClick = { editing = false; invitation = "" })
                 Spacer(Modifier.weight(1f))
                 YapButton(enabled = invitation.isNotBlank() && !joining, onClick = ::join) { Text(if (joining) "Joining…" else "Join instance") }
             }

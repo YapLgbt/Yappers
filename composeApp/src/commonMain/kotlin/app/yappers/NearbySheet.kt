@@ -96,7 +96,7 @@ internal fun NearbySheet(initial: NearbyPreference, services: NearbyServices?, o
     }
     EditorSheet(onDismiss, rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            YapCancelButton(onClick = onDismiss)
             YapButton(enabled = canApply, onClick = ::apply) { Text("Apply") }
         }
         LazyColumn(Modifier.fillMaxWidth().imePadding(), contentPadding = PaddingValues(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

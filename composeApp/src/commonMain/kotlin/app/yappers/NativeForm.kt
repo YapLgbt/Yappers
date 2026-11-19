@@ -54,6 +54,6 @@ internal fun PlatformConfirmation(title: String, detail: String, action: String,
         androidx.compose.material3.AlertDialog(onDismissRequest = onCancel,
             title = { androidx.compose.material3.Text(title) }, text = { androidx.compose.material3.Text(detail) },
             confirmButton = { androidx.compose.material3.TextButton(onClick = onConfirm) { androidx.compose.material3.Text(action) } },
-            dismissButton = if (cancel.isEmpty()) null else ({ androidx.compose.material3.TextButton(onClick = onCancel) { androidx.compose.material3.Text(cancel) } }))
+            dismissButton = if (cancel.isEmpty()) null else ({ YapCancelButton(onClick = onCancel, label = cancel) }))
     }
 }

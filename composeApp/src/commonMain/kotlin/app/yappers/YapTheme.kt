@@ -40,6 +40,16 @@ internal expect fun YapButton(onClick: () -> Unit, modifier: Modifier = Modifier
                              content: @Composable RowScope.() -> Unit)
 
 @Composable
+internal expect fun YapOutlinedButton(onClick: () -> Unit, contentPadding: PaddingValues, content: @Composable RowScope.() -> Unit)
+
+@Composable
+internal expect fun YapFilledTonalButton(onClick: () -> Unit, contentPadding: PaddingValues, modifier: Modifier = Modifier,
+                                        content: @Composable RowScope.() -> Unit)
+
+@Composable
+internal expect fun YapCancelButton(onClick: () -> Unit, enabled: Boolean = true, label: String = "Cancel")
+
+@Composable
 internal expect fun YapSegments(labels: List<String>, selected: String, onSelect: (String) -> Unit)
 
 @Composable

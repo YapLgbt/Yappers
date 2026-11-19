@@ -6,14 +6,17 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconToggleButton
 import androidx.compose.material3.IconToggleButtonColors
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -80,6 +83,22 @@ internal actual fun YapButton(onClick: () -> Unit, modifier: Modifier, enabled: 
                               content: @Composable RowScope.() -> Unit) {
     Button(onClick = onClick, modifier = modifier, enabled = enabled,
         contentPadding = contentPadding, content = content)
+}
+
+@Composable
+internal actual fun YapOutlinedButton(onClick: () -> Unit, contentPadding: PaddingValues, content: @Composable RowScope.() -> Unit) {
+    OutlinedButton(onClick = onClick, contentPadding = contentPadding, content = content)
+}
+
+@Composable
+internal actual fun YapFilledTonalButton(onClick: () -> Unit, contentPadding: PaddingValues, modifier: Modifier,
+                                        content: @Composable RowScope.() -> Unit) {
+    FilledTonalButton(onClick = onClick, modifier = modifier, contentPadding = contentPadding, content = content)
+}
+
+@Composable
+internal actual fun YapCancelButton(onClick: () -> Unit, enabled: Boolean, label: String) {
+    TextButton(onClick = onClick, enabled = enabled) { Text(label) }
 }
 
 @Composable

@@ -161,6 +161,6 @@ internal fun ReportDialog(target: ReportTarget, controller: NetkitController, on
         },
         dismissButton = {
             if (phase == "review") TextButton(onClick = { phase = "edit"; error = "" }, enabled = !busy) { Text("Edit") }
-            else if (phase != "done") TextButton(onClick = onClose, enabled = !busy) { Text("Cancel") }
+            else if (phase != "done") YapCancelButton(onClick = onClose, enabled = !busy)
         })
 }

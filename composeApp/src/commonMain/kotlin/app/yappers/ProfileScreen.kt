@@ -195,7 +195,7 @@ internal fun ProfileEditor(initialName: String, initial: CommunityProfile, libra
         cropImage = null
     }) else Column(Modifier.widthIn(max = 760.dp).fillMaxWidth().fillMaxHeight().imePadding().padding(top = 12.dp)) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(enabled = !saving && !choosingPhoto, onClick = { close() }) { Text("Cancel") }
+            YapCancelButton(enabled = !saving && !choosingPhoto, onClick = { close() })
             Spacer(Modifier.weight(1f))
             YapButton(enabled = canSave, onClick = ::save) { Text(if (saving) "Saving…" else "Save profile") }
         }

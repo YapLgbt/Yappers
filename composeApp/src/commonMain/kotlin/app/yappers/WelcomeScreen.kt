@@ -371,7 +371,7 @@ internal fun RecoveryKeyDialog(key: String, alias: String, vault: RecoveryKeyVau
         title = { Text("Remove this recovery key from Keychain?") },
         text = { Text("If you use iCloud Keychain, this removes the saved key from your other devices too.") },
         confirmButton = { TextButton(onClick = ::removeKey) { Text("Remove key") } },
-        dismissButton = { TextButton(onClick = { removing = false }) { Text("Cancel") } })
+        dismissButton = { YapCancelButton(onClick = { removing = false }) })
 }
 
 @Composable
@@ -525,6 +525,6 @@ internal fun UsernameControl(connection: NetkitState, controller: NetkitControll
                 keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Ascii))
             Text("Use 2–24 letters, numbers, or underscores. Start with a letter.", style = MaterialTheme.typography.bodySmall)
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        } }, dismissButton = { TextButton(enabled = !busy, onClick = { open = false }) { Text("Cancel") } },
+        } }, dismissButton = { YapCancelButton(enabled = !busy, onClick = { open = false }) },
         confirmButton = { YapButton(enabled = !busy && claim.isValid(name), onClick = ::submit) { Text(if (busy) "Claiming…" else "Claim username") } })
 }
