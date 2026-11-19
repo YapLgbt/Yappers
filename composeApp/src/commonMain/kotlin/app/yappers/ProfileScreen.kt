@@ -35,7 +35,8 @@ internal fun ProfileAvatar(name: String, profile: CommunityProfile?, size: Dp) {
     val image = remember(profile?.photo) { profile?.photo?.takeIf { it.isNotEmpty() }?.let(::decodeProfilePhoto) }
     Box(Modifier.size(size).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) {
         if (image != null) Image(image, "Profile photo of $name", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-        else Image(painterResource(Res.drawable.default_avatar), null, Modifier.fillMaxSize())
+        else if (profile?.photo == "") Image(painterResource(Res.drawable.default_avatar), null, Modifier.fillMaxSize())
+        else LineIcon("person", null)
     }
 }
 
@@ -256,7 +257,7 @@ internal fun AuthorProfileSheet(name: String, username: String?, profile: Commun
     if (nativeForm != null) {
         val sections = buildList {
             add(FormSection(rows = buildList {
-                add(FormRow("photo", "Profile photo of $name", "photo", value = profile?.photo.orEmpty()))
+                if (profile != null) add(FormRow("photo", "Profile photo of $name", "photo", value = profile.photo))
                 profile?.pronouns?.takeIf { it.isNotBlank() }?.let { add(FormRow("pronouns", it, "text")) }
                 username?.let { add(FormRow("username", it, "text")) }
                 if (profile != null) add(FormRow("source", "Shared with this post", "text"))

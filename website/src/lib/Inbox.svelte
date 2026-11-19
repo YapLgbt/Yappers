@@ -7,13 +7,14 @@
   import ContentMenu from './ContentMenu.svelte';
   import { onDestroy, tick } from 'svelte';
   import { Tabs } from '@skeletonlabs/skeleton-svelte';
-  import { inboxFor, type Community, type Profile, type Contact } from './community';
+  import { inboxFor, inboxPhotos, type Community, type Profile, type Contact } from './community';
 
   let { profile, client, contact = $bindable(null), status, refresh, browse, block, report, changedContact }: {
     changedContact:(person:Contact|null)=>void;report: (kind:"message"|"account",id:string,text:string)=>void; profile: Profile; client: Community; contact: Contact | null; status: string;
     refresh: () => Promise<void>; browse: () => void; block: (contact: Contact) => Promise<void>;
   } = $props();
   let mailbox = $derived(inboxFor(profile));
+  const photos = $derived(inboxPhotos(profile));
   let selected = $derived(contact && !profile.blocks.some(b => b.peer === contact?.peer) &&
     !mailbox.requests.includes(contact.peer) ? contact : null);
   let lines = $derived(mailbox.messages.filter(message => message.peer === selected?.peer));
@@ -103,7 +104,7 @@
   <div class="dm-top"><ActionButton onclick={() => show(null)}><AppIcon name="arrowLeft"/>Back to inbox</ActionButton>
     <ActionButton disabled={!!busyPeer} onclick={() => selected && blockPerson(selected)}>Block</ActionButton></div>
   <div class="recipient">
-    <Avatar label={selected.label}/>
+    <Avatar label={selected.label} photo={photos.get(selected.peer)}/>
     <div><h1 class="dm-title" tabindex="-1" bind:this={heading}>{selected.label}</h1>
       <p class="dm-meta">End-to-end encrypted</p></div>
   </div>
@@ -135,6 +136,7 @@
   <form class="dm-compose" onsubmit={event => {event.preventDefault(); if (selected) void send(selected);}}>
     <label class="sr-only" for="dm-body">Message</label>
     <textarea placeholder="Write a message…" id="dm-body" rows="2" maxlength="1000" value={drafts[selected.peer] || ''} readonly={busyPeer === selected.peer || sending[selected.peer]}
+      onfocus={event => event.currentTarget.scrollIntoView({block: 'nearest'})}
       oninput={event => { if (selected) drafts[selected.peer] = event.currentTarget.value; }}></textarea>
     <ActionButton variant="filled" disabled={busyPeer === selected.peer || sending[selected.peer] || !profile.directAvailable || !drafts[selected.peer]?.trim()}>{sending[selected.peer] ? 'Sending…' : 'Send'}</ActionButton>
   </form>
@@ -148,7 +150,7 @@
     <Tabs.Content value="chats">
       {#each mailbox.threads as thread (thread.peer)}
         <button class="dm-thread" onclick={() => show({peer:thread.peer,label:thread.label})}>
-          <Avatar label={thread.label}/>
+          <Avatar label={thread.label} photo={photos.get(thread.peer)}/>
           <span class="conversation"><strong>{thread.label}</strong><span>{thread.outgoing ? 'You: ' : ''}{thread.body}</span></span>
           <AppIcon name="arrowRight"/>
         </button>
@@ -160,7 +162,7 @@
     </Tabs.Content>
     <Tabs.Content value="requests">
       {#each mailbox.requests as peer (peer)}
-        <div class="dm-request"><div class="requester"><Avatar label={labelFor(peer)}/><strong>{labelFor(peer)}</strong></div><div class="actions">
+        <div class="dm-request"><div class="requester"><Avatar label={labelFor(peer)} photo={photos.get(peer)}/><strong>{labelFor(peer)}</strong></div><div class="actions">
           <ActionButton variant="tonal" disabled={!!busyPeer || !profile.directAvailable} onclick={() => accept(peer)}>Accept</ActionButton>
           <ActionButton disabled={!!busyPeer} onclick={() => blockPerson({peer,label:labelFor(peer)})}>Block</ActionButton>
           <ActionButton onclick={() => report('account',peer,'')}>Report account</ActionButton>

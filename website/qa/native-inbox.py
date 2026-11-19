@@ -45,6 +45,7 @@ try:
     request("feed")
     request("social", op={"kind": "claimUsername", "name": "native_reader"})
     post = request("prepare", action={"kind": "postV2", "anonymous": False, "displayName": "Native reader",
+                   "profile": {"photo": sys.argv[2], "bio": "", "identity": "", "interests": "", "pronouns": "", "hereFor": []},
                    "topic": "Chatter", "headline": "Native inbox test", "body": "Book swap on Sunday"})
     request("submit", event=post["event"])
     step("initialize")

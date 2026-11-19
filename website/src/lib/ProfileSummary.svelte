@@ -12,7 +12,7 @@
 
 <div class="profile-summary" class:own>
   <div class="identity">
-    <Avatar label={name} photo={details?.photo} large />
+    <Avatar label={name} photo={own || details ? details?.photo ?? '' : undefined} large />
     <div class="identity-text">
       {#if own}<h1>{name}</h1>{/if}
       {#if username}<p class="username">{username}</p>{/if}

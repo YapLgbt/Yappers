@@ -4,7 +4,22 @@ const {createInterface} = require('node:readline');
 const path = require('node:path');
 
 module.exports = async function verifyInbox(page, ctx, fixture, engine) {
-  const peer = spawn('python3',[path.join(__dirname,'native-inbox.py'),fixture],{stdio:['pipe','pipe','inherit']});
+  const photo = await page.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 96;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#20bf60';
+    ctx.fillRect(0, 0, 96, 96);
+    return canvas.toDataURL('image/jpeg').split(',')[1];
+  });
+  async function expectContactPhoto(row) {
+    const canvas = row.locator('.avatar canvas');
+    await canvas.waitFor({state:'visible'});
+    const [r, g, b] = await canvas.evaluate(c => [...c.getContext('2d').getImageData(48,48,1,1).data]);
+    assert(g > 175 && r < 50 && b < 110, 'Inbox should show the signed contact photo');
+    assert.equal(await row.locator('.avatar img').count(), 0);
+  }
+  const peer = spawn('python3',[path.join(__dirname,'native-inbox.py'),fixture,photo],{stdio:['pipe','pipe','inherit']});
   const lines = createInterface({input:peer.stdout})[Symbol.asyncIterator]();
   const read = async () => {
     const line = await lines.next();
@@ -48,6 +63,7 @@ module.exports = async function verifyInbox(page, ctx, fixture, engine) {
       await native({kind:'send',peer:receiver,body:reply});
       await refresh();
       assert.equal(await page.getByText(reply,{exact:true}).count(),0);
+      await expectContactPhoto(page.locator('.dm-request'));
       await page.getByRole('button',{name:'Accept',exact:true}).click();
       await page.getByText(reply,{exact:true}).waitFor();
     } else {
@@ -63,6 +79,7 @@ module.exports = async function verifyInbox(page, ctx, fixture, engine) {
       await page.getByRole('tab',{name:'Conversations'}).waitFor();
       await page.goForward();
     }
+    await expectContactPhoto(page.locator('.recipient'));
     await page.getByLabel('Message',{exact:true}).fill(first);
     await page.getByRole('button',{name:'Send',exact:true}).click();
     await page.getByText('Sent',{exact:true}).waitFor({timeout:65000});
@@ -75,6 +92,7 @@ module.exports = async function verifyInbox(page, ctx, fixture, engine) {
     await page.reload();
     await page.locator('#posts[data-feed-state=primary]').waitFor({timeout:65000});
     await page.getByRole('button',{name:'Inbox',exact:true}).click();
+    await expectContactPhoto(page.getByRole('button',{name:/Native reader/}));
     await page.getByRole('button',{name:/Native reader/}).click();
     await page.getByText(reply,{exact:true}).waitFor();
     const originalViewport = page.viewportSize();

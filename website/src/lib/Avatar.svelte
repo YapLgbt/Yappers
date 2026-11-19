@@ -1,23 +1,27 @@
 <script lang="ts">
+  import AppIcon from './AppIcon.svelte';
+
   let {
-    photo = '',
+    photo,
     large = false,
   }: { photo?: string; label: string; large?: boolean } = $props();
   let canvas = $state<HTMLCanvasElement>(),
-    loaded = $state(false);
+    renderedPhoto = $state<string>();
   $effect(() => {
     const target = canvas,
       encoded = photo;
     let cancelled = false;
-    loaded = false;
+    renderedPhoto = undefined;
     if (target && encoded && encoded.length <= 4096) {
       void (async () => {
         const binary = Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0));
         const img = await createImageBitmap(new Blob([binary]));
         try {
-          if (!cancelled) {
-            target.getContext('2d')?.drawImage(img, 0, 0, 96, 96);
-            loaded = true;
+          const context = target.getContext('2d');
+          if (!cancelled && context) {
+            context.clearRect(0, 0, 96, 96);
+            context.drawImage(img, 0, 0, 96, 96);
+            renderedPhoto = encoded;
           }
         } finally {
           img.close();
@@ -31,8 +35,12 @@
 </script>
 
 <span class="avatar" class:large aria-hidden="true">
-  {#if !loaded}<img src="/app/default-avatar.png" alt="" />{/if}
-  <canvas hidden={!loaded} width="96" height="96" bind:this={canvas}></canvas>
+  {#if photo === ''}
+    <img src="/app/default-avatar.png" alt="" />
+  {:else if !photo || renderedPhoto !== photo}
+    <AppIcon name="you" />
+  {/if}
+  <canvas hidden={!photo || renderedPhoto !== photo} width="96" height="96" bind:this={canvas}></canvas>
 </span>
 
 <style>

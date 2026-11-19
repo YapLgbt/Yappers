@@ -111,6 +111,23 @@ export interface DirectMessage extends Contact {
   age: number;
   status: 'received' | 'sent' | 'queued' | 'unavailable';
 }
+// Replies and anonymous posts do not carry a shared profile. Only a named
+// snapshot can establish or clear the photo associated with a peer.
+export function inboxPhotos(profile: Profile): Map<string, string> {
+  const latest = new Map<string, number>();
+  const photos = new Map<string, string>();
+  const hidden = new Set(profile.hiddenPosts);
+  for (const post of [...profile.posts, ...Object.values(profile.savedPosts ?? {})]) {
+    const peer = post.visibility?.peer;
+    if (!peer || !post.profile || isAnonymous(post) || hidden.has(post.id) || !visible(post, profile)) continue;
+    const time = post.acceptedAt ?? post.createdAt ?? 0;
+    if (time <= (latest.get(peer) ?? -1)) continue;
+    latest.set(peer, time);
+    photos.set(peer, post.profile.photo ?? '');
+  }
+  return photos;
+}
+
 export function inboxFor(profile: Profile) {
   const blocked = new Set(profile.blocks.map(block => block.peer));
   const messages = (profile.directState?.messages || []).filter(message => !blocked.has(message.peer));

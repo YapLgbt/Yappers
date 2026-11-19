@@ -79,6 +79,7 @@ module.exports = async function (page, ctx, base, engine) {
   await button('Edit profile').click();
   const editor = page.getByRole('dialog', { name: 'Edit profile' });
   await editor.waitFor();
+  await editor.locator('.avatar img[src="/app/default-avatar.png"]').waitFor();
   const profilePage = await page.evaluate(() => ({ url: location.href, scroll: scrollY }));
   await button('Cancel', editor).click();
   await editor.waitFor({ state: 'hidden' });
@@ -168,10 +169,24 @@ module.exports = async function (page, ctx, base, engine) {
   assert(
     await state((s) => s.publicProfile.photo.length > 32 && s.publicProfile.photo.length <= 4096),
   );
+  await page.locator('.profile-summary.own .avatar canvas:visible').waitFor();
+  assert.equal(await page.locator('.profile-summary.own .avatar img').count(), 0);
   assert.deepEqual(await state((s) => s.publicProfile.hereFor), ['Friends']);
   await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'Nearby',exact:true}).click();
+  // Returning to You remounts the portrait. Hold the decoder until the first frame is checked.
+  await page.evaluate(() => {
+    const decode = window.createImageBitmap.bind(window);
+    let resume;
+    const gate = new Promise(resolve => { resume = resolve; });
+    window.createImageBitmap = async (...args) => { await gate; return decode(...args); };
+    window.resumePhotoDecode = () => { window.createImageBitmap = decode; resume(); };
+  });
   await page.goBack();
   await button('Edit profile').waitFor();
+  assert.equal(await page.locator('.profile-summary.own .avatar img').count(), 0,
+    'A custom portrait must not flash the default during decoding');
+  await page.evaluate(() => window.resumePhotoDecode());
+  await page.locator('.profile-summary.own .avatar canvas:visible').waitFor();
   await page.goForward();
   await button('Choose a town').waitFor();
   await ctx.grantPermissions(['geolocation'], { origin: new URL(base).origin });
