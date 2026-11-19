@@ -8,6 +8,15 @@ class FeedRepositoryTest {
         override fun read() = value
         override fun write(value: String) { this.value = value }
     }
+    @Test fun inboxPhotosFollowNamedPeersAndRespectPhotoRemoval() {
+        val river = Post(1, "Neighbor", "Hi", "Friends", visibility = AuthorVisibility("river", false, 0),
+            profile = CommunityProfile(photo = "old"), acceptedAt = 10)
+        val fern = river.copy(id = 2, visibility = AuthorVisibility("fern", false, 0), profile = CommunityProfile(photo = "fern"))
+        val removed = river.copy(id = 3, profile = CommunityProfile(), acceptedAt = 20)
+        val anonymous = river.copy(visibility = AuthorVisibility("fern", true, 0), acceptedAt = 30)
+        val hidden = river.copy(hidden = true, acceptedAt = 40)
+        assertEquals(mapOf("river" to "", "fern" to "fern"), inboxPhotos(listOf(removed, fern, hidden, river, anonymous)))
+    }
     @Test fun postingIdentityDefaultsToAnonymousAndIsRememberedPerAccount() {
         val storage = MemoryStorage().apply { value = """{"posts":[]}""" }
         val repo = FeedRepository(storage)

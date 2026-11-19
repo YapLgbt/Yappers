@@ -18,6 +18,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -34,11 +35,13 @@ internal actual fun YapFilterChip(selected: Boolean, onClick: () -> Unit, label:
     androidx.compose.material3.FilterChip(selected = selected, onClick = onClick, label = label, enabled = enabled)
 }
 
-@Composable
-internal actual fun YapTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
-        typography = yapTypography(), content = content)
+internal val LocalSkiaAppearance = staticCompositionLocalOf<@Composable (@Composable () -> Unit) -> Unit> {
+    { content -> MaterialTheme(colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
+        typography = yapTypography(), content = content) }
 }
+
+@Composable
+internal actual fun YapTheme(content: @Composable () -> Unit) = LocalSkiaAppearance.current(content)
 
 @Composable
 internal actual fun LineIcon(name: String, description: String?, modifier: Modifier, tint: Color, filled: Boolean) {

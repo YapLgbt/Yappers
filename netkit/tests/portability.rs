@@ -745,7 +745,13 @@ async fn ios_messaging_fixture() -> anyhow::Result<()> {
     let sync = json!({"kind":"sync"});
     let mut state = step(&client, &Value::Null, json!({"kind":"initialize"})).await;
     state = step(&client, &state, sync.clone()).await;
-    let post = client.prepare(Action::Post {
+    let post = client.prepare(Action::PostV2 {
+        headline: "Hello from a neighbor".into(),
+        area: None,
+        profile: Some(Box::new(CommunityProfile {
+            photo: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAkElEQVR4nO3RwQ2AIAyFYQZxO28cHMjEERzGqxO4hTYxMVgLLbQciCT/kb7vgJu3o2quA80D5+7v7IFnOqwdgFwnjd8CGX8wrQtUHdAzsQcvoMxIhwFzhgYMjShgwsACA2iM+5wHCpjwUArIDXTlhtGHaRjyPQYknnwdFhgg4ZHT35M8AAXr7BsVIKkDHdB3AeNMX2gQjeJ6AAAAAElFTkSuQmCC".into(),
+            ..Default::default()
+        })),
         body: "Say hello to the messaging fixture.".into(),
         topic: "Chatter".into(),
         display_name: "DM test neighbor".into(),

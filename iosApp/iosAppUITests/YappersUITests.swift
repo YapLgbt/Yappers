@@ -67,7 +67,12 @@ final class YappersUITests: XCTestCase {
         app.launch()
         app.buttons["Create an account"].tap()
         let next = app.buttons["Continue to username"]
-        XCTAssertTrue(next.waitForExistence(timeout: 10) && next.isEnabled)
+        XCTAssertTrue(next.waitForExistence(timeout: 10))
+        XCTAssertFalse(next.isEnabled)
+        app.buttons["Name and pronouns"].tap()
+        enter("   ", into: app.textFields["Display name"], app: app)
+        app.navigationBars.buttons["Done"].tap()
+        XCTAssertFalse(next.isEnabled)
         capture("Signup profile appearance", app: app)
         let hereFor = app.buttons["Here for"]
         reveal(hereFor, in: app)
@@ -139,8 +144,9 @@ final class YappersUITests: XCTestCase {
         app.buttons["Create an account"].tap()
         XCTAssertTrue(app.staticTexts["Create your profile"].waitForExistence(timeout: 8))
         capture("New profile", app: app)
+        XCTAssertFalse(app.buttons["Continue to username"].isEnabled)
         app.buttons["Name and pronouns"].tap()
-        app.cells["Suggest another name"].tap()
+        app.cells["Suggest a name"].tap()
         let displayName = try XCTUnwrap(app.textFields["Display name"].value as? String)
         enter("they / them", into: app.textFields["Pronouns"], app: app)
         app.navigationBars.buttons["Done"].tap()
@@ -173,6 +179,10 @@ final class YappersUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Claim username"].isEnabled)
         XCTAssertFalse(app.buttons["Enter neighborhood"].exists)
         XCTAssertFalse(app.tabBars.buttons["Nearby"].exists)
+        enter("early_draft", into: username, app: app)
+        let ready = expectation(for: NSPredicate(format: "enabled == YES"), evaluatedWith: app.buttons["Claim username"])
+        wait(for: [ready], timeout: 35)
+        XCTAssertEqual(username.value as? String, "early_draft")
         app.terminate()
         app.launchArguments.removeAll { $0 == "--netkit-reset" }
         app.launch()
@@ -216,19 +226,39 @@ final class YappersUITests: XCTestCase {
         let draft = "Testing my posting identity."
         writePost(draft, app: app)
         app.buttons["Dismiss keyboard"].tap()
-        app.buttons["Post as Anonymous"].tap()
-        app.descendants(matching: .any)["named-posting-identity"].firstMatch.tap()
-        XCTAssertTrue(app.buttons["Post as hazel_test@neighborhood.test"].waitForExistence(timeout: 20))
+        let identity = app.switches["anonymous-mode"]
+        XCTAssertEqual(identity.value as? String, "0")
+        identity.tap()
+        XCTAssertTrue(app.staticTexts["Post as Anonymous"].exists)
+        identity.tap()
+        XCTAssertTrue(app.staticTexts["Post as hazel_test@neighborhood.test"].waitForExistence(timeout: 20))
         XCTAssertEqual(app.textViews["post-body-input"].value as? String, draft)
         app.buttons["Post to community"].tap()
         let namedPost = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Testing my posting identity.'")).firstMatch
         XCTAssertTrue(namedPost.waitForExistence(timeout: 15))
         namedPost.tap()
         app.textViews["reply-body"].tap()
-        XCTAssertTrue(app.buttons["Reply as hazel_test@neighborhood.test"].waitForExistence(timeout: 5))
-        app.buttons["Reply as hazel_test@neighborhood.test"].tap()
-        app.descendants(matching: .any)["Anonymous"].firstMatch.tap()
-        XCTAssertTrue(app.buttons["Reply as Anonymous"].exists)
+        XCTAssertTrue(app.staticTexts["Reply as hazel_test@neighborhood.test"].waitForExistence(timeout: 5))
+        app.switches["anonymous-mode"].tap()
+        XCTAssertTrue(app.staticTexts["Reply as Anonymous"].exists)
+        app.buttons["Dismiss keyboard"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.tabBars.buttons["Groups"].tap()
+        app.cells["Private groups"].tap()
+        let groupList = app.navigationBars["Private groups"]
+        XCTAssertTrue(groupList.waitForExistence(timeout: 8))
+        app.cells["Create private group"].tap()
+        enter("iPhone book club", into: app.textFields["Group name"], app: app)
+        app.navigationBars.buttons["Create private group"].tap()
+        let group = app.navigationBars["iPhone book club"]
+        XCTAssertTrue(group.waitForExistence(timeout: 20))
+        group.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(groupList.waitForExistence(timeout: 5))
+        app.cells["iPhone book club"].tap()
+        XCTAssertTrue(group.waitForExistence(timeout: 8))
+        let edge = app.coordinate(withNormalizedOffset: CGVector(dx: 0.005, dy: 0.55))
+        edge.press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.55)))
+        XCTAssertTrue(groupList.waitForExistence(timeout: 5))
         app.terminate()
         app.launchArguments.append("--simulate-reinstall")
         app.launch()
@@ -271,12 +301,25 @@ final class YappersUITests: XCTestCase {
         XCTAssertTrue(app.buttons["All cities"].waitForExistence(timeout: 40))
         app.buttons["You"].tap()
         XCTAssertTrue(app.staticTexts["hazel_test@neighborhood.test"].waitForExistence(timeout: 30))
-        let guide = app.buttons["Welcome guide"]
-        let guideBar = app.navigationBars["Welcome guide"]
+        openProfileSettings(in: app)
+        let guide = app.descendants(matching: .any)["guide"].firstMatch
         reveal(guide, in: app)
         guide.tap()
-        XCTAssertTrue(guideBar.waitForExistence(timeout: 5))
-        guideBar.buttons.firstMatch.tap()
+        let closeGuide = app.buttons["close-guide"]
+        XCTAssertTrue(closeGuide.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.navigationBars.firstMatch.exists)
+        XCTAssertFalse(app.tabBars.firstMatch.exists)
+        XCTAssertGreaterThanOrEqual(closeGuide.frame.height, 44)
+        let welcome = XCTAttachment(screenshot: app.screenshot())
+        welcome.name = "Welcome guide from Settings"
+        welcome.lifetime = .keepAlways
+        add(welcome)
+        app.buttons["Continue with my account"].tap()
+        XCTAssertTrue(app.staticTexts["Keep your account"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.navigationBars.firstMatch.exists)
+        XCTAssertFalse(app.tabBars.firstMatch.exists)
+        closeGuide.tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.tabBars.buttons["You"].isSelected)
         guide.tap()
         app.buttons["Return to neighborhood"].tap()
@@ -411,6 +454,7 @@ final class YappersUITests: XCTestCase {
         let you = app.tabBars.buttons["You"]
         XCTAssertTrue(you.waitForExistence(timeout: 20))
         you.tap()
+        openProfileSettings(in: app)
         let join = app.cells["Join community"]
         reveal(join, in: app)
         join.tap()
@@ -426,6 +470,7 @@ final class YappersUITests: XCTestCase {
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", postBody)).firstMatch.waitForExistence(timeout: 15))
         XCTAssertTrue(app.descendants(matching: .any)["updated-community-feed"].firstMatch.waitForExistence(timeout: 30))
         you.tap()
+        openProfileSettings(in: app)
         let files = app.cells["Backup files"]
         reveal(files, in: app)
         files.tap()
@@ -522,6 +567,7 @@ final class YappersUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["All cities"].waitForExistence(timeout: 20))
         app.buttons["You"].tap()
+        openProfileSettings(in: app)
         reveal(app.cells["Join community"], in: app)
         app.cells["Join community"].tap()
         let field = app.secureTextFields.firstMatch.exists ? app.secureTextFields.firstMatch : app.textViews.firstMatch
@@ -583,10 +629,13 @@ final class YappersUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         let accepted = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'Hello after approval' OR value CONTAINS 'Hello after approval'")).firstMatch
         XCTAssertTrue(accepted.waitForExistence(timeout: 30))
+        capture("Inbox with contact photo and fallback", app: app)
         thread.tap()
         XCTAssertTrue(app.staticTexts["Hello from iOS"].waitForExistence(timeout: 8))
-        let report = app.buttons["Report message"].firstMatch
-        reveal(report, in: app)
+        capture("Incoming and outgoing chat bubbles", app: app)
+        reply.press(forDuration: 1)
+        let report = app.buttons["Report message"]
+        XCTAssertTrue(report.waitForExistence(timeout: 5))
         report.tap()
         let reason = app.buttons["Reason"]
         XCTAssertTrue(reason.waitForExistence(timeout: 8))
@@ -635,6 +684,7 @@ final class YappersUITests: XCTestCase {
         app.buttons["You"].tap()
         let profile = XCTAttachment(screenshot: app.screenshot())
         profile.name = "Netkit connection profile"; profile.lifetime = .keepAlways; add(profile)
+        openProfileSettings(in: app)
         reveal(app.cells["Join community"], in: app); app.cells["Join community"].tap()
         XCTAssertTrue(app.staticTexts["Join your community"].waitForExistence(timeout: 5))
         let joinSheet = XCTAttachment(screenshot: app.screenshot())
@@ -646,8 +696,9 @@ final class YappersUITests: XCTestCase {
         app.buttons["Post"].tap()
         writePost(message, app: app)
         app.buttons["Dismiss keyboard"].tap()
-        app.buttons["Post as Anonymous"].tap()
-        app.descendants(matching: .any)["named-posting-identity"].firstMatch.tap()
+        let anonymousMode = app.switches["anonymous-mode"]
+        XCTAssertEqual(anonymousMode.value as? String, "1")
+        anonymousMode.tap()
         app.buttons["Post to community"].tap()
         let post = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", message)).firstMatch
         XCTAssertTrue(post.waitForExistence(timeout: 10))
@@ -682,15 +733,13 @@ final class YappersUITests: XCTestCase {
         XCTAssertTrue(element.exists && element.isHittable, "Expected control is reachable")
         // Compose scrolling can still decelerate after XCTest reports the swipe idle.
         // A tap during that deceleration only stops scrolling; wait for a stable target.
-        var previous = CGRect.zero
-        var stableSamples = 0
+        var previous = element.frame.integral
         let stable = expectation(for: NSPredicate { _, _ in
-            let frame = element.frame
-            stableSamples = frame == previous && element.isHittable ? stableSamples + 1 : 0
-            previous = frame
-            return stableSamples >= 2
+            let frame = element.frame.integral
+            defer { previous = frame }
+            return frame == previous && !frame.isEmpty && element.isHittable
         }, evaluatedWith: element)
-        wait(for: [stable], timeout: 6)
+        wait(for: [stable], timeout: 12)
     }
     private func capture(_ name: String, app: XCUIApplication) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
@@ -711,6 +760,7 @@ final class YappersUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["All cities"].waitForExistence(timeout: 20))
         app.tabBars.buttons["You"].tap()
+        openProfileSettings(in: app)
         app.cells["invitation"].tap()
         let invitationField = app.secureTextFields.firstMatch.exists ? app.secureTextFields.firstMatch : app.textViews.firstMatch
         enter(invitation, into: invitationField, app: app)
@@ -802,16 +852,14 @@ final class YappersUITests: XCTestCase {
         app.launch()
         app.buttons["You"].tap()
         let edit = app.buttons["Edit profile"]
-        let privacy = app.buttons["Privacy"]
-        XCTAssertTrue(edit.waitForExistence(timeout: 10))
-        XCTAssertEqual(edit.frame.midY, privacy.frame.midY, accuracy: 4)
+        XCTAssertTrue(edit.waitForExistence(timeout: 10) && edit.isHittable)
         edit.tap()
         let field = app.descendants(matching: .any).matching(NSPredicate(
             format: "(elementType == %d OR elementType == %d) AND label CONTAINS 'Display name'",
             XCUIElement.ElementType.textField.rawValue, XCUIElement.ElementType.textView.rawValue)).firstMatch
         field.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-        let save = app.buttons["Save profile"]
+        let save = app.navigationBars["Edit profile"].buttons["Save"]
         let originalY = save.frame.midY
         app.typeText(XCUIKeyboardKey.delete.rawValue)
         for character in ["X", "y"] {
@@ -832,7 +880,7 @@ final class YappersUITests: XCTestCase {
         app.launch()
         app.buttons["You"].tap()
         app.buttons["Edit profile"].tap()
-        XCTAssertTrue(app.navigationBars["Edit your profile"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.navigationBars["Edit profile"].waitForExistence(timeout: 10))
         capture("Profile editor lavender", app: app)
         app.cells["Add photo"].tap()
         let photo = app.images.matching(NSPredicate(format: "label BEGINSWITH 'Photo,'")).firstMatch
@@ -863,7 +911,7 @@ final class YappersUITests: XCTestCase {
         reveal(identity, in: app); enter("Queer", into: identity, app: app)
         app.buttons["Dismiss keyboard"].tap()
         reveal(app.cells["Chosen family"], in: app); app.cells["Chosen family"].tap()
-        app.buttons["Save profile"].tap()
+        app.navigationBars["Edit profile"].buttons["Save"].tap()
         XCTAssertTrue(app.staticTexts["they / them"].waitForExistence(timeout: 5))
         let avatar = app.images.matching(NSPredicate(format: "label BEGINSWITH %@", "Profile photo of ")).firstMatch
         XCTAssertTrue(avatar.exists)
@@ -875,8 +923,9 @@ final class YappersUITests: XCTestCase {
         app.buttons["Post"].tap()
         writePost("A tiny joy for the neighborhood.", app: app)
         app.buttons["Dismiss keyboard"].tap()
-        app.buttons["Post as Anonymous"].tap()
-        app.descendants(matching: .any)["named-posting-identity"].firstMatch.tap()
+        let anonymousMode = app.switches["anonymous-mode"]
+        XCTAssertEqual(anonymousMode.value as? String, "1")
+        anonymousMode.tap()
         app.buttons["Post to nearby"].tap()
         XCTAssertFalse(avatar.exists, "The post feed has no profile photo.")
         capture("Named post with text-only byline", app: app)
@@ -896,7 +945,7 @@ final class YappersUITests: XCTestCase {
         app.buttons["You"].tap()
         capture("Appearance profile", app: app)
         reveal(app.buttons["Edit profile"], in: app); app.buttons["Edit profile"].tap()
-        XCTAssertTrue(app.navigationBars["Edit your profile"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Edit profile"].waitForExistence(timeout: 5))
         capture("Appearance profile editor", app: app)
         let bio = app.textViews.matching(NSPredicate(format: "label CONTAINS 'Bio'")).firstMatch
         reveal(bio, in: app)
@@ -969,7 +1018,7 @@ final class YappersUITests: XCTestCase {
         app.launchArguments = ["--netkit-ui-test", "--netkit-reset"]
         app.launch()
         app.buttons["You"].tap(); app.buttons["Edit profile"].tap()
-        XCTAssertTrue(app.navigationBars["Edit your profile"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Edit profile"].waitForExistence(timeout: 5))
         checkEditorScroll(app, lowerField: app.textViews.matching(NSPredicate(format: "label CONTAINS 'Current joys'")).firstMatch)
         let pronouns = app.textFields["Pronouns"]
         reveal(pronouns, in: app); enter("they / them", into: pronouns, app: app)
@@ -980,7 +1029,7 @@ final class YappersUITests: XCTestCase {
         XCTAssertFalse(app.alerts["Discard profile changes?"].exists)
         app.buttons["Cancel"].tap()
         XCTAssertTrue(app.staticTexts["Discard profile changes?"].waitForExistence(timeout: 5))
-        app.buttons["Keep editing"].tap(); app.buttons["Save profile"].tap()
+        app.buttons["Keep editing"].tap(); app.navigationBars["Edit profile"].buttons["Save"].tap()
         XCTAssertTrue(app.staticTexts["they / them"].waitForExistence(timeout: 5))
     }
 
@@ -1057,12 +1106,12 @@ final class YappersUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Post comment"].isEnabled)
         let message = "Count me in for quiet company.\nI can bring a blanket and a very good book."
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-        let identity = app.buttons["Reply as Anonymous"]
+        let identity = app.switches["anonymous-mode"]
         XCTAssertTrue(identity.isHittable)
         app.typeText(message)
         XCTAssertEqual(comment.value as? String, message)
         identity.tap()
-        app.buttons["Anonymous"].tap()
+        identity.tap()
         XCTAssertEqual(comment.value as? String, message)
         XCTAssertTrue(app.buttons["Post comment"].isHittable)
         capture("Multiline comment draft with keyboard", app: app)
@@ -1130,6 +1179,13 @@ final class YappersUITests: XCTestCase {
         #endif
     }
 
+    private func openProfileSettings(in app: XCUIApplication) {
+        let row = app.cells["profile-settings"]
+        reveal(row, in: app)
+        row.tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+    }
+
     func testNativeRootToolbarAndTabs() {
         let app = XCUIApplication()
         app.launchArguments = ["--netkit-ui-test", "--netkit-reset"]
@@ -1146,6 +1202,25 @@ final class YappersUITests: XCTestCase {
             XCTAssertEqual(post.exists, name != "Groups")
             if name == "Groups" { capture("Groups with native toolbar and tabs", app: app) }
         }
+        let edit = app.buttons["Edit profile"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 5) && edit.isHittable)
+        XCTAssertTrue(app.staticTexts["Your posts"].exists)
+        XCTAssertFalse(app.cells["Join community"].exists)
+        capture("You profile and posts", app: app)
+        openProfileSettings(in: app)
+        XCTAssertTrue(app.cells["Privacy"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.cells["Join community"].exists)
+        XCTAssertFalse(edit.exists)
+        capture("You settings", app: app)
+        app.navigationBars["Settings"].buttons.firstMatch.tap()
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.cells["profile-settings"].isHittable)
+        XCTAssertTrue(tabs.buttons["You"].isSelected)
+        tabs.buttons["Groups"].tap()
+        app.cells["connect"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+        XCTAssertTrue(tabs.buttons["You"].isSelected)
+        app.navigationBars["Settings"].buttons.firstMatch.tap()
         tabs.buttons["Nearby"].tap()
         inbox.tap()
         let back = app.navigationBars.buttons.element(boundBy: 0)

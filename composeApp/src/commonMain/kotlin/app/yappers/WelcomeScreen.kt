@@ -61,7 +61,8 @@ internal fun PolicyLinks() {
 }
 
 @Composable
-internal fun WelcomeScreen(controller: NetkitController, files: RecoveryFiles?, photoLibrary: ProfilePhotoLibrary?) {
+internal fun WelcomeScreen(controller: NetkitController, files: RecoveryFiles?, photoLibrary: ProfilePhotoLibrary?,
+                           onCreateProfile: ((WelcomeProfile) -> Unit)? = null) {
     var step by remember { mutableStateOf("welcome") }
     var name by remember { mutableStateOf(suggestName()) }
     var key by remember { mutableStateOf("") }
@@ -115,8 +116,9 @@ internal fun WelcomeScreen(controller: NetkitController, files: RecoveryFiles?, 
         }
     }
     if (step == "name" && native != null && control != null) {
-        ProfileEditor(name, CommunityProfile(), photoLibrary, creating = true, onDismiss = { go("welcome") }) { alias, profile ->
-            controller.finishWelcome(alias, profile = profile)
+        ProfileEditor("", CommunityProfile(), photoLibrary, creating = true, onDismiss = { go("welcome") }) { alias, profile ->
+            if (onCreateProfile != null) onCreateProfile(WelcomeProfile(alias, profile, namedPosting = true))
+            else controller.finishWelcome(alias, profile = profile)
         }
         return
     }
@@ -166,10 +168,10 @@ internal fun WelcomeScreen(controller: NetkitController, files: RecoveryFiles?, 
                     if (fromFile) {
                         add(FormRow("choose-file", if (file == null) "Choose backup file" else "Change backup file",
                             symbol = "folder", enabled = !busy, onTap = ::chooseBackup))
-                        add(FormRow("passphrase", "Backup passphrase", "secure", value = passphrase,
+                        add(FormRow("passphrase", "Backup passphrase", "secure", fieldValue = { passphrase },
                             placeholder = "Enter passphrase", enabled = !busy, onChange = { passphrase = it }))
                     } else {
-                        add(FormRow("key", "Recovery key", "secure", value = key, limit = 128,
+                        add(FormRow("key", "Recovery key", "secure", fieldValue = { key }, limit = 128,
                             placeholder = "Enter recovery key", enabled = !busy, onChange = { key = it }))
                     }
                     error?.let { add(FormRow("error", it, "text")) }
@@ -222,7 +224,7 @@ internal fun WelcomeScreen(controller: NetkitController, files: RecoveryFiles?, 
 
 @Composable
 internal fun WelcomeBackupScreen(controller: NetkitController, accountReady: Boolean, replay: Boolean, returningName: String? = null,
-    vault: RecoveryKeyVault? = null, onSaveName: suspend (String) -> Unit = {}, onDone: () -> Unit) {
+    vault: RecoveryKeyVault? = null, onSaveName: suspend (String) -> Unit = {}, onClose: (() -> Unit)? = null, onDone: () -> Unit) {
     var step by remember { mutableStateOf(if (replay || returningName != null) "intro" else "backup") }
     var name by remember { mutableStateOf(returningName.orEmpty()) }
     val scope = rememberCoroutineScope()
@@ -247,15 +249,17 @@ internal fun WelcomeBackupScreen(controller: NetkitController, accountReady: Boo
     fun getKey() = act { key = controller.recoveryKey() }
     fun enter() = act { if (!replay) controller.enterNeighborhood(); onDone() }
     val native = LocalNativeForm.current
-    EstuaryOnboardingSurface(step = step) { visibleStep ->
-        val control = LocalFeedControl.current
+    val control = LocalFeedControl.current
+    EstuaryOnboardingSurface(step = step, header = if (onClose != null && control != null) ({
+        control(FormRow("close-guide", "Close", "back", symbol = "xmark", identifier = "close-guide", enabled = !busy, onTap = onClose), Modifier)
+    }) else null) { visibleStep ->
         if (visibleStep == "backup" && control != null) {
             YapWordmark(Modifier.align(Alignment.CenterHorizontally), prominent = true)
             Text("Keep your account", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
             Text("Save your recovery key to use this account on another device.")
             control(FormRow("key", "Get recovery key", "primary", enabled = accountReady && !busy, onTap = ::getKey), Modifier.fillMaxWidth())
             control(FormRow("enter", "Enter neighborhood", "secondary", enabled = !busy, onTap = ::enter), Modifier.align(Alignment.CenterHorizontally))
-            Text("You can back up later in You → Account recovery.", style = MaterialTheme.typography.bodyMedium)
+            Text("You can back up later in You → Settings → Account recovery.", style = MaterialTheme.typography.bodyMedium)
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             return@EstuaryOnboardingSurface
         }
@@ -276,7 +280,7 @@ internal fun WelcomeBackupScreen(controller: NetkitController, accountReady: Boo
             Text("Keep your display name, pick a suggestion, or write your own.")
             val valid = !busy && name.trim().length in 2..30
             if (native != null && control != null) {
-                val field = FormRow("name", "Display name", "field", value = name, enabled = !busy, limit = 30,
+                val field = FormRow("name", "Display name", "field", fieldValue = { name }, enabled = !busy, limit = 30,
                     onChange = { if (it.length <= 30) name = it })
                 native(NativeFormModel(sections = listOf(FormSection(rows = listOf(field)))), "input", Modifier.fillMaxWidth())
                 control(FormRow("suggest", "Suggest another name", "secondary", enabled = !busy) { name = suggestName(name) }, Modifier)
@@ -376,10 +380,12 @@ internal fun RecoveryKeyDialog(key: String, alias: String, vault: RecoveryKeyVau
 
 @Composable
 internal fun WelcomeUsernameScreen(controller: NetkitController, connection: NetkitState, status: WelcomeUsername,
-                                   saveProfile: (String, CommunityProfile) -> Unit) {
-    var name by remember(connection.messagingScope) { mutableStateOf("") }
+                                   creatingProfile: Boolean = false, enrolling: Boolean = false, enrollmentError: String? = null,
+                                   retryEnrollment: () -> Unit = {}, saveProfile: (WelcomeProfile, String?) -> Unit) {
+    var name by remember(if (creatingProfile) null else connection.messagingScope) { mutableStateOf("") }
     var error by remember(connection.messagingScope) { mutableStateOf<String?>(null) }
     var working by remember { mutableStateOf(false) }
+    var claiming by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val claim = rememberEditorUsernameClaim(connection, controller)
     suspend fun verify(retry: Boolean) {
@@ -395,14 +401,14 @@ internal fun WelcomeUsernameScreen(controller: NetkitController, connection: Net
         catch (failure: Exception) { error = failure.message ?: "Couldn’t verify your username. Try again." }
         finally { working = false }
     }
-    LaunchedEffect(controller, connection.messagingScope) {
-        if (connection.enabled && status == WelcomeUsername.Unchecked) verify(false)
+    LaunchedEffect(controller, connection.enabled, connection.messagingScope, enrolling) {
+        if (!enrolling && connection.enabled && status == WelcomeUsername.Unchecked) verify(false)
     }
     fun submit() {
-        if (working || claim == null || !claim.isValid(name)) return
-        working = true
+        if (enrolling || working || claiming || status != WelcomeUsername.Required || claim == null || !claim.isValid(name)) return
+        claiming = true
         error = null
-        claim.submit(name) { problem -> working = false; error = problem }
+        claim.submit(name) { problem -> claiming = false; error = problem }
     }
     val registration = claim?.takeIf { status == WelcomeUsername.Required }
     val help = when {
@@ -413,25 +419,29 @@ internal fun WelcomeUsernameScreen(controller: NetkitController, connection: Net
     val retry = { if (!working) scope.launch { verify(true) }; Unit }
     EstuaryOnboardingSurface {
         YapWordmark(Modifier.align(Alignment.CenterHorizontally), prominent = true)
-        Text(if (registration != null) "Choose your username" else "Verify your username", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+        Text(if (registration != null || creatingProfile) "Choose your username" else "Verify your username", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
         val native = LocalNativeForm.current
         val control = LocalFeedControl.current
         if (native != null && control != null) {
             Text(help)
-            if (registration != null) {
-                val field = FormRow("name", "Username", "field", value = name, placeholder = "Enter a username", limit = 24,
-                    keyboard = "ascii", enabled = !working, identifier = "onboarding-username", onChange = { name = registration.normalize(it); error = null })
+            if (registration != null || creatingProfile || (status == WelcomeUsername.Unchecked && !controller.finishingRestore)) {
+                val field = FormRow("name", "Username", "field", fieldValue = { name }, placeholder = "Enter a username", limit = 24,
+                    keyboard = "ascii", enabled = !claiming, identifier = "onboarding-username", onChange = { name = it.lowercase().take(24); error = null })
                 native(NativeFormModel(sections = listOf(FormSection(rows = listOf(field)))), "input", Modifier.fillMaxWidth())
-                control(FormRow("claim", if (working) "Claiming…" else "Claim username", "primary",
-                    enabled = !working && registration.isValid(name), onTap = ::submit), Modifier.fillMaxWidth())
-            } else if (!working) control(FormRow("retry", "Check again", "secondary", onTap = retry), Modifier)
+                control(FormRow("claim", if (claiming) "Claiming…" else "Claim username", "primary",
+                    enabled = !enrolling && !working && !claiming && registration?.isValid(name) == true, onTap = ::submit), Modifier.fillMaxWidth())
+            }
+            if (enrollmentError != null) {
+                Text(enrollmentError, color = MaterialTheme.colorScheme.error)
+                control(FormRow("retry", "Try again", "secondary", onTap = retryEnrollment), Modifier)
+            } else if (!enrolling && !working && registration == null) control(FormRow("retry", "Check again", "secondary", onTap = retry), Modifier)
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         } else {
             Text(help)
             if (registration != null) {
                 OutlinedTextField(name, { name = registration.normalize(it); error = null }, label = { Text("Username") },
-                    singleLine = true, enabled = !working, keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Ascii))
-                YapButton(enabled = !working && registration.isValid(name), onClick = ::submit) { Text(if (working) "Claiming…" else "Claim username") }
+                    singleLine = true, enabled = !working && !claiming, keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Ascii))
+                YapButton(enabled = !working && !claiming && registration.isValid(name), onClick = ::submit) { Text(if (claiming) "Claiming…" else "Claim username") }
             } else if (!working) TextButton(onClick = retry) { Text("Check again") }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
@@ -507,7 +517,7 @@ internal fun UsernameControl(connection: NetkitState, controller: NetkitControll
             FormRow("choose-username", "Choose a username") { name = ""; error = null; open = true }
         )))), "inline", Modifier.fillMaxWidth())
         if (open) native(NativeFormModel(title = "Choose a username", sections = listOf(FormSection(rows = buildList {
-            add(FormRow("username", "Username", "field", value = name, limit = 24, keyboard = "ascii", enabled = !busy,
+            add(FormRow("username", "Username", "field", fieldValue = { name }, limit = 24, keyboard = "ascii", enabled = !busy,
                 identifier = "editor-claim-username", onChange = { name = claim.normalize(it); error = null }))
             error?.let { add(FormRow("error", it, "text")) }
         }, footer = "Your permanent address ends in @$domain and appears on named posts and replies. Use 2–24 letters, numbers, or underscores. Start with a letter.")),

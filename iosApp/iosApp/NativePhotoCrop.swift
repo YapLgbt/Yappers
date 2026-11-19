@@ -25,7 +25,7 @@ private final class ProfilePhotoCrop: UIViewController, UIScrollViewDelegate {
         navigationItem.title = "Crop photo"
         navigationItem.leftBarButtonItem = UIBarButtonItem(systemItem: .cancel, primaryAction: UIAction { [weak self] _ in self?.crop.cancel() })
         navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Use crop", style: .done, target: self, action: #selector(save))
-        navigationItem.rightBarButtonItem?.tintColor = YapTabBarController.actionTint.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        navigationItem.rightBarButtonItem?.tintColor = YapTabBarController.doneItemTint
 
         let size = CGSize(width: Int(crop.width), height: Int(crop.height))
         if let data = Data(base64Encoded: crop.preview) { photo.image = UIImage(data: data) }

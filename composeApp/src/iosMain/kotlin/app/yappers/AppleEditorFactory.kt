@@ -7,7 +7,10 @@ interface AppleEditorFactory {
     fun makeFormSurface(mode: String, onHeight: (Double) -> Unit): AppleFormSurface
     fun showConfirmation(host: UIViewController, confirmation: FormConfirmation): UIViewController
     fun makePhotoCrop(model: NativePhotoCrop): UIViewController
+    fun makeChatBubble(): AppleChatBubbleControl
     fun makeFeedControl(): AppleFeedControl
+    fun makeRefreshIndicator(): AppleRefreshIndicator
+    fun showTransientNotice(host: UIViewController, message: String)
     fun makePostForm(model: PostForm): ApplePostFormView
     fun makeInlineEditor(controller: UIViewController, onHeightChange: (Double) -> Unit): AppleInlineEditor
 }

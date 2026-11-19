@@ -114,7 +114,7 @@ fun GroupsScreen(
                     choices = scopes.map { value -> FormChoice(value, selected = value == tab) { selectScope(value) } }))
                 if (tab == "Local") add(FormRow("city", connection.locality?.label ?: "Choose a city", kind = "disclosure",
                     onTap = { choosingCity = true }))
-                add(FormRow("search", "Search groups", "search", value = query, limit = 120, onChange = ::search))
+                add(FormRow("search", "Search groups", "search", fieldValue = { query }, limit = 120, onChange = ::search))
                 if (showCategories) add(FormRow("category", "Category", "menu", value = category?.takeIf { it in categories } ?: "All categories",
                     choices = listOf(FormChoice("All categories", category !in categories) { category = null }) +
                         categories.map { value -> FormChoice(value, value == category) { category = value } }))
@@ -239,7 +239,7 @@ private fun CitySheet(groups: List<GroupSummary>, selected: GroupLocality?, onDi
     val native = LocalNativeForm.current
     if (native != null) {
         val rows = buildList {
-            add(FormRow("find", "Find a city", "search", value = query, limit = 100, onChange = { query = it.take(100) }))
+            add(FormRow("find", "Find a city", "search", fieldValue = { query }, limit = 100, onChange = { query = it.take(100) }))
             add(FormRow("all", "Explore all cities", symbol = if (selected == null) "checkmark" else "", onTap = { onSelect(null) }))
             matches.forEach { city ->
                 add(FormRow("city-${city.label}", city.label, symbol = if (selected?.samePlace(city) == true) "checkmark" else "",
@@ -306,9 +306,9 @@ private fun CreateGroupSheet(initialCity: GroupLocality?, onDismiss: () -> Unit,
     if (native != null) {
         val sections = buildList {
             add(FormSection(rows = listOf(
-                FormRow("name", "Group name", "field", value = name, enabled = !saving, limit = 60,
+                FormRow("name", "Group name", "field", fieldValue = { name }, enabled = !saving, limit = 60,
                     onChange = { if (it.length <= 60) name = it }),
-                FormRow("description", "What brings you together?", "multiline", value = description, enabled = !saving,
+                FormRow("description", "What brings you together?", "multiline", fieldValue = { description }, enabled = !saving,
                     limit = 300, onChange = { if (it.length <= 300) description = it }),
                 FormRow("category", "A group for…", "menu", value = category, enabled = !saving, choices = topics.drop(1).map {
                     FormChoice(it, selected = it == category) { category = it }
@@ -317,9 +317,9 @@ private fun CreateGroupSheet(initialCity: GroupLocality?, onDismiss: () -> Unit,
             add(FormSection(rows = buildList {
                 add(FormRow("worldwide", "Worldwide group", "toggle", checked = worldwide, enabled = !saving, onToggle = { worldwide = it }))
                 if (!worldwide) {
-                    add(FormRow("city", "City", "field", value = city, enabled = !saving, limit = 60, onChange = { if (it.length <= 60) city = it }))
-                    add(FormRow("region", "Region (optional)", "field", value = region, enabled = !saving, limit = 60, onChange = { if (it.length <= 60) region = it }))
-                    add(FormRow("country", "Country code (US, GB…)", "field", value = country, enabled = !saving, limit = 2,
+                    add(FormRow("city", "City", "field", fieldValue = { city }, enabled = !saving, limit = 60, onChange = { if (it.length <= 60) city = it }))
+                    add(FormRow("region", "Region (optional)", "field", fieldValue = { region }, enabled = !saving, limit = 60, onChange = { if (it.length <= 60) region = it }))
+                    add(FormRow("country", "Country code (US, GB…)", "field", fieldValue = { country }, enabled = !saving, limit = 2,
                         keyboard = "asciiUpper", onChange = ::changeCountry))
                 }
             }, footer = if (worldwide) "" else "People from any city can join."))

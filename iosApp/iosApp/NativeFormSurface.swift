@@ -21,7 +21,7 @@ private func formAlert(_ model: FormConfirmation) -> UIAlertController {
     alert.addAction(UIAlertAction(title: model.confirm.title, style: model.confirm.destructive ? .destructive : .default) { _ in
         model.confirm.select()
     })
-    alert.view.tintColor = YapTabBarController.actionTint.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+    alert.view.tintColor = YapTabBarController.actionTint
     return alert
 }
 
@@ -80,6 +80,8 @@ private final class NativeFormSurface: UITableViewController, AppleFormSurface, 
         super.viewDidLoad()
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 56
+        tableView.sectionFooterHeight = UITableView.automaticDimension
+        tableView.estimatedSectionFooterHeight = 24
         tableView.keyboardDismissMode = .interactive
         if embedded {
             tableView.isOpaque = false
@@ -89,14 +91,11 @@ private final class NativeFormSurface: UITableViewController, AppleFormSurface, 
             tableView.sectionHeaderTopPadding = 0
         }
         if mode == "input" {
-            tableView.backgroundColor = .secondarySystemFill
-            tableView.layer.cornerRadius = 14
-            tableView.layer.cornerCurve = .continuous
             tableView.separatorStyle = .none
         }
         data = FormDataSource(tableView: tableView) { [weak self] table, _, key in
             guard let row = self?.rowModels[key] else { return UITableViewCell() }
-            let cell = table.dequeueReusableCell(withIdentifier: row.kind) as? NativeFormCell ?? NativeFormCell(kind: row.kind)
+            let cell = table.dequeueReusableCell(withIdentifier: row.kind) as? NativeFormCell ?? NativeFormCell(kind: row.kind, standaloneField: self?.mode == "input")
             if self?.embedded == true { cell.backgroundColor = .clear }
             cell.bind(row)
             return cell
@@ -145,7 +144,7 @@ private final class NativeFormSurface: UITableViewController, AppleFormSurface, 
             data.apply(snapshot, animatingDifferences: false)
             for i in headerChanges {
                 tableView.headerView(forSection: i)?.textLabel?.text = form.sections[i].title
-                tableView.footerView(forSection: i)?.textLabel?.text = form.sections[i].footer
+                if let footer = tableView.footerView(forSection: i) { configureFooter(footer, text: form.sections[i].footer) }
             }
         }
         for path in tableView.indexPathsForVisibleRows ?? [] {
@@ -170,7 +169,7 @@ private final class NativeFormSurface: UITableViewController, AppleFormSurface, 
         if item?.title == choice.title { item?.isEnabled = enabled; return }
         let action = UIBarButtonItem(title: choice.title, style: left ? .plain : .done, target: self, action: left ? #selector(leading) : #selector(trailing))
         action.isEnabled = enabled
-        if !left { action.tintColor = YapTabBarController.actionTint.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light)) }
+        if !left { action.tintColor = YapTabBarController.doneItemTint }
         if left { navigationItem.leftBarButtonItem = action } else { navigationItem.rightBarButtonItem = action }
     }
     @objc private func leading() { model?.leading?.select() }
@@ -186,8 +185,21 @@ private final class NativeFormSurface: UITableViewController, AppleFormSurface, 
     override func tableView(_ tableView: UITableView, willDisplayHeaderView view: UIView, forSection section: Int) {
         if embedded { (view as? UITableViewHeaderFooterView)?.backgroundConfiguration = .clear() }
     }
-    override func tableView(_ tableView: UITableView, willDisplayFooterView view: UIView, forSection section: Int) {
-        if embedded { (view as? UITableViewHeaderFooterView)?.backgroundConfiguration = .clear() }
+    private func configureFooter(_ footer: UITableViewHeaderFooterView, text: String) {
+        var content = UIListContentConfiguration.footer()
+        content.text = text
+        content.textProperties.numberOfLines = 0
+        content.textProperties.lineBreakMode = .byWordWrapping
+        footer.contentConfiguration = content
+        if embedded { footer.backgroundConfiguration = .clear() }
+    }
+
+    override func tableView(_ tableView: UITableView, viewForFooterInSection section: Int) -> UIView? {
+        guard data.sections.indices.contains(section), !data.sections[section].footer.isEmpty else { return nil }
+        let footer = tableView.dequeueReusableHeaderFooterView(withIdentifier: "form-footer")
+            ?? UITableViewHeaderFooterView(reuseIdentifier: "form-footer")
+        configureFooter(footer, text: data.sections[section].footer)
+        return footer
     }
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)

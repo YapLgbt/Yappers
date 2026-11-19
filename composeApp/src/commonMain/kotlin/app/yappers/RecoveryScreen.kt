@@ -209,15 +209,15 @@ internal fun DataOwnershipSection(controller: NetkitController, connection: Netk
                     add(FormRow("choose-file", if (ciphertext == null) "Choose backup file" else "Change backup file", enabled = !working, onTap = ::chooseBackup))
                     if (ciphertext != null) add(FormRow("file-selected", "Encrypted backup selected", "text"))
                 }
-                add(FormRow("password", "Backup password", "secure", value = passphrase, enabled = !working, limit = 1024,
+                add(FormRow("password", "Backup password", "secure", fieldValue = { passphrase }, enabled = !working, limit = 1024,
                     onChange = { if (it.length <= 1024) passphrase = it }))
                 if (exporting) {
-                    add(FormRow("confirm-password", "Confirm password", "secure", value = confirmation, enabled = !working, limit = 1024,
+                    add(FormRow("confirm-password", "Confirm password", "secure", fieldValue = { confirmation }, enabled = !working, limit = 1024,
                         onChange = { confirmation = it.take(1024) }))
                     add(FormRow("older", "Include older posts and replies", "toggle", detail = "Requires an internet connection.",
                         checked = refresh, enabled = !working, onToggle = { refresh = it }))
                 } else {
-                    add(FormRow("new-invitation", "New community invitation", "secure", value = invitation, enabled = !working, limit = 8192,
+                    add(FormRow("new-invitation", "New community invitation", "secure", fieldValue = { invitation }, enabled = !working, limit = 8192,
                         onChange = { invitation = it.take(8192) }))
                     add(FormRow("pending", "Keep unfinished posts as drafts", "toggle", detail = "You can review these drafts before posting.",
                         checked = pendingAsDrafts, enabled = !working, onToggle = { pendingAsDrafts = it }))

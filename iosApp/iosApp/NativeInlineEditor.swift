@@ -19,7 +19,7 @@ private final class NativeInlineEditor: UIView, AppleInlineEditor, UITextViewDel
     private let placeholder = UILabel()
     private let send = UIButton(type: .system)
     private let dismissKeyboard = UIButton(type: .system)
-    private let identity = UIButton(type: .system)
+    private let identity = PostingIdentityRow()
     private let claim = UIButton(type: .system)
     private let count = UILabel()
     private let rule = UIView()
@@ -52,16 +52,10 @@ private final class NativeInlineEditor: UIView, AppleInlineEditor, UITextViewDel
             self.updateVisibility()
         }, for: .touchUpInside)
 
-        var configuration = UIButton.Configuration.plain()
-        configuration.buttonSize = .small
-        configuration.contentInsets = .zero
-        configuration.titleLineBreakMode = .byTruncatingMiddle
-        configuration.image = UIImage(systemName: "chevron.up.chevron.down", withConfiguration: UIImage.SymbolConfiguration(scale: .small))
-        configuration.imagePlacement = .trailing
-        configuration.imagePadding = 4
-        identity.configuration = configuration
-        identity.contentHorizontalAlignment = .leading
-        identity.showsMenuAsPrimaryAction = true
+        identity.toggle.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.model?.chooseIdentity(anonymous: self.identity.toggle.isOn)
+        }, for: .valueChanged)
 
         claim.setTitle("Choose a username", for: .normal)
         claim.contentHorizontalAlignment = .leading
@@ -113,18 +107,10 @@ private final class NativeInlineEditor: UIView, AppleInlineEditor, UITextViewDel
         let body = next.body
         if textView.markedTextRange == nil && textView.text != body { textView.text = body }
         if let previous, previous.dismissKeyboardRequest != next.dismissKeyboardRequest { textView.resignFirstResponder() }
-        identity.isEnabled = !next.sending
+        identity.toggle.isEnabled = !next.sending
         claim.isEnabled = !next.sending
         if let name = next.namedIdentity, previous?.namedIdentity != name || previous?.anonymous != next.anonymous || previous?.networked != next.networked {
-            let title = "Reply as " + (next.anonymous ? "Anonymous" : name)
-            identity.configuration?.title = title
-            identity.accessibilityLabel = title
-            let options = [(true, "Anonymous"), (false, name)].map { anonymous, title in
-                UIAction(title: title, state: next.anonymous == anonymous ? .on : .off) { [weak self] _ in
-                    self?.model?.chooseIdentity(anonymous: anonymous)
-                }
-            }
-            identity.menu = UIMenu(title: next.networked ? "Your home can identify anonymous posts." : "Posting identity", children: options)
+            identity.render(action: "Reply", name: name, anonymous: next.anonymous, networked: next.networked)
         }
         updateVisibility()
     }
@@ -169,7 +155,7 @@ private final class NativeInlineEditor: UIView, AppleInlineEditor, UITextViewDel
         send.isHidden = !editing
         identity.isHidden = model.namedIdentity == nil || !editing
         dismissKeyboard.isHidden = !textView.isFirstResponder
-        count.isHidden = !editing || (model.namedIdentity == nil && textView.text.utf16.count < Int(model.limit) - 100)
+        count.isHidden = !editing || !NativeWritingType.showsCharacterCount(textView.text.utf16.count, limit: model.limit)
         claim.isHidden = !editing || model.usernameClaim == nil
         count.text = "\(textView.text.utf16.count) / \(model.limit)"
         count.accessibilityLabel = "\(textView.text.utf16.count) of \(model.limit) characters"
@@ -183,7 +169,8 @@ private final class NativeInlineEditor: UIView, AppleInlineEditor, UITextViewDel
         let width = max(1, bounds.width - 2 * inset)
         let sendWidth: CGFloat = send.isHidden ? 0 : 48
         let dismissWidth: CGFloat = dismissKeyboard.isHidden ? 0 : 44
-        let fieldWidth = max(1, width - sendWidth - (identity.isHidden ? dismissWidth : 0))
+        let actionGap: CGFloat = send.isHidden ? 0 : 8
+        let fieldWidth = max(1, width - actionGap - sendWidth - (identity.isHidden ? dismissWidth : 0))
         let line = textView.font?.lineHeight ?? 20
         let limit = max(44, min(ceil(4 * line) + 18, (window?.bounds.height ?? 800) * 0.21))
         let natural = ceil(textView.sizeThatFits(CGSize(width: fieldWidth, height: .greatestFiniteMagnitude)).height)
@@ -196,19 +183,24 @@ private final class NativeInlineEditor: UIView, AppleInlineEditor, UITextViewDel
         placeholder.frame = CGRect(x: 12, y: 9, width: max(1, fieldWidth - 24), height: ceil(line))
         send.frame = CGRect(x: bounds.width - inset - sendWidth, y: y + fieldHeight - 44, width: sendWidth, height: 44)
         if identity.isHidden {
-            dismissKeyboard.frame = CGRect(x: inset + fieldWidth, y: y + fieldHeight - 44, width: dismissWidth, height: 44)
+            dismissKeyboard.frame = CGRect(x: inset + fieldWidth + actionGap, y: y + fieldHeight - 44, width: dismissWidth, height: 44)
         }
         y += fieldHeight
 
         let countSize = count.isHidden ? .zero : count.intrinsicContentSize
         if !identity.isHidden {
-            let rowHeight = max(44, ceil(identity.intrinsicContentSize.height))
+            y += 6
             let separateCount = traitCollection.preferredContentSizeCategory.isAccessibilityCategory
+            let keyboardSpace = dismissWidth > 0 ? dismissWidth + 8 : 0
+            let reserved = keyboardSpace + (separateCount || count.isHidden ? 0 : countSize.width + 12)
+            let identityWidth = max(1, width - reserved)
+            let fitting = identity.systemLayoutSizeFitting(CGSize(width: identityWidth, height: 0),
+                withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
+            let rowHeight = max(44, ceil(fitting.height))
             dismissKeyboard.frame = CGRect(x: inset + width - dismissWidth, y: y, width: dismissWidth, height: rowHeight)
-            let reserved = dismissWidth + (separateCount || count.isHidden ? 0 : countSize.width + 12)
-            identity.frame = CGRect(x: inset, y: y, width: max(1, width - reserved), height: rowHeight)
+            identity.frame = CGRect(x: inset, y: y, width: identityWidth, height: rowHeight)
             if !separateCount {
-                count.frame = CGRect(x: inset + width - dismissWidth - countSize.width, y: y, width: countSize.width, height: rowHeight)
+                count.frame = CGRect(x: inset + width - keyboardSpace - countSize.width, y: y, width: countSize.width, height: rowHeight)
             }
             y += rowHeight
             if separateCount && !count.isHidden {

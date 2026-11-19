@@ -39,11 +39,12 @@ class NetkitControllerTest {
         }
         storage.failNextSecretWrite = true
         assertFailsWith<IllegalStateException> {
-            reopened.persistWelcomeProfile { _, restored -> assertEquals(profile, restored) }
+            reopened.persistWelcomeProfile { draft, _ -> assertEquals(profile, draft.profile) }
         }
-        reopened.persistWelcomeProfile { name, restored ->
-            assertEquals("River", name)
-            assertEquals(profile, restored)
+        reopened.persistWelcomeProfile { draft, postingScope ->
+            assertEquals("River", draft.name)
+            assertEquals(profile, draft.profile)
+            assertEquals(reopened.state.value.messagingScope, postingScope)
         }
         reopened.persistWelcomeProfile { _, _ -> fail("A later edit must not be overwritten") }
     }

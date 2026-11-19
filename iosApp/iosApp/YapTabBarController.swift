@@ -29,6 +29,14 @@ final class YapTabBarController: UITabBarController, UITabBarControllerDelegate,
         return UIColor(red: 105 / 255, green: 67 / 255, blue: 148 / 255, alpha: 1)
     }
 
+    static let doneItemTint: UIColor = {
+        if #available(iOS 26.0, *) {
+            // UIKit fills prominent Done items with their tint on iOS 26.
+            return actionTint.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        }
+        return actionTint
+    }()
+
     init(session: AppleAppSession) {
         self.session = session
         super.init(nibName: nil, bundle: nil)
@@ -56,8 +64,10 @@ final class YapTabBarController: UITabBarController, UITabBarControllerDelegate,
             self.applyRootBars(for: destination)
         }, onToolbar: { [weak self] actions in
             self?.updateToolbar(actions, for: destination)
-        }, onOpenGuide: { [weak self] in
-            self?.openGuide()
+        }, onOpenProfileSettings: { [weak self] in
+            self?.openProfileSettings()
+        }, onOpenPrivateGroups: { [weak self] in
+            self?.openPrivateGroups(in: destination)
         }, onOpenInbox: { [weak self] page, contact in
             self?.openInbox(page, contact: contact, in: destination)
         }, onOpenPost: { [weak self] route in
@@ -110,15 +120,49 @@ final class YapTabBarController: UITabBarController, UITabBarControllerDelegate,
         applyRootBars(for: destination)
     }
 
-    private func openGuide() {
+    private func openPrivateGroups(in destination: Destination, group: String? = nil, title: String = "Private groups") {
+        guard destination == .groups, let navigation = stacks[destination],
+              navigation === selectedViewController, navigation.transitionCoordinator == nil else { return }
+        let screen = session.makePrivateGroups(group: group, onOpenGroup: { [weak self] id, name in
+            self?.openPrivateGroups(in: destination, group: id, title: name)
+        }, onClose: { [weak navigation] in
+            navigation?.popToRootViewController(animated: false)
+        })
+        screen.navigationItem.title = title
+        screen.navigationItem.backButtonDisplayMode = .minimal
+        screen.hidesBottomBarWhenPushed = true
+        navigation.pushViewController(screen, animated: true)
+    }
+
+    private func openProfileSettings() {
         guard let navigation = stacks[.you], navigation === selectedViewController,
               navigation.viewControllers.count == 1, navigation.transitionCoordinator == nil else { return }
-        let content = session.makeGuide { [weak self, weak navigation] in
+        let content = session.makeProfileSettings(onSelectTab: { [weak self, weak navigation] tab in
             navigation?.popToRootViewController(animated: false)
-            self?.selectTab("Nearby", returningToRoot: true)
-        }
-        content.navigationItem.title = "Welcome guide"
+            self?.selectTab(tab, returningToRoot: true)
+        }, onOpenGuide: { [weak self] in
+            self?.openGuide()
+        }, onOpenInbox: { [weak self] page, contact in
+            self?.openInbox(page, contact: contact, in: .you)
+        })
+        content.navigationItem.title = "Settings"
+        content.navigationItem.backButtonDisplayMode = .minimal
         navigation.pushViewController(content, animated: true)
+    }
+
+    private func openGuide() {
+        guard let navigation = stacks[.you], navigation === selectedViewController,
+              navigation.transitionCoordinator == nil, presentedViewController == nil else { return }
+        let content = session.makeGuide(onClose: { [weak self] in
+            self?.dismiss(animated: true)
+        }, onDone: { [weak self, weak navigation] in
+            self?.dismiss(animated: true) {
+                navigation?.popToRootViewController(animated: false)
+                self?.selectTab("Nearby", returningToRoot: true)
+            }
+        })
+        content.modalPresentationStyle = .fullScreen
+        present(content, animated: true)
     }
 
     private func openPost(_ route: ApplePostRoute, in destination: Destination) {
@@ -143,6 +187,8 @@ final class YapTabBarController: UITabBarController, UITabBarControllerDelegate,
             self?.selectTab(tab, returningToRoot: true)
         }, onOpenInbox: { [weak self] nextPage, nextContact in
             self?.openInbox(nextPage, contact: nextContact, in: destination)
+        }, onOpenProfileSettings: { [weak self] in
+            self?.openProfileSettings()
         }, onCloseStack: { [weak navigation] in
             navigation?.popToRootViewController(animated: false)
         })

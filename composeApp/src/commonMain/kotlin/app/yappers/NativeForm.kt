@@ -11,13 +11,16 @@ class FormChoice(val title: String, val selected: Boolean = false, val destructi
 
 class FormRow(
     val id: String, val title: String, val kind: String = "action", val detail: String = "",
-    val value: String = "", val enabled: Boolean = true, val checked: Boolean = false,
+    value: String = "", val enabled: Boolean = true, val checked: Boolean = false,
     val choices: List<FormChoice> = emptyList(), val placeholder: String = "", val limit: Int = 0,
     val symbol: String = "", val destructive: Boolean = false, val identifier: String = "",
-    val keyboard: String = "",
+    val keyboard: String = "", private val fieldValue: (() -> String)? = null,
     private val onChange: (String) -> Unit = {}, private val onToggle: (Boolean) -> Unit = {},
     private val onTap: () -> Unit = {},
 ) {
+    val value = fieldValue?.invoke() ?: value
+    // UIKit may receive a form snapshot after the user has typed the next character.
+    fun currentText(): String = fieldValue?.invoke() ?: value
     fun edit(text: String) = onChange(text)
     fun toggle(selected: Boolean) = onToggle(selected)
     fun tap() = onTap()

@@ -5,6 +5,13 @@ package app.yappers
 import app.yappers.netkit.ffi.yappers_netkit_begin_refresh
 import app.yappers.netkit.ffi.yappers_netkit_end_refresh
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.Modifier
 import androidx.compose.runtime.CompositionLocalProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -168,7 +175,8 @@ class AppleAppSession(
         onSelectTab: (String) -> Unit,
         onSetRootBars: (Boolean, Boolean) -> Unit,
         onToolbar: (AppleToolbarActions) -> Unit,
-        onOpenGuide: () -> Unit,
+        onOpenProfileSettings: () -> Unit,
+        onOpenPrivateGroups: () -> Unit,
         onOpenInbox: (InboxPage, MessageContact?) -> Unit,
         onOpenPost: (ApplePostRoute) -> Unit,
     ): UIViewController = makeContent(tab, PlatformNavigation(
@@ -177,7 +185,8 @@ class AppleAppSession(
         setRootBars = onSetRootBars,
         updateToolbar = { enabled, label, post, refresh -> onToolbar(AppleToolbarActions(enabled, label, post, refresh)) },
         openInbox = onOpenInbox,
-        openGuide = onOpenGuide,
+        openProfileSettings = onOpenProfileSettings,
+        openPrivateGroups = onOpenPrivateGroups,
         openPost = { post, destination -> onOpenPost(ApplePostRoute(post, destination)) },
         closePost = {},
     ))
@@ -192,13 +201,21 @@ class AppleAppSession(
             post = route.destination,
         ))
 
-    fun makeGuide(onDone: () -> Unit): UIViewController = makeContent("You", PlatformNavigation(
+    fun makeProfileSettings(onSelectTab: (String) -> Unit, onOpenGuide: () -> Unit,
+                            onOpenInbox: (InboxPage, MessageContact?) -> Unit): UIViewController =
+        makeContent("You", PlatformNavigation(
+            activeTab = { activeTab }, selectTab = onSelectTab, openInbox = onOpenInbox,
+            openGuide = onOpenGuide, profileSettings = true, openPost = { _, _ -> }, closePost = {},
+        ))
+
+    fun makeGuide(onClose: () -> Unit, onDone: () -> Unit): UIViewController = makeContent("You", PlatformNavigation(
         activeTab = { activeTab }, selectTab = {}, openInbox = { _, _ -> }, openPost = { _, _ -> },
-        closePost = {}, finishGuide = onDone,
+        closePost = {}, dismissGuide = onClose, finishGuide = onDone,
     ))
 
     fun makeInbox(tab: String, page: InboxPage, contact: MessageContact?, onSelectTab: (String) -> Unit,
-                  onOpenInbox: (InboxPage, MessageContact?) -> Unit, onCloseStack: () -> Unit): UIViewController {
+                  onOpenInbox: (InboxPage, MessageContact?) -> Unit, onOpenProfileSettings: () -> Unit,
+                  onCloseStack: () -> Unit): UIViewController {
         val live = networking.state.value.enabled
         val scope = networking.state.value.messagingScope
         return makeContent(tab, PlatformNavigation(
@@ -208,29 +225,54 @@ class AppleAppSession(
             openPost = { _, _ -> },
             closePost = {},
             inboxPage = page,
+            openProfileSettings = onOpenProfileSettings,
             matchesInboxScope = { it.enabled == live && it.messagingScope == scope },
             closeInboxStack = onCloseStack,
             contact = contact,
         ))
     }
 
-    private fun makeContent(tab: String, navigation: PlatformNavigation): UIViewController = ComposeUIViewController {
+    fun makePrivateGroups(group: String?, onOpenGroup: (String, String) -> Unit, onClose: () -> Unit): UIViewController {
+        val account = networking.state.value.messagingScope
+        return host {
+            val state by networking.state.collectAsState()
+            if (state.enabled && state.ownershipReady && state.messagingScope == account) {
+                YapTheme {
+                    Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+                        PrivateGroupsScreen(networking, state.snapshot.alias, onBack = onClose,
+                            routeGroup = group, pushGroup = onOpenGroup)
+                    }
+                }
+            } else LaunchedEffect(Unit) { onClose() }
+        }
+    }
+
+    private fun makeContent(tab: String, navigation: PlatformNavigation): UIViewController = host {
+        YappersApp(storage, networking, initialTab = tab, photoLibrary = photoLibrary, recoveryFiles = recoveryFiles,
+            nearbyServices = nearby, syncInView = false, installationWelcome = installWelcome, onWelcomeComplete = {
+                defaults.setBool(true, forKey = installKey)
+                installWelcome = false
+            }, contentState = content, platformNavigation = navigation)
+    }
+
+    private fun host(screen: @Composable () -> Unit): UIViewController = ComposeUIViewController {
         val density = LocalDensity.current
+        val host = androidx.compose.ui.uikit.LocalUIViewController.current
         CompositionLocalProvider(
+            LocalRefreshIndicator provides { progress, refreshing -> AppleRefreshIndicatorView(editorFactory, progress, refreshing) },
+            LocalTransientNotice provides { message -> editorFactory.showTransientNotice(host, message) },
+            LocalSkiaAppearance provides { content -> AppleAppearance(content) },
             LocalNativeForm provides { form, mode, modifier -> AppleFormHost(editorFactory, form, mode, modifier) },
             LocalNativeConfirmation provides { confirmation -> AppleConfirmation(editorFactory, confirmation) },
             LocalDensity provides Density(density.density, fontScale),
             LocalRepliesButton provides { count, open -> AppleRepliesButton(count, open) },
             LocalNativeCrop provides { model -> ApplePhotoCropSheet(editorFactory, model) },
+            LocalChatBubble provides { bubble, modifier -> AppleChatBubble(editorFactory, bubble, modifier) },
             LocalFeedControl provides { row, modifier -> AppleFeedButton(editorFactory, row, modifier) },
             LocalInlineEditor provides { model -> AppleInlineEditorView(editorFactory, model) },
             LocalPostSheetPresenter provides { model -> ApplePostSheet(model, editorFactory) },
         ) {
-            YappersApp(storage, networking, initialTab = tab, photoLibrary = photoLibrary, recoveryFiles = recoveryFiles,
-                nearbyServices = nearby, syncInView = false, installationWelcome = installWelcome, onWelcomeComplete = {
-                    defaults.setBool(true, forKey = installKey)
-                    installWelcome = false
-                }, contentState = content, platformNavigation = navigation)
+            screen()
         }
     }
 }

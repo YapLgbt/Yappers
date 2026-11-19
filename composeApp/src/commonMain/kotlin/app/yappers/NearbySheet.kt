@@ -76,7 +76,7 @@ internal fun NearbySheet(initial: NearbyPreference, services: NearbyServices?, o
                 FormRow("locate", locationTitle, enabled = services != null && !locating, symbol = "location", onTap = ::locate)
             ), footer = guidance))
             add(FormSection(rows = buildList {
-                add(FormRow("search", "Search cities and towns", "search", value = query, limit = 120,
+                add(FormRow("search", "Search cities and towns", "search", fieldValue = { query }, limit = 120,
                     enabled = !locating, onChange = ::search))
                 if (status.isNotEmpty()) add(FormRow("status", status, kind = "text"))
                 matches.forEach { area ->
@@ -84,7 +84,7 @@ internal fun NearbySheet(initial: NearbyPreference, services: NearbyServices?, o
                 }
             }, footer = if (services is OfflineTownCatalog) "Town data © GeoNames · CC BY 4.0" else ""))
             if (place != null) add(FormSection(rows = listOf(
-                FormRow("radius", "Radius in miles", "field", value = radius, keyboard = "number", limit = 3,
+                FormRow("radius", "Radius in miles", "field", fieldValue = { radius }, keyboard = "number", limit = 3,
                     onChange = ::changeRadius),
                 FormRow("all", "Browse all cities", enabled = !locating, onTap = { select(null) })
             ), footer = "Choose 1–250 miles"))

@@ -3,7 +3,6 @@
 package app.yappers
 
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,6 +27,7 @@ import platform.UIKit.UIViewAutoresizingFlexibleHeight
 import platform.UIKit.UIViewAutoresizingFlexibleWidth
 import platform.UIKit.UIImage
 import platform.UIKit.accessibilityLabel
+import platform.UIKit.systemBackgroundColor
 import platform.UIKit.secondaryLabelColor
 import kotlin.math.ceil
 
@@ -43,10 +43,6 @@ private class RepliesButtonHost(val button: UIButton) : UIView(frame = platform.
 @Composable
 internal fun AppleRepliesButton(count: Int, onOpen: () -> Unit) {
     val open by rememberUpdatedState(onOpen)
-    val surface = MaterialTheme.colorScheme.surface
-    val background = remember(surface) {
-        UIColor.colorWithRed(surface.red.toDouble(), surface.green.toDouble(), surface.blue.toDouble(), 1.0)
-    }
     val configuration = remember(count, LocalDensity.current.fontScale) {
         UIButtonConfiguration.plainButtonConfiguration().apply {
             title = count.toString()
@@ -64,7 +60,7 @@ internal fun AppleRepliesButton(count: Int, onOpen: () -> Unit) {
         },
         modifier = Modifier.size(size),
         update = { host ->
-            host.backgroundColor = background
+            host.backgroundColor = UIColor.systemBackgroundColor
             val button = host.button
             button.configuration = configuration
             button.accessibilityLabel = if (count == 1) "1 reply" else "$count replies"

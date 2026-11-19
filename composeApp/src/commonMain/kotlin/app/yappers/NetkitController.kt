@@ -30,7 +30,7 @@ private const val MAX_OUTBOX_SIZE = 100
 private const val MAX_UPLOADS_PER_SYNC = 20
 
 @Serializable
-private data class WelcomeProfile(val name: String, val profile: CommunityProfile)
+internal data class WelcomeProfile(val name: String, val profile: CommunityProfile, val namedPosting: Boolean = false)
 
 @Serializable
 private data class Identity(val secret: String, val nextSequence: Long = 1, val wallet: JsonObject? = null)
@@ -274,17 +274,17 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         }.getOrDefault(false)
     }
 
-    internal suspend fun persistWelcomeProfile(save: (String, CommunityProfile) -> Unit) = mutex.withLock {
+    internal suspend fun persistWelcomeProfile(save: (WelcomeProfile, String?) -> Unit) = mutex.withLock {
         val stage = secret(WELCOME_STAGE_KEY) ?: return@withLock
         if (stage.startsWith(PROFILE_STAGE_PREFIX)) {
             val draft = json.decodeFromString<WelcomeProfile>(stage.removePrefix(PROFILE_STAGE_PREFIX))
-            save(draft.name, draft.profile)
+            save(draft, state.value.messagingScope)
             // Retrying after an interruption writes the same profile before advancing the checkpoint.
             writeSecret(WELCOME_STAGE_KEY, "pending")
         }
     }
 
-    internal suspend fun finishWelcome(alias: String, recoveryKey: String? = null, profile: CommunityProfile? = null) {
+    internal suspend fun finishWelcome(alias: String, recoveryKey: String? = null, profile: CommunityProfile? = null, namedPosting: Boolean = false) {
         require(alias.trim().length in 2..30) { "Choose a display name between 2 and 30 characters." }
         val enrollment = publicEnrollment(checkNotNull(defaultHome).invoke())
         mutex.withLock {
@@ -325,7 +325,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
             // Persist the gate before committing credentials so a relaunch resumes setup.
             val stage = when {
                 author != null -> "restore"
-                profile != null -> PROFILE_STAGE_PREFIX + json.encodeToString(WelcomeProfile(alias.trim(), profile.cleaned()))
+                profile != null -> PROFILE_STAGE_PREFIX + json.encodeToString(WelcomeProfile(alias.trim(), profile.cleaned(), namedPosting))
                 else -> "pending"
             }
             writeSecret(WELCOME_STAGE_KEY, stage)

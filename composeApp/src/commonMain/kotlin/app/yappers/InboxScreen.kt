@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -12,6 +13,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+
+class ChatBubble(val text: String, val sender: String, val outgoing: Boolean, val endsGroup: Boolean,
+                 private val onReport: (() -> Unit)?) {
+    val canReport: Boolean get() = onReport != null
+    fun report() { onReport?.invoke() }
+}
+
+internal val LocalChatBubble = staticCompositionLocalOf<(@Composable (ChatBubble, Modifier) -> Unit)?> { null }
 
 enum class InboxPage { Messages, Requests, Blocked, Privacy, Conversation }
 
@@ -66,9 +75,14 @@ internal fun InboxScreen(
                         if (recent.isEmpty()) {
                             add(FormSection(rows = listOf(FormRow("empty", emptyTitle, "text", emptyDetail),
                                 FormRow("browse", if (connection.enabled) "Browse posts" else "Community settings", onTap = if (connection.enabled) onBrowse else onJoin))))
-                        } else add(FormSection(rows = recent.map { message -> FormRow(message.peer, message.label, "disclosure", message.body) {
-                            onSelect(MessageContact(message.peer, message.label))
-                        } }))
+                        } else {
+                            val photos = remember(connection.snapshot.posts) { inboxPhotos(connection.snapshot.posts) }
+                            add(FormSection(rows = recent.map { message ->
+                                FormRow(message.peer, message.label, "conversation", message.body, value = photos[message.peer].orEmpty()) {
+                                    onSelect(MessageContact(message.peer, message.label))
+                                }
+                            }))
+                        }
                     }
                 }
             }
@@ -155,7 +169,9 @@ internal fun InboxScreen(
     var sending by remember(contact.peer) { mutableStateOf(false) }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val bubble = LocalChatBubble.current
     val nativeEditor = LocalInlineEditor.current
+    val nativeControl = LocalFeedControl.current
     fun canSend() = !sending && draft.isNotBlank() && connection.directAvailable
     fun sendMessage() {
         if (!canSend()) return
@@ -171,28 +187,46 @@ internal fun InboxScreen(
             TextButton(onClick = { onBlock(contact) }) { Text("Block") }
         }
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-            if (navigation == null) Row(verticalAlignment = Alignment.CenterVertically) {
-                if (nativePage == null) TextButton(onClick = { onSelect(null) }) { Text("Inbox") }
-                if (nativePage == null) Text(contact.label, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                else Spacer(Modifier.weight(1f))
-                TextButton(onClick = { onBlock(contact) }) { Text("Block") }
+            if (nativeControl != null) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("End-to-end encrypted", Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall)
+                    nativeControl(FormRow("block", "Block", destructive = true) { onBlock(contact) }, Modifier)
+                }
+            } else {
+                if (navigation == null) Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (nativePage == null) TextButton(onClick = { onSelect(null) }) { Text("Inbox") }
+                    if (nativePage == null) Text(contact.label, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                    else Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { onBlock(contact) }) { Text("Block") }
+                }
+                Text("End-to-end encrypted", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
             }
-            Text("End-to-end encrypted", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
             connection.messageStatus?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(if (bubble == null) 10.dp else 3.dp)) {
                 if (lines.isEmpty() && !connection.mailboxElsewhere) item { Text("Send your first message to ${contact.label}.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                items(lines, key = { it.id }) { m ->
-                    Column(Modifier.fillMaxWidth(), horizontalAlignment = if (m.outgoing) Alignment.End else Alignment.Start) {
-                        Surface(shape = MaterialTheme.shapes.medium, color = if (m.outgoing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant) {
-                            Text(m.body, Modifier.padding(12.dp))
+                itemsIndexed(lines, key = { _, message -> message.id }) { index, m ->
+                    val endsGroup = lines.getOrNull(index + 1)?.outgoing != m.outgoing
+                    val startsGroup = index > 0 && lines[index - 1].outgoing != m.outgoing
+                    val top = if (bubble != null && startsGroup) 6.dp else 0.dp
+                    Column(Modifier.fillMaxWidth().padding(top = top), horizontalAlignment = if (m.outgoing) Alignment.End else Alignment.Start) {
+                        if (bubble != null) {
+                            val report = onReport?.takeUnless { m.outgoing }?.let { reportMessage ->
+                                { reportMessage(ReportTarget("message", m.peer, m.body)) }
+                            }
+                            BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = if (m.outgoing) Alignment.CenterEnd else Alignment.CenterStart) {
+                                bubble(ChatBubble(m.body, if (m.outgoing) "From you" else "From ${contact.label}", m.outgoing, endsGroup, report),
+                                    Modifier.widthIn(max = maxWidth * 0.82f))
+                            }
+                        } else {
+                            Surface(shape = MaterialTheme.shapes.medium, color = if (m.outgoing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant) {
+                                Text(m.body, Modifier.padding(12.dp))
+                            }
+                            if (!m.outgoing && onReport != null) TextButton(onClick = { onReport(ReportTarget("message", m.peer, m.body)) }) { Text("Report message") }
                         }
-                        if (!m.outgoing && onReport != null) {
-                            val report = { onReport(ReportTarget("message", m.peer, m.body)) }
-                            val control = LocalFeedControl.current
-                            if (control != null) control(FormRow("report-message", "Report message", onTap = report), Modifier)
-                            else TextButton(onClick = report) { Text("Report message") }
-                        }
-                        if (m.outgoing) Text(when (m.status) { "queued" -> "Waiting to send"; "sent" -> "Sent"; else -> "Couldn’t deliver" }, style = MaterialTheme.typography.labelSmall)
+                        if (m.outgoing && (bubble == null || endsGroup || m.status != "sent")) Text(when (m.status) { "queued" -> "Waiting to send"; "sent" -> "Sent"; else -> "Couldn’t deliver" },
+                            modifier = if (bubble != null) Modifier.padding(top = 3.dp, end = 6.dp) else Modifier,
+                            style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
@@ -209,4 +243,18 @@ internal fun InboxScreen(
             }
         }
     }
+}
+
+
+// Profile snapshots belong to named posts. A newer snapshot with an empty photo clears the older one.
+internal fun inboxPhotos(posts: List<Post>): Map<String, String> {
+    val latest = mutableMapOf<String, Post>()
+    for (post in posts) {
+        val visibility = post.visibility ?: continue
+        val peer = visibility.peer ?: continue
+        if (visibility.anonymous || post.hidden || post.profile == null) continue
+        val previous = latest[peer]
+        if (previous == null || (post.acceptedAt ?: 0) > (previous.acceptedAt ?: 0)) latest[peer] = post
+    }
+    return latest.mapValues { (_, post) -> post.profile?.photo.orEmpty() }
 }

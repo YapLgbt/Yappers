@@ -71,8 +71,13 @@ final class NativeUsernameClaim: UITableViewController, UITextFieldDelegate {
     }
 
     @objc private func edited() {
-        let name = claim.normalize(name: field.text ?? "")
-        if field.text != name { field.text = name }
+        guard field.markedTextRange == nil else {
+            navigationItem.rightBarButtonItem?.isEnabled = false
+            return
+        }
+        let text = field.text ?? ""
+        let name = claim.normalize(name: text)
+        syncFormText(field, displayed: text, value: name)
         navigationItem.rightBarButtonItem?.isEnabled = !busy && claim.isValid(name: name)
     }
 
@@ -82,7 +87,7 @@ final class NativeUsernameClaim: UITableViewController, UITextFieldDelegate {
     }
 
     @objc private func submit() {
-        guard !busy, let name = field.text, claim.isValid(name: name) else { return }
+        guard !busy, field.markedTextRange == nil, let name = field.text, claim.isValid(name: name) else { return }
         busy = true
         navigationController?.isModalInPresentation = true
         field.isEnabled = false

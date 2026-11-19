@@ -69,7 +69,7 @@ internal fun ProfileEditor(initialName: String, initial: CommunityProfile, libra
         if (saving || choosingPhoto) return
         if (dirty) discard = true else onDismiss()
     }
-    val displayName = name.trim().ifEmpty { if (creating) initialName else "" }
+    val displayName = name.trim()
     val canSave = (creating || dirty) && displayName.length in 2..30 && !saving && !choosingPhoto
     fun save() {
         if (!canSave) return
@@ -99,22 +99,25 @@ internal fun ProfileEditor(initialName: String, initial: CommunityProfile, libra
     AppBackHandler(true) { if (cropImage != null) cropImage = null else close() }
     if (nativeForm != null) {
         val active = !saving && !choosingPhoto
-        fun field(title: String, value: String, limit: Int, edit: (String) -> Unit, multiline: Boolean = false) =
-            FormRow(title, title, if (multiline) "multiline" else "field", detail = "${value.length} / $limit", value = value, limit = limit, enabled = active,
-                onChange = { if (active && it.length <= limit) edit(it) })
+        fun field(title: String, value: () -> String, limit: Int, edit: (String) -> Unit, multiline: Boolean = false): FormRow {
+            val length = value().length
+            val counter = if (length >= limit - minOf(100, limit / 5)) "$length / $limit" else ""
+            return FormRow(title, title, if (multiline) "multiline" else "field", detail = counter,
+                fieldValue = value, limit = limit, enabled = active, onChange = { if (active && it.length <= limit) edit(it) })
+        }
         val dialogs = if (discard) FormConfirmation("Discard profile changes?", "Your saved profile will stay as it is.",
             FormChoice("Discard", destructive = true, action = onDismiss), FormChoice("Keep editing") { discard = false })
             else error?.let { message -> FormConfirmation("Couldn't update your profile", message,
                 FormChoice("OK") { error = null }, FormChoice("") {}) }
         val basics = listOf(
-            field("Display name", name, 30, { name = it }),
-            FormRow("suggest-name", "Suggest another name", enabled = active, onTap = { name = suggestName(name) }),
-            field("Pronouns", profile.pronouns, 40, { profile = profile.copy(pronouns = it) }),
+            field("Display name", { name }, 30, { name = it }),
+            FormRow("suggest-name", if (creating && name.isBlank()) "Suggest a name" else "Suggest another name", enabled = active, onTap = { name = suggestName(name) }),
+            field("Pronouns", { profile.pronouns }, 40, { profile = profile.copy(pronouns = it) }),
         )
         val about = listOf(
-            field("Bio", profile.bio, 280, { profile = profile.copy(bio = it) }, true),
-            field("Identity, in your words", profile.identity, 80, { profile = profile.copy(identity = it) }),
-            field("Current joys", profile.interests, 120, { profile = profile.copy(interests = it) }, true),
+            field("Bio", { profile.bio }, 280, { profile = profile.copy(bio = it) }, true),
+            field("Identity, in your words", { profile.identity }, 80, { profile = profile.copy(identity = it) }),
+            field("Current joys", { profile.interests }, 120, { profile = profile.copy(interests = it) }, true),
         )
         val intentions = profileIntentions.map { value ->
             FormRow(value, value, "choice", checked = value in profile.hereFor, enabled = active, onTap = { intention(value) })
@@ -135,7 +138,7 @@ internal fun ProfileEditor(initialName: String, initial: CommunityProfile, libra
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     ProfileAvatar(displayName, profile, 80.dp)
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(displayName, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                        Text(displayName.ifEmpty { "Your display name" }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                         if (profile.pronouns.isNotBlank()) Text(profile.pronouns, style = MaterialTheme.typography.bodyMedium)
                         control(photoAction, Modifier)
                         if (profile.photo.isNotBlank()) control(FormRow("remove-photo", "Remove photo", "back", destructive = true,
@@ -152,7 +155,7 @@ internal fun ProfileEditor(initialName: String, initial: CommunityProfile, libra
                     control(FormRow("here-for", "Here for", "method", detail = profile.hereFor.joinToString(", ").ifEmpty { "Choose what brings you here." },
                         symbol = "person.2", enabled = active) { section = "Here for" }, Modifier.fillMaxWidth())
                 }
-                if (displayName.length !in 2..30) Text("Use at least two characters for your display name, or leave it blank for a suggestion.")
+                if (displayName.length !in 2..30) Text("Choose a display name of at least two characters to continue.")
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
             section?.let { title ->
@@ -174,8 +177,8 @@ internal fun ProfileEditor(initialName: String, initial: CommunityProfile, libra
                 FormSection(rows = basics + about),
                 FormSection("Here for", intentions, footer = "These details appear on new posts you make by name.")
             )
-            nativeForm(NativeFormModel("Edit your profile", sections, leading = FormChoice("Cancel", action = ::close),
-                trailing = FormChoice(if (saving) "Saving…" else "Save profile", action = ::save), trailingEnabled = canSave, leadingEnabled = active,
+            nativeForm(NativeFormModel("Edit profile", sections, leading = FormChoice("Cancel", action = ::close),
+                trailing = FormChoice(if (saving) "Saving…" else "Save", action = ::save), trailingEnabled = canSave, leadingEnabled = active,
                 canDismiss = !dirty && active, confirmation = dialogs, onDismiss = ::close), "sheet", Modifier)
         }
         val image = cropImage

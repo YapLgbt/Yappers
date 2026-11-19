@@ -40,7 +40,8 @@ private data class PrivateGroupPage(
 private val privateGroupJson = Json { ignoreUnknownKeys = true }
 
 @Composable
-internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, onBack: () -> Unit) {
+internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, onBack: () -> Unit, routeGroup: String? = null,
+                                pushGroup: ((String, String) -> Unit)? = null) {
     val scope = rememberCoroutineScope()
     val materialNavigation = LocalMaterialNavigation.current
     @Suppress("DEPRECATION") val clipboard = LocalClipboardManager.current
@@ -72,6 +73,10 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
         page = if (before != null && next.phase == "joined" && previous != null)
             next.copy(posts = (previous.posts + next.posts).distinctBy { it.id }) else next
         group = id
+    }
+    suspend fun selectGroup(id: String) {
+        if (pushGroup == null) open(id)
+        else pushGroup(id, groups.firstOrNull { it.id == id }?.name ?: "Private group")
     }
     fun act(action: suspend () -> Unit) {
         if (busy) return
@@ -110,7 +115,7 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
         clipboard.setText(AnnotatedString(value))
         notice = label
     }
-    LaunchedEffect(Unit) { act { list() } }
+    LaunchedEffect(routeGroup) { act { if (routeGroup == null) list() else open(routeGroup) } }
     AppBackHandler(materialNavigation == null || group != null, ::back)
 
     val current = page
@@ -134,10 +139,10 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
         }
         val valid = input.isNotBlank() && (!isPost || heading.isNotBlank())
         return FormSection(rows = buildList {
-            if (isPost) add(FormRow("headline", "Headline", kind = "field", value = heading, limit = 100,
+            if (isPost) add(FormRow("headline", "Headline", kind = "field", fieldValue = { heading }, limit = 100,
                 enabled = !busy, onChange = { heading = it.take(100) }))
             if (isReply) add(FormRow("parent", "Replying to ${reply?.headline ?: "a post"}", kind = "text"))
-            add(FormRow("input", label, kind = if (limit == 60) "field" else "multiline", value = input,
+            add(FormRow("input", label, kind = if (limit == 60) "field" else "multiline", fieldValue = { input },
                 limit = limit, enabled = !busy, keyboard = if (limit == 4096) "ascii" else "",
                 onChange = { input = it.take(limit) }))
             add(FormRow("submit", when {
@@ -154,7 +159,7 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
                             val opened = request(kind, key to JsonPrimitive(input.trim())).jsonPrimitive.content
                             list()
                             editor = null
-                            open(opened)
+                            selectGroup(opened)
                         }
                         "Approve a device" -> {
                             val target = checkNotNull(id)
@@ -192,14 +197,16 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
 
     val sections = buildList {
         add(FormSection(rows = buildList {
-            if (materialNavigation == null) {
+            if (materialNavigation == null && pushGroup == null) {
                 add(FormRow("back", if (id == null && fields == null) "All groups" else "Back",
                     enabled = !busy, onTap = ::back))
                 add(FormRow("title", fields ?: current?.name ?: "Private groups", kind = "text"))
             }
         }, footer = if (materialNavigation == null) notice.ifBlank { if (busy) "Working…" else "" } else ""))
 
-        if (fields != null && materialNavigation == null) {
+        if (routeGroup != null && current == null) {
+            if (!busy) add(FormSection(rows = listOf(FormRow("retry", "Try again") { act { open(routeGroup) } })))
+        } else if (fields != null && materialNavigation == null && pushGroup == null) {
             add(editorSection(fields))
         } else if (id == null || current == null) {
             add(FormSection(rows = buildList {
@@ -207,7 +214,7 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
                     onTap = { begin("Create private group") }))
                 add(FormRow("import", "Open invitation", enabled = !busy, onTap = { begin("Open invitation") }))
                 groups.sortedBy { it.name.lowercase() }.forEach { group ->
-                    add(FormRow(group.id, group.name, kind = "disclosure", enabled = !busy, onTap = { act { open(group.id) } }))
+                    add(FormRow(group.id, group.name, kind = "disclosure", enabled = !busy, onTap = { act { selectGroup(group.id) } }))
                 }
             }))
         } else {
@@ -281,6 +288,16 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
     val native = LocalNativeForm.current
     if (native != null) {
         native(NativeFormModel(sections = sections), "screen", Modifier.fillMaxSize())
+        if (pushGroup != null && fields != null) {
+            val form = editorSection(fields)
+            val submit = form.rows.last()
+            native(NativeFormModel(title = fields,
+                sections = listOf(FormSection(rows = form.rows.dropLast(1), footer = notice.ifBlank { form.footer })),
+                leading = FormChoice("Cancel", action = ::dismissEditor), leadingEnabled = !busy,
+                trailing = FormChoice(submit.title, action = submit::tap), trailingEnabled = submit.enabled,
+                canDismiss = !busy && input.isBlank() && heading.isBlank(), onDismiss = ::dismissEditor),
+                "sheet", Modifier)
+        }
     } else {
         val snackbar = remember { SnackbarHostState() }
         LaunchedEffect(notice, fields, materialNavigation) {

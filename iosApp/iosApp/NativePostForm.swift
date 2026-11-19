@@ -7,6 +7,44 @@ final class NativeEditorFactory: NSObject, AppleEditorFactory {
     }
 }
 
+final class PostingIdentityRow: UIStackView {
+    let toggle = UISwitch()
+    private let byline = UILabel()
+
+    init() {
+        super.init(frame: .zero)
+        alignment = .center
+        spacing = 8
+        let label = UILabel()
+        label.font = .preferredFont(forTextStyle: .subheadline)
+        label.adjustsFontForContentSizeCategory = true
+        label.text = "Anonymous mode"
+        label.numberOfLines = 0
+        label.isAccessibilityElement = false
+        byline.font = .preferredFont(forTextStyle: .footnote)
+        byline.adjustsFontForContentSizeCategory = true
+        byline.textColor = .secondaryLabel
+        byline.numberOfLines = 0
+        let labels = UIStackView(arrangedSubviews: [label, byline])
+        labels.axis = .vertical
+        labels.spacing = 3
+        addArrangedSubview(labels)
+        addArrangedSubview(toggle)
+        toggle.accessibilityIdentifier = "anonymous-mode"
+        toggle.accessibilityLabel = label.text
+        toggle.onTintColor = YapTabBarController.actionTint
+        toggle.setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+
+    required init(coder: NSCoder) { fatalError("Use init()") }
+
+    func render(action: String, name: String, anonymous: Bool, networked: Bool) {
+        toggle.setOn(anonymous, animated: false)
+        byline.text = action + " as " + (anonymous ? "Anonymous" : name)
+        toggle.accessibilityHint = networked ? "Your home can identify anonymous posts." : nil
+    }
+}
+
 private final class WritingCell: UITableViewCell {
     let editor = UITextView()
     private let count = UILabel()
@@ -72,6 +110,7 @@ private final class WritingCell: UITableViewCell {
 
     func updateCount(limit: Int32) {
         let length = editor.text.utf16.count
+        count.isHidden = !NativeWritingType.showsCharacterCount(length, limit: limit)
         count.text = "\(length) / \(limit)"
         placeholder.isHidden = length > 0
     }
@@ -84,10 +123,24 @@ private final class NativePostForm: UITableViewController, ApplePostFormView, UI
                                        font: NativeWritingType.publicHeadline, lines: 1)
     private let body = WritingCell(title: "Body", prompt: "What's on your mind, neighbor?", identifier: "post-body-input",
                                    font: NativeWritingType.publicBody, lines: 4)
-    private let identity = UIButton(type: .system)
+    private let identity = PostingIdentityRow()
     private let topic = UIButton(type: .system)
     private let claim = UIButton(type: .system)
-    private lazy var identityCell = actionCell(identity)
+    private lazy var identityCell: UITableViewCell = {
+        let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+        cell.selectionStyle = .none
+        cell.isAccessibilityElement = false
+        identity.translatesAutoresizingMaskIntoConstraints = false
+        cell.contentView.addSubview(identity)
+        let margins = cell.contentView.layoutMarginsGuide
+        NSLayoutConstraint.activate([
+            identity.leadingAnchor.constraint(equalTo: margins.leadingAnchor),
+            identity.trailingAnchor.constraint(equalTo: margins.trailingAnchor),
+            identity.topAnchor.constraint(equalTo: margins.topAnchor),
+            identity.bottomAnchor.constraint(equalTo: margins.bottomAnchor)
+        ])
+        return cell
+    }()
     private lazy var topicCell = actionCell(topic)
     private lazy var claimCell = actionCell(claim)
     private var claimVisible: Bool { !model.anonymous && model.usernameClaim != nil }
@@ -105,8 +158,8 @@ private final class NativePostForm: UITableViewController, ApplePostFormView, UI
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 66
         let accessory = UIToolbar()
-        accessory.tintColor = YapTabBarController.actionTint.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
         let done = UIBarButtonItem(systemItem: .done, primaryAction: UIAction { [weak self] _ in self?.view.endEditing(true) })
+        done.tintColor = YapTabBarController.doneItemTint
         done.accessibilityLabel = "Dismiss keyboard"
         accessory.items = [.flexibleSpace(), done]
         accessory.sizeToFit()
@@ -116,7 +169,10 @@ private final class NativePostForm: UITableViewController, ApplePostFormView, UI
         }
         headline.editor.text = model.draft.headline
         body.editor.text = model.draft.body
-        identity.showsMenuAsPrimaryAction = true
+        identity.toggle.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.model.selectIdentity(anonymous: self.identity.toggle.isOn)
+        }, for: .valueChanged)
         topic.showsMenuAsPrimaryAction = true
         configure(claim, title: "Choose a username")
         claim.addAction(UIAction { [weak self] _ in
@@ -159,16 +215,8 @@ private final class NativePostForm: UITableViewController, ApplePostFormView, UI
     }
 
     private func updateIdentity() {
-        let title = "Post as " + (model.anonymous ? "Anonymous" : model.namedIdentity)
-        configure(identity, title: title, menu: true)
-        let actions = [(true, "Anonymous"), (false, model.namedIdentity)].map { anonymous, name in
-            let action = UIAction(title: name, state: model.anonymous == anonymous ? .on : .off) { [weak self] _ in
-                self?.model.selectIdentity(anonymous: anonymous)
-            }
-            if !anonymous { action.accessibilityIdentifier = "named-posting-identity" }
-            return action
-        }
-        identity.menu = UIMenu(options: .singleSelection, children: actions)
+        identity.render(action: "Post", name: model.namedIdentity, anonymous: model.anonymous, networked: model.networked)
+        identity.toggle.isEnabled = !model.submitting
     }
 
     private func updateTopic() {
@@ -200,7 +248,8 @@ private final class NativePostForm: UITableViewController, ApplePostFormView, UI
         }
         if previous.submitting != next.submitting {
             for field in [headline.editor, body.editor] { field.isEditable = !next.submitting }
-            for button in [identity, claim, topic] { button.isEnabled = !next.submitting }
+            identity.toggle.isEnabled = !next.submitting
+            for button in [claim, topic] { button.isEnabled = !next.submitting }
         }
         if let error = next.error, presentedViewController == nil {
             let alert = UIAlertController(title: "Couldn't save that", message: error, preferredStyle: .alert)

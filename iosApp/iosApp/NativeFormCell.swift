@@ -1,9 +1,13 @@
 import UIKit
+import ImageIO
 import Yappers
 
 final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDelegate, UISearchBarDelegate {
     private let kind: String
+    private let standaloneField: Bool
+    private var avatar: UIImage?
     private var row: FormRow?
+    private var hasMarkedEdit = false
     private lazy var field = UITextField()
     private lazy var editor = UITextView()
     private lazy var search = UISearchBar()
@@ -15,8 +19,9 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
     private lazy var imagePreview = UIImageView()
     private var stacked: Bool { ["field", "secure", "multiline", "selectable", "search", "segments", "photo", "menu", "text"].contains(kind) }
 
-    init(kind: String) {
+    init(kind: String, standaloneField: Bool = false) {
         self.kind = kind
+        self.standaloneField = standaloneField
         super.init(style: .default, reuseIdentifier: kind)
         if stacked { configureStack() }
         if kind == "toggle" {
@@ -85,6 +90,11 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
             control = editor
         default:
             field.delegate = self
+            if standaloneField {
+                field.borderStyle = .roundedRect
+                field.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+                label.isAccessibilityElement = false
+            }
             field.font = .preferredFont(forTextStyle: .body)
             field.adjustsFontForContentSizeCategory = true
             field.isSecureTextEntry = kind == "secure"
@@ -95,6 +105,11 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
         if kind != "text" { stack.addArrangedSubview(control) }
         stack.addArrangedSubview(hint)
         contentView.addSubview(stack)
+        if standaloneField {
+            preservesSuperviewLayoutMargins = false
+            contentView.preservesSuperviewLayoutMargins = false
+            contentView.directionalLayoutMargins = .zero
+        }
         let margins = contentView.layoutMarginsGuide
         NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: margins.leadingAnchor), stack.trailingAnchor.constraint(equalTo: margins.trailingAnchor), stack.topAnchor.constraint(equalTo: margins.topAnchor), stack.bottomAnchor.constraint(equalTo: margins.bottomAnchor), contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)])
         isAccessibilityElement = false
@@ -103,7 +118,6 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
             let bar = UIToolbar()
             let done = UIBarButtonItem(systemItem: .done, primaryAction: UIAction { [weak self] _ in self?.endEditing(true) })
             done.accessibilityLabel = "Dismiss keyboard"
-            done.tintColor = YapTabBarController.actionTint.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
             bar.items = [.flexibleSpace(), done]
             bar.sizeToFit()
             editor.inputAccessoryView = bar
@@ -113,6 +127,7 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
 
     func bind(_ next: FormRow) {
         let previous = row
+        if previous?.id != next.id { hasMarkedEdit = false }
         row = next
         let id = next.identifier.isEmpty ? next.id : next.identifier
         if !stacked {
@@ -122,10 +137,27 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
             content.textProperties.numberOfLines = 0
             content.secondaryTextProperties.numberOfLines = 0
             content.secondaryTextProperties.color = .secondaryLabel
-            content.image = next.symbol.isEmpty ? nil : UIImage(systemName: next.symbol)
+            if kind == "conversation" {
+                if previous?.value != next.value {
+                    avatar = Self.inboxPhoto(next.value)
+                }
+                let diameter: CGFloat = 44
+                content.image = avatar ?? UIImage(systemName: "person.crop.circle.fill",
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 40, weight: .regular))
+                let size = CGSize(width: diameter, height: diameter)
+                content.imageProperties.reservedLayoutSize = size
+                content.imageProperties.maximumSize = size
+                content.imageProperties.cornerRadius = diameter / 2
+                content.imageProperties.tintColor = .secondaryLabel
+                content.textToSecondaryTextVerticalPadding = 3
+                content.secondaryTextProperties.numberOfLines = 2
+                content.textProperties.font = .preferredFont(forTextStyle: .headline)
+            } else {
+                content.image = next.symbol.isEmpty ? nil : UIImage(systemName: next.symbol)
+            }
             content.textProperties.color = !next.enabled ? .tertiaryLabel : next.destructive ? .systemRed : kind == "action" ? YapTabBarController.actionTint : .label
             contentConfiguration = content
-            accessoryType = kind == "disclosure" ? .disclosureIndicator : kind == "choice" && next.checked ? .checkmark : .none
+            accessoryType = (kind == "disclosure" || kind == "conversation") ? .disclosureIndicator : kind == "choice" && next.checked ? .checkmark : .none
             if kind == "toggle" {
                 toggle.isOn = next.checked
                 toggle.isEnabled = next.enabled
@@ -185,7 +217,7 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
                 segments.accessibilityIdentifier = id
             }
         case "multiline", "selectable":
-            if editor.markedTextRange == nil && editor.text != next.value && (!editor.isFirstResponder || previous?.value != next.value) { editor.text = next.value }
+            if !hasMarkedEdit { syncFormText(editor, displayed: editor.text, value: next.currentText()) }
             editor.accessibilityLabel = next.title
             editor.accessibilityHint = next.placeholder
             editor.accessibilityIdentifier = id
@@ -193,7 +225,7 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
             configureKeyboard(editor, kind: next.keyboard)
         default:
             let input = kind == "search" ? search.searchTextField : field
-            if input.markedTextRange == nil && input.text != next.value && (!input.isFirstResponder || previous?.value != next.value) { input.text = next.value }
+            if !hasMarkedEdit { syncFormText(input, displayed: input.text ?? "", value: next.currentText()) }
             input.placeholder = next.placeholder.isEmpty ? (kind == "search" ? next.title : nil) : next.placeholder
             input.accessibilityLabel = next.title
             input.accessibilityIdentifier = id
@@ -222,6 +254,23 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
             view.smartDashesType = corrections == .no ? .no : .default
         }
     }
+    private static func inboxPhoto(_ encoded: String) -> UIImage? {
+        guard !encoded.isEmpty, encoded.utf8.count <= 4096, let data = Data(base64Encoded: encoded),
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let info = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = info[kCGImagePropertyPixelWidth] as? Int, (1...128).contains(width),
+              let height = info[kCGImagePropertyPixelHeight] as? Int, (1...128).contains(height),
+              let image = UIImage(data: data) else { return nil }
+        // Render a square aspect-fill crop even for profile photos from older clients.
+        let size = CGSize(width: 44, height: 44)
+        let scale = max(size.width / image.size.width, size.height / image.size.height)
+        let scaled = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            image.draw(in: CGRect(x: (size.width - scaled.width) / 2, y: (size.height - scaled.height) / 2,
+                                  width: scaled.width, height: scaled.height))
+        }.withRenderingMode(.alwaysOriginal)
+    }
+
     func activate() {
         guard let row, row.enabled else { return }
         switch kind {
@@ -229,7 +278,7 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
         case "multiline": editor.becomeFirstResponder()
         case "search": search.searchTextField.becomeFirstResponder()
         case "toggle": row.toggle(selected: !row.checked)
-        case "action", "disclosure", "choice": row.tap()
+        case "action", "disclosure", "choice", "conversation": row.tap()
         default: break
         }
     }
@@ -238,21 +287,49 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
         guard let choices = row?.choices, choices.indices.contains(segments.selectedSegmentIndex) else { return }
         choices[segments.selectedSegmentIndex].select()
     }
-    @objc private func edited() { row?.edit(text: field.text ?? "") }
+    private func commitText(_ input: UITextInput, text: String) {
+        hasMarkedEdit = input.markedTextRange != nil
+        guard !hasMarkedEdit, let row else { return }
+        row.edit(text: text)
+        syncFormText(input, displayed: text, value: row.currentText())
+    }
+    @objc private func edited() { commitText(field, text: field.text ?? "") }
     private func accepts(_ value: String, _ range: NSRange, _ replacement: String) -> Bool {
         guard let row else { return false }
         return row.limit <= 0 || value.utf16.count - range.length + replacement.utf16.count <= Int(row.limit)
     }
-    func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString string: String) -> Bool { accepts(textField.text ?? "", range, string) }
+    func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString string: String) -> Bool { textField.markedTextRange != nil || accepts(textField.text ?? "", range, string) }
     func textFieldShouldReturn(_ textField: UITextField) -> Bool { textField.resignFirstResponder(); return true }
-    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool { accepts(textView.text, range, text) }
+    func textFieldDidEndEditing(_ textField: UITextField) { if hasMarkedEdit { edited() } }
+    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool { textView.markedTextRange != nil || accepts(textView.text, range, text) }
     func textViewDidChange(_ textView: UITextView) {
-        row?.edit(text: textView.text)
+        commitText(textView, text: textView.text)
         if let table = sequence(first: superview, next: { $0?.superview }).compactMap({ $0 as? UITableView }).first {
             UIView.performWithoutAnimation { table.performBatchUpdates(nil) }
         }
     }
-    func searchBar(_ searchBar: UISearchBar, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool { accepts(searchBar.text ?? "", range, text) }
-    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) { row?.edit(text: searchText) }
+    func textViewDidEndEditing(_ textView: UITextView) { if hasMarkedEdit { commitText(textView, text: textView.text) } }
+    func searchBar(_ searchBar: UISearchBar, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool { searchBar.searchTextField.markedTextRange != nil || accepts(searchBar.text ?? "", range, text) }
+    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) { commitText(searchBar.searchTextField, text: searchText) }
+    func searchBarTextDidEndEditing(_ searchBar: UISearchBar) { if hasMarkedEdit { commitText(searchBar.searchTextField, text: searchBar.text ?? "") } }
     func searchBarSearchButtonClicked(_ searchBar: UISearchBar) { searchBar.resignFirstResponder() }
+}
+
+@MainActor
+func syncFormText(_ input: UITextInput, displayed: String, value: String) {
+    guard displayed != value, input.markedTextRange == nil else { return }
+    let selection = input.selectedTextRange.map {
+        (input.offset(from: input.beginningOfDocument, to: $0.start),
+         input.offset(from: input.beginningOfDocument, to: $0.end))
+    }
+    if let field = input as? UITextField { field.text = value }
+    if let editor = input as? UITextView { editor.text = value }
+    guard let (start, end) = selection, (input as? UIView)?.isFirstResponder == true else { return }
+    func position(_ offset: Int) -> UITextPosition? {
+        let index = offset == displayed.utf16.count ? value.utf16.count : min(offset, value.utf16.count)
+        return input.position(from: input.beginningOfDocument, offset: index)
+    }
+    if let start = position(start), let end = position(end) {
+        input.selectedTextRange = input.textRange(from: start, to: end)
+    }
 }

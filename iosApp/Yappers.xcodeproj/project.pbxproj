@@ -10,6 +10,7 @@
 		0BF283214BEE2245A662659C /* NativePostForm.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2F85475A26C09E329876318 /* NativePostForm.swift */; };
 		296E095C10CCB1673A362D8E /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 7620C2DEEAF826939C9D8497 /* AppIcon.icon */; };
 		2F55ECDD55F6541CC85DE202 /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5932E4ADAEB2FC160385C3C3 /* SystemConfiguration.framework */; };
+		30C865D808C3A1E08703E3E5 /* NativeChatBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B688B9E7E505070514016DD /* NativeChatBubble.swift */; };
 		3F1E46051E28FE43D139926F /* AppleNetkitStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B03273DE7DFE2E7F8B59D897 /* AppleNetkitStorage.swift */; };
 		4C557E091452ECAB5144B6C5 /* Network.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6988F9E1B9909AFB60F2D815 /* Network.framework */; };
 		4D1F3355FEC4E1940E2138A8 /* NativeInlineEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7407DAC89BE2806115E3BA4D /* NativeInlineEditor.swift */; };
@@ -54,6 +55,7 @@
 		542C74F91A52316C17A9B717 /* AppleRecoveryFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleRecoveryFiles.swift; sourceTree = "<group>"; };
 		5932E4ADAEB2FC160385C3C3 /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
 		5B4B426830F495142A7DEB63 /* YappersUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = YappersUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		5B688B9E7E505070514016DD /* NativeChatBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChatBubble.swift; sourceTree = "<group>"; };
 		6988F9E1B9909AFB60F2D815 /* Network.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };
 		6F03DAAA7E9AA0CAA4362A63 /* NetkitTestJoin.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = NetkitTestJoin.json; sourceTree = "<group>"; };
 		7407DAC89BE2806115E3BA4D /* NativeInlineEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeInlineEditor.swift; sourceTree = "<group>"; };
@@ -147,6 +149,7 @@
 				542C74F91A52316C17A9B717 /* AppleRecoveryFiles.swift */,
 				14DB69C6E7CE4165CF3CE1EB /* Assets.xcassets */,
 				8CEB6A0AFFEF018819E4BF50 /* Info.plist */,
+				5B688B9E7E505070514016DD /* NativeChatBubble.swift */,
 				4ACB4C83484E133D29D94416 /* NativeFeedButton.swift */,
 				3EF9874FBBDD1B5551D27C4E /* NativeFormCell.swift */,
 				5273A57DDB1576C3640FA461 /* NativeFormSurface.swift */,
@@ -310,6 +313,7 @@
 				6847F43ACAC6924635E29644 /* AppleProfilePhotoLibrary.swift in Sources */,
 				6B4788C4FE46336DB4692359 /* AppleRecoveryFiles.swift in Sources */,
 				DB3989747FAC1AAD0593EB97 /* KotlinBuildStamp.swift in Sources */,
+				30C865D808C3A1E08703E3E5 /* NativeChatBubble.swift in Sources */,
 				6E5A1B9D0B8568391D21058D /* NativeFeedButton.swift in Sources */,
 				697B74351A025BB01EA14D3E /* NativeFormCell.swift in Sources */,
 				C6B7CDA134479D81C4DBDA33 /* NativeFormSurface.swift in Sources */,

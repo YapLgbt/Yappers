@@ -99,11 +99,12 @@ class FeedRepository(private val storage: LocalStorage) {
         commit(snapshot.copy(alias = clean))
     }
     /** Profile edits affect future posts; published posts retain their signed identity snapshot. */
-    fun setProfile(alias: String, profile: CommunityProfile) {
+    fun setProfile(alias: String, profile: CommunityProfile, initialNamedScope: String? = null) {
         val clean = alias.trim()
         require(clean.length in 2..30) { "Use a name between 2 and 30 characters." }
         val validated = profile.cleaned()
-        commit(snapshot.copy(alias = clean, profile = validated))
+        val namedScopes = initialNamedScope?.let { snapshot.namedPostingScopes + it } ?: snapshot.namedPostingScopes
+        commit(snapshot.copy(alias = clean, profile = validated, namedPostingScopes = namedScopes))
     }
     fun setPostingIdentity(scope: String, anonymous: Boolean) {
         val named = snapshot.namedPostingScopes

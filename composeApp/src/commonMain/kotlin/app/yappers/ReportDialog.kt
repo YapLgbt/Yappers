@@ -79,7 +79,7 @@ internal fun ReportDialog(target: ReportTarget, controller: NetkitController, on
                 "edit" -> {
                     add(FormRow("reason", "Reason", "menu", value = reasons.getValue(category), enabled = !busy,
                         choices = reasons.map { (id, label) -> FormChoice(label, id == category) { category = id } }))
-                    add(FormRow("evidence", "Evidence for the moderator", "multiline", value = text, enabled = !busy,
+                    add(FormRow("evidence", "Evidence for the moderator", "multiline", fieldValue = { text }, enabled = !busy,
                         limit = 2000, onChange = { if (it.length <= 2000) text = it }))
                     if (target.subject == "message" && text.isEmpty() && target.text.isNotEmpty())
                         add(FormRow("excerpt", "Use this message’s text", enabled = !busy) { text = target.text.take(2000) })
@@ -100,7 +100,7 @@ internal fun ReportDialog(target: ReportTarget, controller: NetkitController, on
                 "done" -> add(FormRow("outcome", outcome, "text"))
             }
             if (phase != "edit") add(FormRow("receipt", "Private receipt", if (phase == "lookup") "field" else "selectable",
-                value = receipt, keyboard = "ascii", enabled = !busy, onChange = { receipt = it }))
+                fieldValue = { receipt }, keyboard = "ascii", enabled = !busy, onChange = { receipt = it }))
             if (error.isNotEmpty()) add(FormRow("error", error, "text"))
             // Keep long action titles in the form where they can wrap at larger text sizes.
             if (phase != "done") add(FormRow("submit", when (phase) { "edit" -> "Review report"; "lookup" -> "Check status"; else -> "Send these details" },

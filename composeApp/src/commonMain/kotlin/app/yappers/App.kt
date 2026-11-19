@@ -13,9 +13,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
-import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
-import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
-import androidx.compose.material3.pulltorefresh.pullToRefresh
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.platform.testTag
@@ -38,6 +35,8 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -84,6 +83,10 @@ internal class PlatformNavigation(
     val openInbox: (InboxPage, MessageContact?) -> Unit,
     val inboxPage: InboxPage? = null,
     val openGuide: (() -> Unit)? = null,
+    val openProfileSettings: (() -> Unit)? = null,
+    val profileSettings: Boolean = false,
+    val openPrivateGroups: (() -> Unit)? = null,
+    val dismissGuide: (() -> Unit)? = null,
     val finishGuide: (() -> Unit)? = null,
     val matchesInboxScope: (NetkitState) -> Boolean = { true },
     val closeInboxStack: () -> Unit = {},
@@ -171,6 +174,10 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
     var error by remember { mutableStateOf<String?>(null) }
     val snackbars = remember { SnackbarHostState() }
     var notice by remember { mutableStateOf<String?>(null) }
+    val nativeNotice = LocalTransientNotice.current
+    fun inform(message: String) {
+        if (nativeNotice != null) nativeNotice(message) else notice = message
+    }
     fun change(action: () -> Unit): Boolean {
         return try { action(); demoState = repository.snapshot; true } catch (failure: Exception) {
             error = failure.message ?: "Couldn't save your change. Please try again."
@@ -196,8 +203,8 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
             val current = repository.snapshot.privacy
             repository.setPrivacy(current.copy(mutedThreads = if (title == null) current.mutedThreads - id else current.mutedThreads + (id to title)))
         }
+        if (title != null) inform("Thread muted. Manage muted threads in Privacy.")
         closeConversation()
-        if (title != null) notice = "Thread muted. Manage muted threads in Privacy."
     }
     fun mutePost(post: Post) = mute(post.remoteId ?: "demo-${post.id}", post.headline.ifBlank { post.body.take(80) })
     fun contact(event: String) = act {
@@ -225,6 +232,10 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
         selectedId = null
         if (platformNavigation == null) tab = destination
         else platformNavigation.selectTab(destination)
+    }
+    fun openCommunitySettings() {
+        navigate("You")
+        platformNavigation?.openProfileSettings?.invoke()
     }
     fun returnToNearby() {
         topic = "All"
@@ -299,16 +310,32 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
         val colors = MaterialTheme.colorScheme
         if (networking != null && platformNavigation?.finishGuide != null) {
             WelcomeBackupScreen(networking, connection.ownershipReady && live, replay = true,
-                vault = recoveryFiles as? RecoveryKeyVault, onDone = platformNavigation.finishGuide)
+                vault = recoveryFiles as? RecoveryKeyVault, onClose = platformNavigation.dismissGuide, onDone = platformNavigation.finishGuide)
             return@YapTheme
         }
         if (networking != null && welcoming && !(materialNavigation != null && revisitGuide) && nativePost == null && inboxPage == null) {
-                if (firstVisit) WelcomeScreen(networking, recoveryFiles, photoLibrary)
-                else if (verifyUsername && usernameStatus != WelcomeUsername.Confirmed) WelcomeUsernameScreen(networking, connection, usernameStatus) { name, profile ->
-                    repository.setProfile(name, profile)
-                    demoState = repository.snapshot
+                var signup by remember { mutableStateOf<WelcomeProfile?>(null) }
+                var attempt by remember { mutableIntStateOf(0) }
+                var enrollmentError by remember { mutableStateOf<String?>(null) }
+                LaunchedEffect(signup, attempt) {
+                    val draft = signup ?: return@LaunchedEffect
+                    enrollmentError = null
+                    try { networking.finishWelcome(draft.name, profile = draft.profile, namedPosting = draft.namedPosting) }
+                    catch (failure: Exception) {
+                        if (failure is CancellationException) throw failure
+                        enrollmentError = failure.message ?: "Couldn’t join your home. Try again."
+                    }
                 }
-                else if (offerBackup && networking.finishingRestore) {
+                if (firstVisit && signup == null) WelcomeScreen(networking, recoveryFiles, photoLibrary,
+                    onCreateProfile = if (platformNavigation != null) ({ signup = it }) else null)
+                else if ((firstVisit || verifyUsername) && usernameStatus != WelcomeUsername.Confirmed) {
+                    WelcomeUsernameScreen(networking, connection, usernameStatus, creatingProfile = signup != null,
+                        enrolling = firstVisit, enrollmentError = enrollmentError, retryEnrollment = { attempt++ }) { draft, postingScope ->
+                        val namedScope = if (draft.namedPosting) checkNotNull(postingScope) else null
+                        repository.setProfile(draft.name, draft.profile, namedScope)
+                        demoState = repository.snapshot
+                    }
+                } else if (offerBackup && networking.finishingRestore) {
                     LaunchedEffect(networking) {
                         onWelcomeComplete()
                         networking.enterNeighborhood()
@@ -366,7 +393,16 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                     replyActionsEnabled = !live || connection.messagingScope != null,
                     onReport = openReport, onMute = { mutePost(post) }, onSave = { save(post) }, onHide = { hidePostId = post.id },
                     onDelete = { deleteTarget = it }, onAuthor = { showAuthor(post) },
-                    onReplyAuthor = { showAuthor(it) }, dedicated = dedicated)
+                    onReplyAuthor = { showAuthor(it) }, dedicated = dedicated,
+                    refreshReplies = if (dedicated && live) ({
+                        try {
+                            networking.sync()
+                            if (networking.state.value.feedUnavailable) inform("Couldn’t reach your home. Showing saved replies.")
+                        } catch (failure: Exception) {
+                            if (failure is CancellationException) throw failure
+                            inform("Couldn’t refresh replies. Try again.")
+                        }
+                    }) else null)
             }
             if (nativePost != null) {
                 Surface(Modifier.fillMaxSize(), color = colors.background) {
@@ -389,7 +425,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                 val detail = showingThread != null || showInbox || showPrivacy
                 AppNavigationLayout(tab, ::navigate, desktopSidebar = expanded, showDestinations = !detail) { visibleTab ->
                     val feedFab = materialNavigation != null && !detail && (visibleTab == "Nearby" || visibleTab == "Saved")
-                    Scaffold(
+                    AppFrame(nativeNavigation = platformNavigation != null,
                         floatingActionButton = {
                             if (feedFab && !connection.awaitingDefault) {
                                 val scroll = if (visibleTab == "Saved") savedScroll else nearbyScroll
@@ -405,9 +441,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                 )
                             }
                         },
-                        modifier = Modifier.fillMaxSize(),
                         snackbarHost = { if (materialNavigation != null) SnackbarHost(snackbars) },
-                        containerColor = colors.background,
                         bottomBar = {
                             if (!expanded && platformNavigation == null && materialNavigation == null) YappersBottomNavigation(tab) { destination ->
                                 navigate(destination)
@@ -429,7 +463,6 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                 }
                                 val canRefresh = networking != null && (live || connection.awaitingDefault)
                                 var refreshing by remember { mutableStateOf(false) }
-                                val pull = rememberPullToRefreshState()
                                 fun refreshContent() {
                                     if (!canRefresh || refreshing) return
                                     refreshing = true
@@ -498,8 +531,11 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                     }
                                 }
                                 Row(Modifier.weight(1f).fillMaxWidth()) {
-                                    if (showingThread == null || sideBySide) Box(Modifier.weight(1f).fillMaxHeight().pullToRefresh(refreshing, pull, enabled = canRefresh && !(nativeForms && groupsVisible),
-                                        onRefresh = ::refreshContent), propagateMinConstraints = true) {
+                                    if (showingThread == null || sideBySide) FeedRefreshPane(
+                                        Modifier.weight(1f).fillMaxHeight(),
+                                        enabled = canRefresh && !(nativeForms && groupsVisible),
+                                        refreshing = refreshing, onRefresh = ::refreshContent,
+                                    ) {
                                         when {
                                             showPrivacy -> PrivacyScreen(policy, when {
                                                 !live -> "Settings for this local demo."
@@ -519,7 +555,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                                 onSelect = { contact ->
                                                     if (contact != null && platformNavigation != null) platformNavigation.openInbox(InboxPage.Conversation, contact)
                                                     else dmContact = contact
-                                                }, onClose = { if (mailSection != InboxPage.Messages) mailSection = InboxPage.Messages else inbox = false }, onBrowse = { navigate("Nearby") }, onJoin = { navigate("You") },
+                                                }, onClose = { if (mailSection != InboxPage.Messages) mailSection = InboxPage.Messages else inbox = false }, onBrowse = { navigate("Nearby") }, onJoin = ::openCommunitySettings,
                                                 onRefresh = { if (live && (connection.directAvailable || connection.mailboxElsewhere)) act { networking.refreshBlocks() } },
                                                 onBlock = { blocking = BlockChoice(it.peer, it.label, false) },
                                                 onUnblock = { id ->
@@ -543,9 +579,9 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                                 })
                                             visibleTab == "Groups" -> GroupsScreen(connection,
                                                 privateGroups = networking,
-                                                openPrivateGroups = materialNavigation?.let { { privateGroupsOpen = true } },
+                                                openPrivateGroups = platformNavigation?.openPrivateGroups ?: materialNavigation?.let { { privateGroupsOpen = true } },
                                                 onRefresh = if (canRefresh) ::refreshContent else null,
-                                                onConnect = { navigate("You") },
+                                                onConnect = ::openCommunitySettings,
                                                 onCity = { city -> act { networking?.selectLocality(city) } },
                                                 onOpen = { id -> networking?.openGroup(id); returnToNearby(); scope.launch { networking?.sync() } },
                                                 onJoin = { group -> networking?.joinGroup(group); returnToNearby(); scope.launch { networking?.sync() } },
@@ -556,6 +592,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                                 onHome = { networking?.openHomeFeed(); returnToNearby(); scope.launch { networking?.sync() } })
                                             visibleTab == "You" -> Profile(state.copy(profile = demoState.profile), live = live, connection = connection, networking = networking,
                                                 recoveryFiles = recoveryFiles, listState = profileScroll,
+                                                settingsOnly = platformNavigation?.profileSettings == true, onSettings = platformNavigation?.openProfileSettings,
                                                 onPrivacy = {
                                                     if (platformNavigation != null) platformNavigation.openInbox(InboxPage.Privacy, null)
                                                     else privacyOpen = true
@@ -573,6 +610,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                                         val group = connection.activeGroup
                                                         val feedTag = if (live && connection.online && connection.pendingCount == 0) "updated-community-feed" else "feed-title"
                                                         Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp),
+                                                            horizontalArrangement = Arrangement.spacedBy(if (feedButton != null) 12.dp else 0.dp),
                                                             verticalAlignment = Alignment.CenterVertically) {
                                                             if (saved || group != null) Column(Modifier.weight(1f)) {
                                                                 Text(if (saved) "Saved posts" else group!!.name, Modifier.testTag(feedTag),
@@ -626,6 +664,11 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                                     val posts = visiblePosts(state, if (saved) "All" else topic, popular && !saved, saved).filter {
                                                         saved || (live && connection.activeGroup != null) || nearby.includes(it.area)
                                                     }
+                                                    if (feedButton != null && connection.awaitingDefault && posts.isEmpty() && !connection.feedUnavailable) item(key = "feed-loading") {
+                                                        Text("Loading posts…", Modifier.padding(horizontal = 22.dp, vertical = 12.dp)
+                                                            .semantics { liveRegion = LiveRegionMode.Polite }, style = MaterialTheme.typography.bodyMedium,
+                                                            color = colors.onSurfaceVariant)
+                                                    }
                                                     val filtered = policy.settings.hideAnonymous || policy.settings.feedDays > 0 || policy.mutedThreads.isNotEmpty()
                                                     val topicEmpty = !saved && topic != "All" && posts.isEmpty() && !connection.awaitingDefault && !connection.feedUnavailable
                                                     if (topicEmpty) item {
@@ -652,8 +695,6 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                                 }
                                             }
                                         }
-                                        if (canRefresh && !(nativeForms && groupsVisible)) PullToRefreshDefaults.Indicator(
-                                            modifier = Modifier.align(Alignment.TopCenter), isRefreshing = refreshing, state = pull)
                                     }
                                     showingThread?.let { selected ->
                                         if (sideBySide) VerticalDivider(color = colors.outlineVariant)
@@ -686,8 +727,8 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                 if (live) { networking.publish(body, category, asAnonymous, state.alias, headline, demoState.profile, nearby.center.takeUnless { connection.activeGroup != null }); scope.launch { networking.sync() } }
                 else { repository.publish(body, category, asAnonymous, headline); demoState = repository.snapshot }
                 postDraft = null
+                inform(if (live) "Post saved." else "Post added to the demo.")
                 returnToNearby()
-                notice = if (live) "Post saved." else "Post added to the demo."
             }
         }
         shownAuthor?.let { author ->
@@ -710,8 +751,8 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                     act {
                         if (live) networking.blockAccount(choice.id, choice.byEvent, choice.label, choice.peer)
                         else { repository.setDemoBlock(choice.id, choice.label); demoState = repository.snapshot }
+                        inform(if (live && !connection.online) "Block saved. Your home will apply it when you sync." else "Account blocked.")
                         closeConversation(); dmContact = null
-                        notice = if (live && !connection.online) "Block saved. Your home will apply it when you sync." else "Account blocked."
                         if (live) networking.sync()
                     }
                 }
@@ -739,7 +780,9 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
             PlatformConfirmation("Hide this post on this device?", "Other people can still see this post.", "Hide post", onCancel = { hidePostId = null }) {
                 act {
                     if (live) networking.hide(id) else { repository.hide(id); demoState = repository.snapshot }
-                    hidePostId = null; closeConversation(); notice = "Post hidden on this device."
+                    hidePostId = null
+                    inform("Post hidden on this device.")
+                    closeConversation()
                 }
             }
         }
@@ -762,6 +805,23 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun AppFrame(nativeNavigation: Boolean, floatingActionButton: @Composable () -> Unit,
+                     snackbarHost: @Composable () -> Unit, bottomBar: @Composable () -> Unit,
+                     content: @Composable (PaddingValues) -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    if (nativeNavigation) {
+        Box(Modifier.fillMaxSize().background(colors.background)) {
+            CompositionLocalProvider(LocalContentColor provides colors.onBackground) {
+                content(WindowInsets.systemBars.asPaddingValues())
+            }
+        }
+    } else {
+        Scaffold(modifier = Modifier.fillMaxSize(), containerColor = colors.background,
+            floatingActionButton = floatingActionButton, snackbarHost = snackbarHost, bottomBar = bottomBar, content = content)
     }
 }
 
@@ -884,7 +944,7 @@ private fun PostRow(post: Post, onReport: ((ReportTarget) -> Unit)?, onOpen: (()
         Text(listOfNotNull(post.topic, location, postTime(post)).joinToString(" · "),
             Modifier.padding(bottom = 4.dp), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp),
+            FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(if (native != null) 10.dp else 4.dp),
                 itemVerticalAlignment = Alignment.CenterVertically) {
                 if (LocalMaterialNavigation.current != null && onOpen != null) {
                     val count = post.replies.size
@@ -932,7 +992,8 @@ private fun Conversation(post: Post, alias: String, namedIdentity: String, anony
                          chooseIdentity: (Boolean) -> Unit, networked: Boolean, backLabel: String, openAtComments: Boolean, onBack: () -> Unit, onReply: suspend (String, Boolean) -> Boolean,
                          onReport: ((ReportTarget) -> Unit)?, onVote: (Int) -> Unit, onSave: () -> Unit, onMute: () -> Unit, onHide: () -> Unit, onDelete: (String) -> Unit, onAuthor: () -> Unit,
                          needsUsername: Boolean, usernameControl: @Composable () -> Unit, editorUsernameClaim: EditorUsernameClaim?, replyActionsEnabled: Boolean,
-                         onReplyActions: (Reply) -> Unit, onReplyAuthor: (Reply) -> Unit, dedicated: Boolean) {
+                         onReplyActions: (Reply) -> Unit, onReplyAuthor: (Reply) -> Unit, dedicated: Boolean,
+                         refreshReplies: (suspend () -> Unit)?) {
     var body by remember(post.id) { mutableStateOf("") }
     var sending by remember(post.id) { mutableStateOf(false) }
     var writing by remember(post.id) { mutableStateOf(false) }
@@ -998,49 +1059,71 @@ private fun Conversation(post: Post, alias: String, namedIdentity: String, anony
                 replyAction()
             }
         }
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list) {
-            item(key = "post") { PostRow(post, onReport, null, onVote, onSave, onMute, onHide, onDelete, onAuthor, onComment = {
-                scope.launch { list.animateScrollToItem(1) }
-            }) }
-            item(key = "comments") {
-                Row(Modifier.padding(start = 22.dp, end = 22.dp, top = 22.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Comments", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text("${post.replies.size}", Modifier.padding(start = 8.dp), color = colors.onSurfaceVariant, style = MaterialTheme.typography.titleMedium)
-                }
+        var refreshingReplies by remember(post.id) { mutableStateOf(false) }
+        fun refreshThread() {
+            if (refreshReplies == null || refreshingReplies) return
+            refreshingReplies = true
+            scope.launch {
+                try { refreshReplies() }
+                finally { refreshingReplies = false }
             }
-            if (post.replies.isEmpty()) item(key = "empty") {
-                Text("No comments yet.", Modifier.padding(horizontal = 22.dp, vertical = 12.dp), color = colors.onSurfaceVariant)
-            }
-            items(post.replies, key = { it.id }) { reply ->
-                Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 14.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        PostByline(reply.author, reply.username, isAnonymous(reply.author, reply.visibility), Modifier.weight(1f)) { onReplyAuthor(reply) }
-                        if (networked && reply.mine && !reply.pending && reply.remoteId != null) {
-                            if (nativeButton != null) nativeButton(FormRow("delete", "Delete reply", symbol = "trash", destructive = true,
-                                onTap = { onDelete(reply.remoteId) }), Modifier)
-                            else TextButton(onClick = { onDelete(reply.remoteId) }) { Text("Delete reply") }
+        }
+        @Composable
+        fun ReplyList(modifier: Modifier) {
+            LazyColumn(modifier, state = list) {
+                item(key = "post") { PostRow(post, onReport, null, onVote, onSave, onMute, onHide, onDelete, onAuthor, onComment = {
+                    scope.launch { list.animateScrollToItem(1) }
+                }) }
+                item(key = "comments") {
+                    Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 22.dp, top = 22.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Comments", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text("${post.replies.size}", Modifier.padding(start = 8.dp), color = colors.onSurfaceVariant, style = MaterialTheme.typography.titleMedium)
+                        if (refreshReplies != null && nativeButton != null) {
+                            Spacer(Modifier.weight(1f))
+                            nativeButton(FormRow("refresh-replies", "Refresh replies", "icon", symbol = "arrow.clockwise",
+                                enabled = !refreshingReplies, onTap = ::refreshThread), Modifier)
                         }
-                        if (replyActionsEnabled && !reply.mine && !reply.pending && (reply.remoteId != null || reply.id in 20L..22L)) {
-                            var options by remember(reply.id) { mutableStateOf(false) }
-                            val actions = buildList {
-                                if (onReport != null && reply.remoteId != null) add(FormChoice("Report reply") { onReport(ReportTarget("reply", reply.remoteId, reply.body)) })
-                                add(FormChoice("Block account", destructive = true) { onReplyActions(reply) })
+                    }
+                }
+                if (post.replies.isEmpty()) item(key = "empty") {
+                    Text("No comments yet.", Modifier.padding(horizontal = 22.dp, vertical = 12.dp), color = colors.onSurfaceVariant)
+                }
+                items(post.replies, key = { it.id }) { reply ->
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            PostByline(reply.author, reply.username, isAnonymous(reply.author, reply.visibility), Modifier.weight(1f)) { onReplyAuthor(reply) }
+                            if (networked && reply.mine && !reply.pending && reply.remoteId != null) {
+                                if (nativeButton != null) nativeButton(FormRow("delete", "Delete reply", symbol = "trash", destructive = true,
+                                    onTap = { onDelete(reply.remoteId) }), Modifier)
+                                else TextButton(onClick = { onDelete(reply.remoteId) }) { Text("Delete reply") }
                             }
-                            if (nativeButton != null) nativeButton(FormRow("reply-options", "Reply options for ${reply.author}",
-                                "menu", symbol = "ellipsis", choices = actions), Modifier)
-                            else Box {
-                                IconButton(onClick = { options = true }) { LineIcon("more", "Reply options for ${reply.author}") }
-                                DropdownMenu(options, onDismissRequest = { options = false }) {
-                                    actions.forEach { action -> DropdownMenuItem(text = { Text(action.title) }, onClick = { options = false; action.select() }) }
+                            if (replyActionsEnabled && !reply.mine && !reply.pending && (reply.remoteId != null || reply.id in 20L..22L)) {
+                                var options by remember(reply.id) { mutableStateOf(false) }
+                                val actions = buildList {
+                                    if (onReport != null && reply.remoteId != null) add(FormChoice("Report reply") { onReport(ReportTarget("reply", reply.remoteId, reply.body)) })
+                                    add(FormChoice("Block account", destructive = true) { onReplyActions(reply) })
+                                }
+                                if (nativeButton != null) nativeButton(FormRow("reply-options", "Reply options for ${reply.author}",
+                                    "menu", symbol = "ellipsis", choices = actions), Modifier)
+                                else Box {
+                                    IconButton(onClick = { options = true }) { LineIcon("more", "Reply options for ${reply.author}") }
+                                    DropdownMenu(options, onDismissRequest = { options = false }) {
+                                        actions.forEach { action -> DropdownMenuItem(text = { Text(action.title) }, onClick = { options = false; action.select() }) }
+                                    }
                                 }
                             }
+                            if (reply.pending) Text("Waiting to sync", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
                         }
-                        if (reply.pending) Text("Waiting to sync", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                        Text(reply.body, Modifier.padding(top = 7.dp), style = postBodyStyle)
                     }
-                    Text(reply.body, Modifier.padding(top = 7.dp), style = postBodyStyle)
+                    HorizontalDivider(Modifier.padding(horizontal = 22.dp), color = colors.outlineVariant)
                 }
-                HorizontalDivider(Modifier.padding(horizontal = 22.dp), color = colors.outlineVariant)
             }
+        }
+        val listModifier = Modifier.weight(1f).fillMaxWidth()
+        if (refreshReplies == null) ReplyList(listModifier)
+        else FeedRefreshPane(listModifier, enabled = true, refreshing = refreshingReplies, onRefresh = ::refreshThread) {
+            ReplyList(Modifier.fillMaxSize())
         }
         if (dedicated && nativeEditor != null) {
             Box(Modifier.fillMaxWidth().imePadding()) {
@@ -1222,11 +1305,13 @@ private fun ComposeSheet(draft: PostDraft, namedIdentity: String, anonymous: Boo
 
 @Composable
 private fun Profile(state: FeedSnapshot, live: Boolean, connection: NetkitState, networking: NetkitController?,
-                    recoveryFiles: RecoveryFiles?, listState: LazyListState, onEdit: () -> Unit, onProfile: suspend (String, CommunityProfile) -> Unit,
+                    recoveryFiles: RecoveryFiles?, listState: LazyListState, settingsOnly: Boolean, onSettings: (() -> Unit)?, onEdit: () -> Unit, onProfile: suspend (String, CommunityProfile) -> Unit,
                     onPrivacy: () -> Unit, onGuide: () -> Unit, onCompose: () -> Unit, onReset: () -> Unit, onPost: (Long) -> Unit,
                     onJoin: suspend (String) -> Unit, onDemo: () -> Unit, onSync: () -> Unit, onDiscard: () -> Unit, onError: (String) -> Unit) {
     val native = LocalFeedControl.current
     val android = LocalMaterialNavigation.current != null
+    val nativeForm = LocalNativeForm.current
+    var showAllPosts by rememberSaveable { mutableStateOf(false) }
     var showRecovery by rememberSaveable { mutableStateOf(false) }
     fun androidx.compose.foundation.lazy.LazyListScope.ownPosts() {
         item {
@@ -1238,36 +1323,54 @@ private fun Profile(state: FeedSnapshot, live: Boolean, connection: NetkitState,
         }
         val mine = state.posts.filter { it.mine && !it.hidden }
         if (mine.isEmpty()) item { Text("No posts yet.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        items(mine, key = { it.id }) { post ->
-            if (native != null) native(FormRow("own-post", post.headline, "story", detail = post.body,
-                onTap = { onPost(post.id) }), Modifier.fillMaxWidth().padding(vertical = 12.dp))
-            else Column(Modifier.fillMaxWidth().clickable { onPost(post.id) }.padding(vertical = 12.dp)) {
-                if (post.headline.isNotBlank()) Text(post.headline, style = postTitleStyle)
-                Text(post.body, Modifier.padding(top = 6.dp), style = postBodyStyle)
+        fun postRows(posts: List<Post>) {
+            items(posts, key = { it.id }) { post ->
+                if (native != null) native(FormRow("own-post", post.headline, "story", detail = post.body,
+                    onTap = { onPost(post.id) }), Modifier.fillMaxWidth().padding(vertical = 12.dp))
+                else Column(Modifier.fillMaxWidth().clickable { onPost(post.id) }.padding(vertical = 12.dp)) {
+                    if (post.headline.isNotBlank()) Text(post.headline, style = postTitleStyle)
+                    Text(post.body, Modifier.padding(top = 6.dp), style = postBodyStyle)
+                }
             }
         }
+        val previewSize = 3
+        postRows(if (native == null) mine else mine.take(previewSize))
+        if (native != null && mine.size > previewSize) item(key = "own-posts-disclosure") {
+            native(FormRow("own-posts-disclosure", if (showAllPosts) "Show fewer posts" else "Show all ${mine.size} posts",
+                symbol = if (showAllPosts) "chevron.up" else "chevron.down", onTap = { showAllPosts = !showAllPosts }), Modifier)
+        }
+        if (native != null && showAllPosts) postRows(mine.drop(previewSize))
     }
-    LazyColumn(state = listState, contentPadding = PaddingValues(22.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-        item { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            ProfilePortrait(state.alias, state.profile)
-            Column(Modifier.weight(1f)) {
-                Text(state.alias, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+    fun androidx.compose.foundation.lazy.LazyListScope.publicProfile() {
+        item(key = "profile-identity") {
+            val identity: @Composable ColumnScope.() -> Unit = {
+                Text(state.alias, style = if (native != null) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold)
                 if (live) UsernameControl(connection, networking)
                 if (state.profile.pronouns.isNotBlank()) Text(state.profile.pronouns, color = MaterialTheme.colorScheme.primary)
-                if (state.profile.identity.isNotBlank()) Text(state.profile.identity, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (native == null && state.profile.identity.isNotBlank()) Text(state.profile.identity, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-        } }
-        if (state.profile.bio.isNotBlank()) item { Text(state.profile.bio,
-            style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        if (state.profile.hereFor.isNotEmpty()) item { ProfileIntentions(state.profile.hereFor) }
-        if (state.profile.interests.isNotBlank()) item { Text(state.profile.interests, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            if (native != null && LocalDensity.current.fontScale >= 1.6f) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ProfilePortrait(state.alias, state.profile)
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp), content = identity)
+                }
+            } else Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                ProfilePortrait(state.alias, state.profile)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (native != null) 3.dp else 0.dp), content = identity)
+            }
+        }
+        if (native == null) {
+            if (state.profile.bio.isNotBlank()) item { Text(state.profile.bio,
+                style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            if (state.profile.hereFor.isNotEmpty()) item { ProfileIntentions(state.profile.hereFor) }
+            if (state.profile.interests.isNotBlank()) item { Text(state.profile.interests, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
         item {
             FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (native != null) {
                     native(FormRow("edit", "Edit profile", symbol = "pencil", onTap = onEdit), Modifier)
-                    native(FormRow("privacy", "Privacy", symbol = "hand.raised", onTap = onPrivacy), Modifier)
-                    if (live) native(FormRow("guide", "Welcome guide", onTap = onGuide), Modifier)
                 } else if (LocalMaterialNavigation.current != null) {
                     YapButton(onClick = onEdit) { ActionIcon("edit"); Text("Edit profile") }
                 } else {
@@ -1276,6 +1379,36 @@ private fun Profile(state: FeedSnapshot, live: Boolean, connection: NetkitState,
                     if (live) TextButton(onClick = onGuide) { Text("Welcome guide") }
                 }
             }
+        }
+        if (onSettings != null && nativeForm != null) item(key = "open-profile-settings") {
+            nativeForm(NativeFormModel(sections = listOf(FormSection(rows = listOf(
+                FormRow("settings", "Settings", "disclosure", symbol = "gearshape", identifier = "profile-settings", onTap = onSettings)
+            )))), "inline", Modifier.fillMaxWidth())
+        }
+        if (native != null) {
+            if (state.profile.bio.isNotBlank()) item { Text(state.profile.bio, style = postBodyStyle) }
+            val details = listOf("Identity" to state.profile.identity, "Here for" to state.profile.hereFor.distinct().joinToString(", "),
+                "Current joys" to state.profile.interests).filter { it.second.isNotBlank() }
+            if (details.isNotEmpty()) item {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    details.forEach { (label, value) ->
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(value, style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
+            }
+            ownPosts()
+        }
+    }
+    LazyColumn(state = listState, contentPadding = PaddingValues(22.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        if (!settingsOnly) publicProfile()
+        if (native != null && !settingsOnly) return@LazyColumn
+        if (nativeForm != null) item(key = "profile-privacy") {
+            nativeForm(NativeFormModel(sections = listOf(FormSection(rows = listOf(
+                FormRow("privacy", "Privacy", "disclosure", symbol = "hand.raised", onTap = onPrivacy)
+            )))), "inline", Modifier.fillMaxWidth())
         }
         if (android) {
             ownPosts()
@@ -1288,7 +1421,7 @@ private fun Profile(state: FeedSnapshot, live: Boolean, connection: NetkitState,
                         expanded = showRecovery, onClick = { showRecovery = !showRecovery })
                 }
             }
-        } else item { PolicyLinks() }
+        } else if (native == null) item { PolicyLinks() }
         if (!android && networking != null) item { NetworkSettings(connection, onJoin, onDemo, onDiscard, onError,
             onJoinDefault = if (networking.offersDefaultHome) ({ networking.joinDefaultHome(state.alias); onSync() }) else null) }
         if (networking != null && recoveryFiles != null && (!android || showRecovery)) item {
@@ -1311,10 +1444,21 @@ private fun Profile(state: FeedSnapshot, live: Boolean, connection: NetkitState,
                 ProfileOption("Terms of Service", "document", external = true, onClick = { uri.openUri(TERMS_URL) })
                 ProfileOption("Privacy Policy", "privacy", external = true, onClick = { uri.openUri(PRIVACY_URL) })
             }
+        } else if (nativeForm != null) item(key = "profile-help") {
+            val uri = androidx.compose.ui.platform.LocalUriHandler.current
+            val help = buildList {
+                if (live) add(FormRow("guide", "Welcome guide", "disclosure", symbol = "book", onTap = onGuide))
+                add(FormRow("terms", "Terms of Service", symbol = "doc.text") { uri.openUri(TERMS_URL) })
+                add(FormRow("privacy", "Privacy Policy", symbol = "hand.raised") { uri.openUri(PRIVACY_URL) })
+            }
+            val sections = buildList {
+                add(FormSection("Help & about", help))
+                if (!live) add(FormSection("Local demo", listOf(FormRow("reset", "Reset demo data", destructive = true, onTap = onReset))))
+            }
+            nativeForm(NativeFormModel(sections = sections), "inline", Modifier.fillMaxWidth())
         } else ownPosts()
-        if (!live) item {
-            if (native != null) native(FormRow("reset", "Reset demo data", destructive = true, onTap = onReset), Modifier)
-            else TextButton(onClick = onReset) { Text("Reset demo data") }
+        if (!live && native == null) item {
+            TextButton(onClick = onReset) { Text("Reset demo data") }
         }
     }
 }
@@ -1380,9 +1524,9 @@ private fun NetworkSettings(connection: NetkitState, onJoin: suspend (String) ->
         val confirmation = if (discard) FormConfirmation("Discard pending uploads?",
             "Unsent posts, replies, and votes will not be uploaded. Already accepted posts remain on the network.",
             FormChoice("Discard uploads", destructive = true) { discard = false; onDiscard() }, FormChoice("Keep uploads") { discard = false }) else null
-        native(NativeFormModel(sections = listOf(FormSection(rows = rows)), confirmation = confirmation), "inline", Modifier.fillMaxWidth())
+        native(NativeFormModel(sections = listOf(FormSection("Community", rows)), confirmation = confirmation), "inline", Modifier.fillMaxWidth())
         if (editing) native(NativeFormModel(title = "Join your community", sections = listOf(FormSection(rows = buildList {
-            add(FormRow("invitation", "Private community invitation", "secure", value = invitation, limit = 8192,
+            add(FormRow("invitation", "Private community invitation", "secure", fieldValue = { invitation }, limit = 8192,
                 enabled = !joining, onChange = { if (it.length <= 8192) { invitation = it; invitationError = null } }))
             invitationError?.let { add(FormRow("error", it, "text")) }
         }, footer = "Paste the invitation your community sent you. Keep this invitation private.")),

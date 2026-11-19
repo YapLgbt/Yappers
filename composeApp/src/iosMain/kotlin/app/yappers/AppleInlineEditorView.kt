@@ -4,7 +4,6 @@ package app.yappers
 
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -17,6 +16,7 @@ import androidx.compose.ui.viewinterop.UIKitInteropInteractionMode
 import androidx.compose.ui.viewinterop.UIKitInteropProperties
 import androidx.compose.ui.viewinterop.UIKitView
 import platform.UIKit.UIColor
+import platform.UIKit.systemBackgroundColor
 
 @Composable
 internal fun AppleInlineEditorView(factory: AppleEditorFactory, model: InlineEditorModel) {
@@ -25,14 +25,10 @@ internal fun AppleInlineEditorView(factory: AppleEditorFactory, model: InlineEdi
     val editor = remember(controller, factory) {
         factory.makeInlineEditor(controller) { height = it.dp }
     }
-    val surface = MaterialTheme.colorScheme.surface
-    val background = remember(surface) {
-        UIColor.colorWithRed(surface.red.toDouble(), surface.green.toDouble(), surface.blue.toDouble(), 1.0)
-    }
     UIKitView(
         factory = { editor.view },
         modifier = Modifier.fillMaxWidth().height(height),
-        update = { view -> view.backgroundColor = background; editor.render(model) },
+        update = { view -> view.backgroundColor = UIColor.systemBackgroundColor; editor.render(model) },
         properties = UIKitInteropProperties(interactionMode = UIKitInteropInteractionMode.NonCooperative, isNativeAccessibilityEnabled = true),
     )
 }
