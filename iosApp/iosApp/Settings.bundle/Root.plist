@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>PreferenceSpecifiers</key><array>
+<dict><key>Type</key><string>PSGroupSpecifier</string><key>Title</key><string>Local account data</string>
+<key>FooterText</key><string>Quit and reopen Yap to review the reset. You’ll confirm in the app before any data is erased.</string></dict>
+<dict><key>Type</key><string>PSToggleSwitchSpecifier</string><key>Title</key><string>Show reset on next launch</string><key>Key</key><string>yap.offerDeviceReset</string><key>DefaultValue</key><false/></dict>
+</array></dict></plist>

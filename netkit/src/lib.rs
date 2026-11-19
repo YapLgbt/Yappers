@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! Shared Yap networking and user-owned portability foundation.
+//!
+//! Mobile builds use client/signing/transport plus the owned C ABI in [`ffi`].
+//! The optional `server` feature adds SQLite and scoped federation; those dependencies
+//! never enter the iOS client archive. Application wire rules live in [`model`].
+//! See `docs/netkit/` for architecture, canonical signing bytes, and operating limits.
+
+#[cfg(feature = "server")]
+pub mod account_store;
+#[cfg(feature = "server")]
+pub mod backup;
+#[cfg(target_arch = "wasm32")]
+mod browser;
+pub mod client;
+#[cfg(feature = "server")]
+pub mod directory;
+mod dm_client;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ffi;
+pub mod groups;
+#[cfg(feature = "server")]
+mod mailbox;
+pub mod messaging;
+pub mod model;
+#[cfg(feature = "server")]
+pub mod peering;
+pub mod portability;
+#[cfg(feature = "server")]
+mod privacy;
+#[cfg(feature = "server")]
+mod redaction;
+pub mod report;
+#[cfg(feature = "server")]
+pub mod report_inbox;
+#[cfg(feature = "server")]
+pub mod server;
+#[cfg(feature = "server")]
+pub mod store;
+pub mod takeover;
+pub mod transport;
+#[cfg(feature = "server")]
+mod usernames;
+pub use model::*;
+/// Pinned transport dependency; update together with Cargo.toml and Cargo.lock.
+pub const IROH_VERSION: &str = "1.4.1";
+/// Changing incompatible application wire rules requires a new ALPN.
+pub const ALPN: &[u8] = b"yappers/netkit/5";
+/// Maximum encoded JSON request or response, including signatures and framing data.
+pub const MAX_FRAME: usize = 1024 * 1024;
+/// Deadline for an entire request/response exchange.
+pub const RPC_TIMEOUT_SECS: u64 = 20;
+/// Maximum scanned log rows per federation page, including rows outside peer scope.
+pub const MAX_PAGE_ENTRIES: u32 = 100;
+
+/// Transport RPC version; new submissions and replication require committed v4 events.
+pub const PROTOCOL_VERSION: u8 = 5;

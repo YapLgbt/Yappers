@@ -1,0 +1,132 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! Durable account state and private authored-history storage. Never a federation trust grant.
+use crate::store::Store;
+use crate::{
+    model::Envelope,
+    portability::{AccountRecord, validate_chain},
+};
+use anyhow::{Context, Result, ensure};
+use rusqlite::{OptionalExtension, params};
+use std::collections::BTreeMap;
+
+impl Store {
+    pub fn account_chain(&self, account: &str) -> Result<Vec<AccountRecord>> {
+        let value: Option<String> = self
+            .db
+            .query_row(
+                "SELECT chain FROM account_states WHERE account=?1",
+                [account],
+                |r| r.get(0),
+            )
+            .optional()?;
+        value
+            .map(|v| Ok(serde_json::from_str(&v)?))
+            .transpose()
+            .map(|v| v.unwrap_or_default())
+    }
+    /// Prefix replays are idempotent; forks at any previously seen revision fail closed.
+    pub fn register_account(&mut self, chain: &[AccountRecord]) -> Result<AccountRecord> {
+        let latest = validate_chain(chain)?;
+        let known = self.account_chain(&latest.payload.account)?;
+        for (old, incoming) in known.iter().zip(chain) {
+            ensure!(old == incoming, "conflicting account history");
+        }
+        if known.len() >= chain.len() {
+            return Ok(known.last().context("missing account state")?.clone());
+        }
+        if known.is_empty() {
+            let count: i64 = self
+                .db
+                .query_row("SELECT COUNT(*) FROM account_states", [], |r| r.get(0))?;
+            ensure!(count < 1000, "account registry capacity reached");
+        }
+        let tx = self.db.transaction()?;
+        crate::privacy::observe(&tx, &latest.payload.account)?;
+        tx.execute("INSERT INTO account_states(account,chain) VALUES(?1,?2) ON CONFLICT(account) DO UPDATE SET chain=excluded.chain", params![latest.payload.account, serde_json::to_string(chain)?])?;
+        tx.commit()?;
+        Ok(latest.clone())
+    }
+    pub fn owned_events(&self, account: &str) -> Result<Vec<Envelope>> {
+        let mut events = BTreeMap::new();
+        // Account proof authorizes export of one's own authored data across this home's
+        // communities. It never grants access to other members' private-group content.
+        let mut shared = self
+            .db
+            .prepare("SELECT envelope FROM events ORDER BY cursor")?;
+        for value in shared.query_map([], |r| r.get::<_, String>(0))? {
+            let event: Envelope = serde_json::from_str(&value?)?;
+            if event.event.owner_id() == account {
+                events.insert(event.event.id.clone(), event);
+            }
+        }
+        let mut statement = self
+            .db
+            .prepare("SELECT envelope FROM personal_events WHERE account=?1")?;
+        for value in statement.query_map([account], |r| r.get::<_, String>(0))? {
+            let envelope: Envelope = serde_json::from_str(&value?)?;
+            if let Some(existing) = events.get(&envelope.event.id) {
+                ensure!(
+                    existing.same_acceptance(&envelope)?,
+                    "conflicting owned history attestations"
+                );
+            }
+            if events
+                .get(&envelope.event.id)
+                .is_none_or(|e| e.deletion.is_none())
+            {
+                events.insert(envelope.event.id.clone(), envelope);
+            }
+        }
+        Ok(events.into_values().collect())
+    }
+    /// A complete validated chunk commits atomically. Historical signatures remain unchanged.
+    pub fn import_personal_events(&mut self, account: &str, events: &[Envelope]) -> Result<()> {
+        self.import_history(account, events, &[])
+    }
+    pub(crate) fn import_history(
+        &mut self,
+        account: &str,
+        events: &[Envelope],
+        admitted_deletes: &[&Envelope],
+    ) -> Result<()> {
+        ensure!(events.len() <= 50, "personal import chunk too large");
+        let tx = self.db.transaction()?;
+        for deletion in admitted_deletes {
+            ensure!(
+                deletion.event.owner_id() == account
+                    && matches!(deletion.event.payload.action, crate::Action::Delete { .. }),
+                "invalid shared deletion"
+            );
+            Self::insert(&tx, deletion)?;
+        }
+        for envelope in events {
+            envelope.validate()?;
+            ensure!(
+                envelope.event.owner_id() == account,
+                "cannot import another person's event"
+            );
+            let envelope = &Self::reconcile(&tx, envelope, true)?;
+            let old: Option<String> = tx
+                .query_row(
+                    "SELECT envelope FROM personal_events WHERE account=?1 AND event_id=?2",
+                    params![account, envelope.event.id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(old) = old {
+                ensure!(
+                    serde_json::from_str::<Envelope>(&old)?.same_acceptance(envelope)?,
+                    "conflicting personal history"
+                );
+            } else {
+                Self::check_event_capacity(&tx, envelope, true)?;
+                tx.execute(
+                    "INSERT INTO personal_events(account,event_id,envelope) VALUES(?1,?2,?3)",
+                    params![account, envelope.event.id, serde_json::to_string(envelope)?],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+}

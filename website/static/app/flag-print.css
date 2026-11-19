@@ -1,0 +1,25 @@
+.flag-print { margin: 0; min-width: 0; }
+.print-edge-defs { position: absolute; }
+.flag-print .cloth { position: relative; }
+.flag-print .cloth img, .flag-print canvas { display: block; width: 100%; height: 100%; object-fit: cover; }
+.flag-print canvas { position: absolute; inset: 0; }
+.flag-print figcaption { text-align: right; font-size: .85rem; }
+.flag-print button { min-height: 44px; font: inherit; color: inherit; background: transparent; border: 0; cursor: pointer; text-decoration: underline; text-underline-offset: .23em; }
+.flag-print [hidden] { display: none; }
+.hero-art .cloth { aspect-ratio: 3/2; clip-path: url(#estuary-edge); }
+.hero-art figcaption { display: flex; align-items: center; justify-content: space-between; gap: 1em; }
+.welcome-art .cloth {
+  aspect-ratio: 4/3;
+  overflow: hidden;
+  border-radius: var(--mtrl-sys-shape-corner-large);
+}
+.welcome-art figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  min-height: 48px;
+  color: var(--quiet);
+  font: var(--type-small);
+  text-align: start;
+}

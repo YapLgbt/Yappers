@@ -1,0 +1,579 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0BF283214BEE2245A662659C /* NativePostForm.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2F85475A26C09E329876318 /* NativePostForm.swift */; };
+		296E095C10CCB1673A362D8E /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 7620C2DEEAF826939C9D8497 /* AppIcon.icon */; };
+		2F55ECDD55F6541CC85DE202 /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5932E4ADAEB2FC160385C3C3 /* SystemConfiguration.framework */; };
+		3F1E46051E28FE43D139926F /* AppleNetkitStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B03273DE7DFE2E7F8B59D897 /* AppleNetkitStorage.swift */; };
+		4C557E091452ECAB5144B6C5 /* Network.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6988F9E1B9909AFB60F2D815 /* Network.framework */; };
+		4D1F3355FEC4E1940E2138A8 /* NativeInlineEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7407DAC89BE2806115E3BA4D /* NativeInlineEditor.swift */; };
+		5C680933B092CE9858E3D456 /* NativePhotoCrop.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E6B630E3E2845E0BC0AEB8C /* NativePhotoCrop.swift */; };
+		6847F43ACAC6924635E29644 /* AppleProfilePhotoLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = C688487368A642901D7C8F6B /* AppleProfilePhotoLibrary.swift */; };
+		697B74351A025BB01EA14D3E /* NativeFormCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EF9874FBBDD1B5551D27C4E /* NativeFormCell.swift */; };
+		6B4788C4FE46336DB4692359 /* AppleRecoveryFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 542C74F91A52316C17A9B717 /* AppleRecoveryFiles.swift */; };
+		6E5A1B9D0B8568391D21058D /* NativeFeedButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ACB4C83484E133D29D94416 /* NativeFeedButton.swift */; };
+		720EAD03A9A8E0A4476E464E /* NativeWritingType.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDA37C99DF0F9986239BD00B /* NativeWritingType.swift */; };
+		7656BC4EBD212F0D9B59610F /* YapTabBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA9FAD6AD083DAEF304EC041 /* YapTabBarController.swift */; };
+		9465639E224FCC958CE54B9D /* AppleNearbyServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F900890388956589AC7371B /* AppleNearbyServices.swift */; };
+		A566FE87E50B2149AA59D044 /* Settings.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 81814F0894A32644CDD054DA /* Settings.bundle */; };
+		AA3F029D5776F810568C674D /* NetkitTestJoin.json in Resources */ = {isa = PBXBuildFile; fileRef = 6F03DAAA7E9AA0CAA4362A63 /* NetkitTestJoin.json */; };
+		BDD2841067674A41F527EB9C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 14DB69C6E7CE4165CF3CE1EB /* Assets.xcassets */; };
+		C59E8AB849CCF34D72E287A1 /* Yappers.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 44A5C5B25276D7A66401F87D /* Yappers.framework */; };
+		C6B7CDA134479D81C4DBDA33 /* NativeFormSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5273A57DDB1576C3640FA461 /* NativeFormSurface.swift */; };
+		D63BF6CB9CAD6E61AAAD604E /* YappersUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BB2F6D64C8AEA92A9BD17F2 /* YappersUITests.swift */; };
+		DB3989747FAC1AAD0593EB97 /* KotlinBuildStamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D0C08447D75F8648554292A /* KotlinBuildStamp.swift */; };
+		E242FD8143DFEC7155388639 /* YappersApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBC8A76C37C6A35442CF331E /* YappersApp.swift */; };
+		E932092ED28ABD243738359F /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7EFD9AA0DF12939DA6CDE467 /* Security.framework */; };
+		FDE668EF5201BFEE3F0B068A /* NativeUsernameClaim.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93F536042670E0801EF81439 /* NativeUsernameClaim.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		C84C8DDAD59D090A7C9D749A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 3AEFD0A27C44DA0FD547674F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 02FCCDC13EA0849B33F7EFB7;
+			remoteInfo = Yappers;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		14DB69C6E7CE4165CF3CE1EB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		1E6B630E3E2845E0BC0AEB8C /* NativePhotoCrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePhotoCrop.swift; sourceTree = "<group>"; };
+		2F900890388956589AC7371B /* AppleNearbyServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleNearbyServices.swift; sourceTree = "<group>"; };
+		3EF9874FBBDD1B5551D27C4E /* NativeFormCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFormCell.swift; sourceTree = "<group>"; };
+		44A5C5B25276D7A66401F87D /* Yappers.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Yappers.framework; path = "../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)/Yappers.framework"; sourceTree = "<group>"; };
+		4ACB4C83484E133D29D94416 /* NativeFeedButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFeedButton.swift; sourceTree = "<group>"; };
+		5273A57DDB1576C3640FA461 /* NativeFormSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFormSurface.swift; sourceTree = "<group>"; };
+		542C74F91A52316C17A9B717 /* AppleRecoveryFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleRecoveryFiles.swift; sourceTree = "<group>"; };
+		5932E4ADAEB2FC160385C3C3 /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
+		5B4B426830F495142A7DEB63 /* YappersUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = YappersUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		6988F9E1B9909AFB60F2D815 /* Network.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };
+		6F03DAAA7E9AA0CAA4362A63 /* NetkitTestJoin.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = NetkitTestJoin.json; sourceTree = "<group>"; };
+		7407DAC89BE2806115E3BA4D /* NativeInlineEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeInlineEditor.swift; sourceTree = "<group>"; };
+		7620C2DEEAF826939C9D8497 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = AppIcon.icon; sourceTree = "<group>"; };
+		7BB2F6D64C8AEA92A9BD17F2 /* YappersUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YappersUITests.swift; sourceTree = "<group>"; };
+		7EFD9AA0DF12939DA6CDE467 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		81814F0894A32644CDD054DA /* Settings.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = Settings.bundle; sourceTree = "<group>"; };
+		8CEB6A0AFFEF018819E4BF50 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		93F536042670E0801EF81439 /* NativeUsernameClaim.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeUsernameClaim.swift; sourceTree = "<group>"; };
+		9D0C08447D75F8648554292A /* KotlinBuildStamp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KotlinBuildStamp.swift; sourceTree = "<group>"; };
+		ACB03E218AE80E16B7799C4F /* Yappers.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Yappers.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B03273DE7DFE2E7F8B59D897 /* AppleNetkitStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleNetkitStorage.swift; sourceTree = "<group>"; };
+		BA9FAD6AD083DAEF304EC041 /* YapTabBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YapTabBarController.swift; sourceTree = "<group>"; };
+		C688487368A642901D7C8F6B /* AppleProfilePhotoLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleProfilePhotoLibrary.swift; sourceTree = "<group>"; };
+		DBC8A76C37C6A35442CF331E /* YappersApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YappersApp.swift; sourceTree = "<group>"; };
+		E893C1BA52ACEFB37FC1416F /* Simulator.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Simulator.entitlements; sourceTree = "<group>"; };
+		F2F85475A26C09E329876318 /* NativePostForm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePostForm.swift; sourceTree = "<group>"; };
+		FDA37C99DF0F9986239BD00B /* NativeWritingType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeWritingType.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		9D4E92BDBAD3CED87700B2E0 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4C557E091452ECAB5144B6C5 /* Network.framework in Frameworks */,
+				E932092ED28ABD243738359F /* Security.framework in Frameworks */,
+				2F55ECDD55F6541CC85DE202 /* SystemConfiguration.framework in Frameworks */,
+				C59E8AB849CCF34D72E287A1 /* Yappers.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		1DCD52C94A91F70B96F49E0A /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				6988F9E1B9909AFB60F2D815 /* Network.framework */,
+				7EFD9AA0DF12939DA6CDE467 /* Security.framework */,
+				5932E4ADAEB2FC160385C3C3 /* SystemConfiguration.framework */,
+				44A5C5B25276D7A66401F87D /* Yappers.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		3DF5A8FF8F2FF958FD5E2810 /* .generated */ = {
+			isa = PBXGroup;
+			children = (
+				9D0C08447D75F8648554292A /* KotlinBuildStamp.swift */,
+				6F03DAAA7E9AA0CAA4362A63 /* NetkitTestJoin.json */,
+			);
+			path = .generated;
+			sourceTree = "<group>";
+		};
+		62A1B6CED9E19029E2EA085D /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				ACB03E218AE80E16B7799C4F /* Yappers.app */,
+				5B4B426830F495142A7DEB63 /* YappersUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		EB5833B4B509231DFE14DA3A /* iosAppUITests */ = {
+			isa = PBXGroup;
+			children = (
+				7BB2F6D64C8AEA92A9BD17F2 /* YappersUITests.swift */,
+			);
+			path = iosAppUITests;
+			sourceTree = "<group>";
+		};
+		F3A98E31E39288E1C30B9064 = {
+			isa = PBXGroup;
+			children = (
+				7620C2DEEAF826939C9D8497 /* AppIcon.icon */,
+				3DF5A8FF8F2FF958FD5E2810 /* .generated */,
+				FEF3B0F5E80EB69113ADEDA5 /* iosApp */,
+				EB5833B4B509231DFE14DA3A /* iosAppUITests */,
+				1DCD52C94A91F70B96F49E0A /* Frameworks */,
+				62A1B6CED9E19029E2EA085D /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		FEF3B0F5E80EB69113ADEDA5 /* iosApp */ = {
+			isa = PBXGroup;
+			children = (
+				2F900890388956589AC7371B /* AppleNearbyServices.swift */,
+				B03273DE7DFE2E7F8B59D897 /* AppleNetkitStorage.swift */,
+				C688487368A642901D7C8F6B /* AppleProfilePhotoLibrary.swift */,
+				542C74F91A52316C17A9B717 /* AppleRecoveryFiles.swift */,
+				14DB69C6E7CE4165CF3CE1EB /* Assets.xcassets */,
+				8CEB6A0AFFEF018819E4BF50 /* Info.plist */,
+				4ACB4C83484E133D29D94416 /* NativeFeedButton.swift */,
+				3EF9874FBBDD1B5551D27C4E /* NativeFormCell.swift */,
+				5273A57DDB1576C3640FA461 /* NativeFormSurface.swift */,
+				7407DAC89BE2806115E3BA4D /* NativeInlineEditor.swift */,
+				1E6B630E3E2845E0BC0AEB8C /* NativePhotoCrop.swift */,
+				F2F85475A26C09E329876318 /* NativePostForm.swift */,
+				93F536042670E0801EF81439 /* NativeUsernameClaim.swift */,
+				FDA37C99DF0F9986239BD00B /* NativeWritingType.swift */,
+				81814F0894A32644CDD054DA /* Settings.bundle */,
+				E893C1BA52ACEFB37FC1416F /* Simulator.entitlements */,
+				DBC8A76C37C6A35442CF331E /* YappersApp.swift */,
+				BA9FAD6AD083DAEF304EC041 /* YapTabBarController.swift */,
+			);
+			path = iosApp;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		02FCCDC13EA0849B33F7EFB7 /* Yappers */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5A9D4D0F697A2A3B03E86834 /* Build configuration list for PBXNativeTarget "Yappers" */;
+			buildPhases = (
+				EC79A69EB29D5DA25C3F7FE7 /* Build Kotlin framework */,
+				E9A9B1B6DD046822CDE1669E /* Sources */,
+				75588883108377E5F070B9A4 /* Resources */,
+				9D4E92BDBAD3CED87700B2E0 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Yappers;
+			packageProductDependencies = (
+			);
+			productName = Yappers;
+			productReference = ACB03E218AE80E16B7799C4F /* Yappers.app */;
+			productType = "com.apple.product-type.application";
+		};
+		446DE31AE6A84BE04D031299 /* YappersUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8A0F4CBCA0EAE4635197DBD8 /* Build configuration list for PBXNativeTarget "YappersUITests" */;
+			buildPhases = (
+				A5A5AB82D1125B3871A7E7C0 /* Sources */,
+				B670BECA55247CC60BFAD1DF /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				87A7CE053FB8DC2495BA9022 /* PBXTargetDependency */,
+			);
+			name = YappersUITests;
+			packageProductDependencies = (
+			);
+			productName = YappersUITests;
+			productReference = 5B4B426830F495142A7DEB63 /* YappersUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		3AEFD0A27C44DA0FD547674F /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					02FCCDC13EA0849B33F7EFB7 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					446DE31AE6A84BE04D031299 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+						TestTargetID = 02FCCDC13EA0849B33F7EFB7;
+					};
+				};
+			};
+			buildConfigurationList = 07AD3FDE93E326028E2DF5DD /* Build configuration list for PBXProject "Yappers" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = F3A98E31E39288E1C30B9064;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 62A1B6CED9E19029E2EA085D /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				02FCCDC13EA0849B33F7EFB7 /* Yappers */,
+				446DE31AE6A84BE04D031299 /* YappersUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		75588883108377E5F070B9A4 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				296E095C10CCB1673A362D8E /* AppIcon.icon in Resources */,
+				BDD2841067674A41F527EB9C /* Assets.xcassets in Resources */,
+				A566FE87E50B2149AA59D044 /* Settings.bundle in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B670BECA55247CC60BFAD1DF /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA3F029D5776F810568C674D /* NetkitTestJoin.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		EC79A69EB29D5DA25C3F7FE7 /* Build Kotlin framework */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Kotlin framework";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/.generated/KotlinBuildStamp.swift",
+				"$(SRCROOT)/../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)/Yappers.framework/Yappers",
+				"$(SRCROOT)/../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)/Yappers.framework/Headers/Yappers.h",
+				"$(SRCROOT)/../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)/Yappers.framework/Modules/module.modulemap",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "set -euo pipefail\nexport JAVA_HOME=$(/usr/libexec/java_home -v 21)\ncd \"$SRCROOT/..\"\n./gradlew :composeApp:embedAndSignAppleFrameworkForXcode\n# Swift's object must change when Kotlin's static archive changes, so Xcode relinks it.\nYAPPERS_FRAMEWORK_HASH=$(shasum -a 256 \"$SRCROOT/../composeApp/build/xcode-frameworks/$CONFIGURATION/$SDK_NAME/Yappers.framework/Yappers\" | cut -d ' ' -f 1)\nmkdir -p \"$SRCROOT/.generated\"\nprintf 'enum KotlinBuildStamp { static let value = \"%s\" }\\n' \"$YAPPERS_FRAMEWORK_HASH\" > \"$SRCROOT/.generated/KotlinBuildStamp.swift\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A5A5AB82D1125B3871A7E7C0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D63BF6CB9CAD6E61AAAD604E /* YappersUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E9A9B1B6DD046822CDE1669E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9465639E224FCC958CE54B9D /* AppleNearbyServices.swift in Sources */,
+				3F1E46051E28FE43D139926F /* AppleNetkitStorage.swift in Sources */,
+				6847F43ACAC6924635E29644 /* AppleProfilePhotoLibrary.swift in Sources */,
+				6B4788C4FE46336DB4692359 /* AppleRecoveryFiles.swift in Sources */,
+				DB3989747FAC1AAD0593EB97 /* KotlinBuildStamp.swift in Sources */,
+				6E5A1B9D0B8568391D21058D /* NativeFeedButton.swift in Sources */,
+				697B74351A025BB01EA14D3E /* NativeFormCell.swift in Sources */,
+				C6B7CDA134479D81C4DBDA33 /* NativeFormSurface.swift in Sources */,
+				4D1F3355FEC4E1940E2138A8 /* NativeInlineEditor.swift in Sources */,
+				5C680933B092CE9858E3D456 /* NativePhotoCrop.swift in Sources */,
+				0BF283214BEE2245A662659C /* NativePostForm.swift in Sources */,
+				FDE668EF5201BFEE3F0B068A /* NativeUsernameClaim.swift in Sources */,
+				720EAD03A9A8E0A4476E464E /* NativeWritingType.swift in Sources */,
+				7656BC4EBD212F0D9B59610F /* YapTabBarController.swift in Sources */,
+				E242FD8143DFEC7155388639 /* YappersApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		87A7CE053FB8DC2495BA9022 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 02FCCDC13EA0849B33F7EFB7 /* Yappers */;
+			targetProxy = C84C8DDAD59D090A7C9D749A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		0AC659FE696A6B970BE94AD5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = iosApp/Simulator.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited) $(SRCROOT)/../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
+					"\"../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)\"",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = iosApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.yappers.prototype;
+				PRODUCT_MODULE_NAME = YappersIOS;
+				PRODUCT_NAME = Yap;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		0E2B9CFEC0C53EDA00708519 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				"CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		1313317FBB0760E8EB0C9505 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				"CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		5D6F3E681949CEEC919D065A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = iosApp/Simulator.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited) $(SRCROOT)/../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
+					"\"../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)\"",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = iosApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.yappers.prototype;
+				PRODUCT_MODULE_NAME = YappersIOS;
+				PRODUCT_NAME = Yap;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		6D84957F3DF49D8843091EC8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.yappers.prototype.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Yappers;
+			};
+			name = Debug;
+		};
+		B86A56E01609DEFB488EA1EA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.yappers.prototype.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Yappers;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		07AD3FDE93E326028E2DF5DD /* Build configuration list for PBXProject "Yappers" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1313317FBB0760E8EB0C9505 /* Debug */,
+				0E2B9CFEC0C53EDA00708519 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		5A9D4D0F697A2A3B03E86834 /* Build configuration list for PBXNativeTarget "Yappers" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5D6F3E681949CEEC919D065A /* Debug */,
+				0AC659FE696A6B970BE94AD5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		8A0F4CBCA0EAE4635197DBD8 /* Build configuration list for PBXNativeTarget "YappersUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6D84957F3DF49D8843091EC8 /* Debug */,
+				B86A56E01609DEFB488EA1EA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 3AEFD0A27C44DA0FD547674F /* Project object */;
+}

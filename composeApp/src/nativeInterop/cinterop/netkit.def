@@ -1,0 +1,2 @@
+headers = netkit.h
+package = app.yappers.netkit.ffi

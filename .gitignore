@@ -1,0 +1,38 @@
+.gradle/
+.kotlin/
+**/build/
+.tools/
+.DS_Store
+*.xcuserstate
+xcuserdata/
+local.properties
+
+iosApp/.generated/
+
+netkit-data/
+*.sqlite*
+
+__pycache__/
+
+# Local design workflow and review captures
+/.impeccable/
+
+# SvelteKit build and local dependencies
+/website/node_modules/
+/website/.svelte-kit/
+/website/dist/
+
+# IntelliJ creates the module and artifact definitions on Gradle import.
+/.idea/*
+!/.idea/codeStyles/
+
+# Local credentials and database recovery material
+.env
+.env.*
+!.env.example
+*.p12
+*.p8
+*.jks
+*.keystore
+*.mobileprovision
+*.deletion-guard

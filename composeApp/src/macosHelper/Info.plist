@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>app.yappers.desktop.nearby</string>
+<key>CFBundleName</key><string>Yap Nearby</string>
+<key>CFBundleExecutable</key><string>YapNearby</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>LSUIElement</key><true/>
+<key>NSLocationUsageDescription</key><string>Find your approximate area to show posts within your chosen radius.</string>
+<key>NSLocationWhenInUseUsageDescription</key><string>Find your approximate area to show posts within your chosen radius.</string>
+</dict></plist>

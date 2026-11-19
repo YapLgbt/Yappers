@@ -1,0 +1,20 @@
+[package]
+name = "yappers-backend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-only"
+
+[[bin]]
+name = "yappers-server"
+path = "src/main.rs"
+
+[dependencies]
+yappers-netkit = { path = "../netkit", features = ["server"] }
+anyhow.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+rand.workspace = true
+hex.workspace = true
+clap = { version = "4", features = ["derive"] }

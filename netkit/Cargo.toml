@@ -1,0 +1,46 @@
+[package]
+name = "yappers-netkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file = "../LICENSING.md"
+
+[lib]
+name = "yappers_netkit"
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[features]
+default = []
+server = ["dep:rusqlite", "dep:subtle", "dep:chacha20poly1305", "dep:url"]
+
+[dependencies]
+url = { version = "2", optional = true }
+chacha20poly1305 = { version = "=0.10.1", optional = true }
+age = { version = "=0.12.1", default-features = false }
+iroh.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+ed25519-dalek.workspace = true
+rand.workspace = true
+hex.workspace = true
+blake3.workspace = true
+rusqlite = { version = "0.37", features = ["bundled", "serialize", "backup"], optional = true }
+subtle = { version = "2", optional = true }
+vodozemac = { version = "=0.11.2", default-features = false }
+
+n0-future = "0.3.2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio.workspace = true
+libc.workspace = true
+mio.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.130"
+wasm-bindgen-futures = "0.4.80"
+getrandom = { version = "0.2", features = ["js"] }
+vodozemac = { version = "=0.11.2", default-features = false, features = ["wasm_js"] }
+
+[dev-dependencies]
+tempfile = "3"

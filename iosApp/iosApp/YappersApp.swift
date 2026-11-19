@@ -1,0 +1,189 @@
+import BackgroundTasks
+import OSLog
+import SwiftUI
+import Yappers
+
+private final class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
+    private let identifier = "app.yappers.prototype.refresh"
+    private let logger = Logger(subsystem: "app.yappers.prototype", category: "BackgroundSync")
+    private static var resetMarker: String {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--netkit-ui-test") { return "yap.resetInProgress.uitests" }
+        #endif
+        return "yap.resetInProgress"
+    }
+    @Published private(set) var reviewingReset: Bool = {
+        if UserDefaults.standard.bool(forKey: AppDelegate.resetMarker) { return true }
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--review-device-reset") { return true }
+        if ProcessInfo.processInfo.arguments.contains("--netkit-ui-test") { return false }
+        #endif
+        return UserDefaults.standard.bool(forKey: "yap.offerDeviceReset")
+    }()
+    var resetStarted: Bool { UserDefaults.standard.bool(forKey: Self.resetMarker) }
+
+    func finishResetReview() {
+        #if DEBUG
+        let testing = ProcessInfo.processInfo.arguments.contains("--netkit-ui-test")
+        #else
+        let testing = false
+        #endif
+        if !testing { UserDefaults.standard.removeObject(forKey: "yap.offerDeviceReset") }
+        UserDefaults.standard.removeObject(forKey: Self.resetMarker)
+        reviewingReset = false
+    }
+
+    func eraseData() throws {
+        precondition(reviewingReset)
+        UserDefaults.standard.set(true, forKey: Self.resetMarker)
+        cancelScheduled()
+        try AppleNetkitStorage().eraseLocalAccount()
+        finishResetReview()
+    }
+
+    lazy var nearby = AppleNearbyServices()
+    lazy var runtime = AppleSyncRuntime(storage: AppleNetkitStorage(), nearby: nearby)
+
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: .main) { [self] task in
+            guard !reviewingReset else { task.setTaskCompleted(success: true); return }
+            schedule()
+            var running: AppleRefresh?
+            var finished = false
+            func finish(_ success: Bool) {
+                guard !finished else { return }
+                finished = true
+                task.expirationHandler = nil
+                running = nil
+                task.setTaskCompleted(success: success)
+            }
+            task.expirationHandler = {
+                DispatchQueue.main.async {
+                    running?.cancel()
+                    finish(false)
+                }
+            }
+            running = runtime.startRefresh { success, shouldRepeat in
+                guard !finished else { return }
+                if !shouldRepeat.boolValue { self.cancelScheduled() }
+                finish(success.boolValue)
+            }
+        }
+        if !registered { logger.error("Could not register background refresh") }
+        return true
+    }
+
+    private var uploadTime: UIBackgroundTaskIdentifier = .invalid
+    private var upload: AppleRefresh?
+    private var uploadGeneration: UUID?
+
+    func enteredBackground() {
+        guard !reviewingReset else { return }
+        guard runtime.refreshEnabled else { cancelScheduled(); return }
+        schedule()
+        guard runtime.hasPendingUploads, uploadTime == .invalid else { return }
+        let app = UIApplication.shared
+        let generation = UUID()
+        uploadGeneration = generation
+        uploadTime = app.beginBackgroundTask(withName: "Finish queued Yap uploads") { [weak self] in
+            guard self?.uploadGeneration == generation else { return }
+            self?.upload?.cancel()
+            self?.endUploadTime(generation)
+        }
+        if uploadTime != .invalid {
+            upload = runtime.startRefresh { [weak self] _, _ in self?.endUploadTime(generation) }
+        }
+    }
+
+    private func endUploadTime(_ generation: UUID) {
+        guard uploadGeneration == generation, uploadTime != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(uploadTime)
+        uploadTime = .invalid
+        uploadGeneration = nil
+        upload = nil
+    }
+
+    private func cancelScheduled() {
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
+    }
+
+    private func schedule() {
+        let request = BGAppRefreshTaskRequest(identifier: identifier)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        do { try BGTaskScheduler.shared.submit(request) }
+        catch { logger.info("Background refresh scheduling unavailable: \(error.localizedDescription, privacy: .public)") }
+    }
+}
+
+@main
+struct YappersApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @Environment(\.scenePhase) private var scenePhase
+
+    #if DEBUG
+    init() {
+        // Exit before the scene, Netkit runtime, or background sync can open an account.
+        if ProcessInfo.processInfo.arguments.contains("--clear-local-yap-keychain-for-first-run") {
+            do {
+                try AppleNetkitStorage.clearAccountKeychainForFirstRun()
+                FileHandle.standardOutput.write(Data("YAP_FIRST_RUN_LOCAL_KEYCHAIN_VERIFIED_EMPTY\n".utf8))
+                exit(EXIT_SUCCESS)
+            } catch {
+                let failure = error as NSError
+                FileHandle.standardError.write(Data("YAP_FIRST_RUN_RESET_FAILED \(failure.domain) \(failure.code)\n".utf8))
+                exit(EXIT_FAILURE)
+            }
+        }
+    }
+    #endif
+
+    var body: some Scene {
+        WindowGroup {
+            LaunchView(delegate: delegate)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { delegate.enteredBackground() }
+        }
+    }
+}
+
+private struct LaunchView: View {
+    @ObservedObject var delegate: AppDelegate
+    @State private var error: String?
+
+    var body: some View {
+        if delegate.reviewingReset {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Text("Start over on this iPhone?").font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
+                    Text("Erase your Yap account key, local messages, drafts, and settings from this iPhone. You’ll return to the welcome screen.")
+                    Text("To use this account again, you’ll need another signed-in device or a recovery key or file. Published posts and any claimed username stay with the original account.")
+                    if let error { Text(error).foregroundStyle(.red) }
+                    Button("Erase Yap data on this iPhone", role: .destructive) {
+                        do { try delegate.eraseData() }
+                        catch { self.error = "The reset couldn’t finish. Unlock this iPhone and try again." }
+                    }.buttonStyle(.bordered)
+                    if !delegate.resetStarted {
+                        Button("Keep my account") { delegate.finishResetReview() }
+                    }
+                }.frame(maxWidth: 480, alignment: .leading).padding(28)
+            }.frame(maxWidth: .infinity)
+        } else {
+            KotlinView(runtime: delegate.runtime, nearby: delegate.nearby)
+                .id(KotlinBuildStamp.value).ignoresSafeArea(.all)
+        }
+    }
+}
+
+private struct KotlinView: UIViewControllerRepresentable {
+    let runtime: AppleSyncRuntime
+    let nearby: AppleNearbyServices
+
+    func makeUIViewController(context: Context) -> YapTabBarController {
+        YapTabBarController(session: AppleAppSession(runtime: runtime, photoLibrary: AppleProfilePhotoLibrary(),
+                                                    recoveryFiles: AppleRecoveryFiles(), editorFactory: NativeEditorFactory(), nearby: nearby))
+    }
+
+    func updateUIViewController(_ uiViewController: YapTabBarController, context: Context) {}
+}

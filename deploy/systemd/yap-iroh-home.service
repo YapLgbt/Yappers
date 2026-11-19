@@ -1,0 +1,25 @@
+[Unit]
+Description=Yap primary public home over Iroh
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=yap-iroh-replica
+Group=yap-iroh-replica
+ExecStartPre=/usr/bin/test -s /var/lib/yap-iroh-replica/public-home.json
+ExecStart=/usr/local/lib/yap-iroh-replica/yappers-server public-home --directory /var/lib/yap-iroh-replica --manifest /var/lib/yap-iroh-replica/enrollment.json
+WorkingDirectory=/var/lib/yap-iroh-replica
+StateDirectory=yap-iroh-replica
+StateDirectoryMode=0700
+UMask=0077
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

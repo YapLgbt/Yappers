@@ -1,0 +1,93 @@
+name: Yappers
+options:
+  bundleIdPrefix: app.yappers
+  preGenCommand: |
+    mkdir -p .generated
+    if [ ! -f .generated/NetkitTestJoin.json ]; then
+      printf '{"skip":true}\n' > .generated/NetkitTestJoin.json
+    fi
+    if [ ! -f .generated/KotlinBuildStamp.swift ]; then
+      printf 'enum KotlinBuildStamp { static let value = "bootstrap" }\n' > .generated/KotlinBuildStamp.swift
+    fi
+  deploymentTarget:
+    iOS: '18.5'
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    DEVELOPMENT_TEAM: ''
+    CODE_SIGN_STYLE: Automatic
+    'CODE_SIGN_IDENTITY[sdk=iphonesimulator*]': '-'
+targets:
+  Yappers:
+    type: application
+    platform: iOS
+    sources:
+      - path: iosApp
+        excludes:
+          - "**/*.svg"
+          - "**/*.png.json"
+      - path: AppIcon.icon
+        type: file
+        buildPhase: resources
+      - path: .generated/KotlinBuildStamp.swift
+        type: file
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.yappers.prototype
+        'CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]': iosApp/Simulator.entitlements
+        PRODUCT_NAME: Yap
+        PRODUCT_MODULE_NAME: YappersIOS
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: '1'
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: iosApp/Info.plist
+        FRAMEWORK_SEARCH_PATHS: '$(inherited) $(SRCROOT)/../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)'
+    dependencies:
+      - sdk: Network.framework
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
+      - framework: ../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)/Yappers.framework
+        embed: false
+        link: true
+    preBuildScripts:
+      - name: Build Kotlin framework
+        shell: /bin/bash
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(SRCROOT)/.generated/KotlinBuildStamp.swift
+          - $(SRCROOT)/../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)/Yappers.framework/Yappers
+          - $(SRCROOT)/../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)/Yappers.framework/Headers/Yappers.h
+          - $(SRCROOT)/../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)/Yappers.framework/Modules/module.modulemap
+        script: |
+          set -euo pipefail
+          export JAVA_HOME=$(/usr/libexec/java_home -v 21)
+          cd "$SRCROOT/.."
+          ./gradlew :composeApp:embedAndSignAppleFrameworkForXcode
+          # Swift's object must change when Kotlin's static archive changes, so Xcode relinks it.
+          YAPPERS_FRAMEWORK_HASH=$(shasum -a 256 "$SRCROOT/../composeApp/build/xcode-frameworks/$CONFIGURATION/$SDK_NAME/Yappers.framework/Yappers" | cut -d ' ' -f 1)
+          mkdir -p "$SRCROOT/.generated"
+          printf 'enum KotlinBuildStamp { static let value = "%s" }\n' "$YAPPERS_FRAMEWORK_HASH" > "$SRCROOT/.generated/KotlinBuildStamp.swift"
+  YappersUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - iosAppUITests
+      - path: .generated/NetkitTestJoin.json
+        buildPhase: resources
+    dependencies:
+      - target: Yappers
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: app.yappers.prototype.uitests
+schemes:
+  Yappers:
+    build:
+      targets:
+        Yappers: all
+    run:
+      config: Debug
+    test:
+      targets:
+        - YappersUITests

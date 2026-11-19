@@ -1,0 +1,19 @@
+export const paths = {
+    groups:'M15 8a3 3 0 1 1-6 0 3 3 0 0 1 6 0M5 20c0-4 3-6 7-6s7 2 7 6M18 5a3 3 0 0 1 0 6M19 14c2 1 3 2 3 4',
+    up:'m6 15 6-6 6 6',down:'m6 9 6 6 6-6',
+    nearby:'M4 4h16v12H11l-6 5v-5H4z',
+    saved:'M6 3h12v18l-6-4-6 4z',
+    you:'M16 8a4 4 0 1 1-8 0 4 4 0 0 1 8 0M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7',
+    post:'M12 5v14M5 12h14',
+    chevronDown:'m5 8 7 7 7-7',
+    camera:'M3 6h4l2-2h6l2 2h4v14H3zM15.5 13a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z',
+    filter:'M4 7h16M7 12h10M10 17h4',
+    refresh:'M20 10a8 8 0 1 0 0 5M20 4v6h-6',
+    plus:'M12 5v14M5 12h14',
+    minus:'M5 12h14',
+    arrowLeft:'M19 12H5m7 7-7-7 7-7',
+    arrowRight:'M5 12h14m-7-7 7 7-7 7',
+    arrowUp:'M12 19V5m-7 7 7-7 7 7',
+    arrowDown:'M12 5v14m7-7-7 7-7-7',
+    more:'M4.5 12h1M11.5 12h1M18.5 12h1'
+  };

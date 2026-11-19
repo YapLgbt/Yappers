@@ -1,0 +1,35 @@
+app = "yap-lgbt-home"
+primary_region = "iad"
+
+[build]
+  dockerfile = "deploy/fly/Dockerfile"
+
+[env]
+  YAP_PEERING_POLICY = "/etc/yap/peering.json"
+  YAP_SOURCE_BASE_URL = "https://yap.lgbt/source"
+  YAP_SERVICE_STATE = "/data/v5"
+
+[mounts]
+  source = "yap_home_data"
+  destination = "/data"
+  initial_size = "1gb"
+  # Historical backups use Yap backup/ha-export so deleted opening keys stay retired.
+  scheduled_snapshots = false
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "45s"
+    method = "GET"
+    path = "/.well-known/yap-home.json"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
