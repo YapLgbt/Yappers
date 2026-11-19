@@ -1045,6 +1045,27 @@ impl Server {
         })
     }
     /// Attempt every peer; return examined entries (including duplicates), or aggregated errors.
+    pub async fn dispatch_notifications(&self)->Result<()> {
+        use std::process::Stdio;
+        use tokio::io::AsyncWriteExt;
+        let Ok(worker)=std::env::var("YAP_PUSH_WORKER") else{return Ok(())};
+        let jobs=match &self.state.ha {
+            Some(ha)=>ha.push_operation(&self.state,None).await?,
+            None=>self.state.store()?.claim_push()?,
+        };
+        if jobs.as_array().is_none_or(Vec::is_empty){return Ok(())}
+        let mut child=tokio::process::Command::new(worker).kill_on_drop(true).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
+        let mut input=child.stdin.take().context("missing push worker input")?;
+        input.write_all(&serde_json::to_vec(&jobs)?).await?;drop(input);
+        let output=tokio::time::timeout(Duration::from_secs(45),child.wait_with_output()).await??;
+        ensure!(output.status.success() && output.stdout.len()<4096,"push worker unavailable");
+        let outcomes=serde_json::from_slice(&output.stdout)?;
+        match &self.state.ha{
+            Some(ha)=>{ha.push_operation(&self.state,Some((&jobs,&outcomes))).await?;}
+            None=>{self.state.store()?.finish_push(&jobs,&outcomes)?;}
+        }
+        Ok(())
+    }
     pub async fn sync_once(&self) -> Result<usize> {
         if let Some(ha) = &self.state.ha {
             return ha.synchronize(self).await;

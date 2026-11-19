@@ -1,0 +1,27 @@
+name: iOS Inbox
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, codex/inbox-notifications]
+    paths: ['iosApp/**', 'composeApp/**', 'netkit/**', '.github/workflows/inbox-ios.yml']
+jobs:
+  inbox:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install simulator build tools
+        run: |
+          command -v xcodegen || brew install xcodegen
+          rustup show active-toolchain
+      - name: Test Inbox on iPhone
+        run: |
+          set -eu
+          device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for group in reversed(list(json.load(sys.stdin)["devices"].values())) for d in group if d["name"].startswith("iPhone")))')
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device" -b
+          NETKIT_TEST_SCOPE=messaging scripts/test-netkit-ios.sh "$device"

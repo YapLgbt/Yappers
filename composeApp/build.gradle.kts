@@ -38,6 +38,7 @@ kotlin {
         iosMain { kotlin.srcDir("src/skiaMain/kotlin") }
         jvmMain { kotlin.srcDir("src/skiaMain/kotlin") }
         androidMain.dependencies {
+            implementation("com.google.firebase:firebase-messaging:26.0.2")
             implementation("androidx.navigation3:navigation3-ui:1.2.1")
             implementation("androidx.compose.material3:material3-adaptive-navigation-suite:1.5.0-rc01")
             implementation("androidx.activity:activity-compose:1.12.0")

@@ -894,9 +894,63 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         savePolicy(policy.copy(settings = update(policy.settings), pendingSettings = true))
     }
 
+    suspend fun readNotification(category: String, item: InboxItem) = mutex.withLock {
+        val key = "$category/${item.target}"
+        savePolicy(policy.copy(notifications = policy.notifications.read(category, item.target, item.through),
+            pendingReads = policy.pendingReads + (key to maxOf(item.through, policy.pendingReads[key] ?: 0))))
+    }
+
+    suspend fun dismissRequest(peer: String) = mutex.withLock {
+        social("dismissRequest") { put("peer", peer) }
+        waiting = waiting - peer
+        savePolicy(policy.copy(notifications = policy.notifications.copy(requests = policy.notifications.requests.filterNot { it.target == peer })))
+        mutableState.update { it.copy(requests = waiting) }
+    }
+
+    suspend fun setPushCategories(categories: Set<String>) {
+        val scope = state.value.messagingScope
+        val provider = checkNotNull(InboxPush.registration).provider
+        val token = if (categories.isEmpty()) null else InboxPush.token()
+        mutex.withLock {
+            check(state.value.messagingScope == scope && scope != null) { "Your account changed. Reopen Inbox." }
+            social("setPush") {
+                put("provider",provider); put("subscription",token?.let(::JsonPrimitive) ?: JsonNull)
+                put("categories",json.encodeToJsonElement(categories))
+            }
+            savePolicy(policy.copy(pushCategories = categories, registeredPushToken = token))
+        }
+    }
+
+    internal suspend fun resolvePush(route: String): Pair<String, InboxItem>? = mutex.withLock {
+        // OpenPush can return null for deleted, expired or blocked destinations.
+        val active = checkNotNull(handle)
+        val result = engine.request(active, buildJsonObject { put("type","social")
+            put("op",buildJsonObject {put("kind","openPush");put("route",route)}) })
+        val item = result["item"] ?: return@withLock null
+        result.getValue("category").jsonPrimitive.content to json.decodeFromJsonElement<InboxItem>(item)
+    }
+
+    suspend fun openActivityThread(item: InboxItem): Post = mutex.withLock {
+        if (cache.target?.substringAfter('/') != item.scope) {
+            val join = groupPreferences.joined[item.scope]?.join ?: groupPreferences.home?.takeIf {
+                it["community"]?.jsonPrimitive?.content == item.scope
+            } ?: error("Rejoin this group to open the conversation.")
+            checkGroupSwitch()
+            connectLocked(join.toString(), cache.snapshot.alias)
+        }
+        val cached=cache.snapshot.posts.firstOrNull { it.remoteId==item.target && !it.hidden && it.replies.any { r->r.remoteId==item.first } }
+        if (!state.value.online && cached!=null) return@withLock cached
+        val value=social("notificationThread") {put("target",item.target);put("anchor",item.first)}
+        val wire=json.decodeFromJsonElement<WirePost>(value.getValue("post"))
+        val projected=cache.withFeed(listOf(wire))
+        val post=projected.snapshot.posts.first {it.remoteId==item.target}
+        commit(projected.copy(snapshot=projected.snapshot.copy(posts=cache.snapshot.posts.filterNot {it.id==post.id}+post)))
+        post
+    }
+
     suspend fun muteThread(id: String, title: String?) = mutex.withLock {
         val muted = if (title == null) policy.mutedThreads - id else policy.mutedThreads + (id to title)
-        savePolicy(policy.copy(mutedThreads = muted))
+        savePolicy(policy.copy(mutedThreads = muted, pendingMutes = policy.pendingMutes + (id to (title != null))))
     }
 
     suspend fun blockAccount(value: String, byEvent: Boolean, label: String = "Blocked account", peer: String? = null) = mutex.withLock {
@@ -972,6 +1026,14 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
             }
         }
         if (!advanced) return complete
+        for ((target, muted) in policy.pendingMutes) attempt {
+            social("muteNotifications") { put("target", target); put("muted", muted) }
+            savePolicy(policy.copy(pendingMutes = policy.pendingMutes - target))
+        }
+        for ((key, through) in policy.pendingReads) attempt {
+            social("readNotification") { put("category",key.substringBefore('/')); put("target",key.substringAfter('/')); put("through",through) }
+            savePolicy(policy.copy(pendingReads = policy.pendingReads - key))
+        }
         if (policy.pendingSettings) attempt {
             social("setPrivacy") { put("settings", json.encodeToJsonElement(policy.settings)) }
             savePolicy(policy.copy(pendingSettings = false))
@@ -985,8 +1047,28 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
             (result["currentProfile"] as? JsonObject)?.let { applyProfile(it) }
             waiting = json.decodeFromJsonElement(result.getValue("requests"))
             val settings = if (policy.pendingSettings) policy.settings else json.decodeFromJsonElement<PrivacySettings>(result.getValue("settings"))
+            var inbox = (result["notifications"] as? JsonObject)?.let { json.decodeFromJsonElement<NotificationInbox>(it) } ?: NotificationInbox()
+            for ((key,through) in policy.pendingReads) inbox = inbox.read(key.substringBefore('/'),key.substringAfter('/'),through)
+            inbox=inbox.copy(activity=inbox.activity.filterNot { it.target in policy.mutedThreads })
+            val caps=result["pushCapabilities"] as? JsonObject
+            val canPush = when (InboxPush.registration?.provider) {
+                "fcm" -> caps?.get("android")?.jsonPrimitive?.booleanOrNull == true
+                "apns" -> caps?.get("ios")?.jsonPrimitive?.booleanOrNull == true
+                else -> false
+            }
+            val categories=result["pushCategories"]?.let {json.decodeFromJsonElement<Set<String>>(it)} ?: emptySet()
+            val registration = InboxPush.registration
+            val token = registration?.currentToken
+            if (canPush && categories.isNotEmpty() && token != null && token != policy.registeredPushToken) {
+                social("setPush") {
+                    put("provider", registration.provider)
+                    put("subscription", token)
+                    put("categories", json.encodeToJsonElement(categories))
+                }
+                savePolicy(policy.copy(registeredPushToken = token))
+            }
             val hasBlocks = result["hasBlocks"]?.jsonPrimitive?.booleanOrNull
-            savePolicy(policy.copy(settings = settings, homeAllowsPublicView = hasBlocks == false,
+            savePolicy(policy.copy(notifications = inbox, pushAvailable=canPush, pushCategories=categories, settings = settings, homeAllowsPublicView = hasBlocks == false,
                 usernameDomain = result["usernameDomain"]?.jsonPrimitive?.contentOrNull ?: policy.usernameDomain,
                 username = if ("username" in result) result["username"]?.jsonPrimitive?.contentOrNull else policy.username))
         }

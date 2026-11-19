@@ -644,6 +644,17 @@ impl Ha {
         let op = Operation::new(remote, id, &bytes)?;
         self.run(state, op, || state.dispatch(remote, call)).await
     }
+    pub(super) async fn push_operation(&self, state:&State, jobs:Option<(&serde_json::Value,&serde_json::Value)>)->Result<serde_json::Value> {
+        let op=Operation::new(&self.grant.home,new_secret(),b"push-dispatch")?;
+        match self.run(state,op,||async{
+            let store=state.store()?;
+            let result=match jobs{Some((jobs,outcomes))=>store.finish_push(jobs,outcomes)?,None=>store.claim_push()?};
+            Ok(Response::Social{result})
+        }).await?{
+            Response::Social{result}=>Ok(result),
+            _=>bail!("push state unavailable"),
+        }
+    }
     pub(super) async fn synchronize(&self, server: &Server) -> Result<usize> {
         // Foreign Iroh federation peers grant replication to the original transport ID.
         // Client takeover never expands those independent peers' trust policies.

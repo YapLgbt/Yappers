@@ -79,6 +79,13 @@ impl Payload for Letter {
 pub enum SocialOp {
     PrivacyFeed { nearby: Option<crate::Nearby> },
     PrivacyStatus,
+    NotificationInbox,
+    SetPush { provider:String, subscription:serde_json::Value, categories:Vec<String> },
+    OpenPush { route:String },
+    NotificationThread { target: String, anchor: String },
+    ReadNotification { #[serde(rename = "category")] category: String, target: String, through: i64 },
+    MuteNotifications { target: String, muted: bool },
+    DismissRequest { peer: String },
     SetProfile { expected: u64, name: String, profile: crate::CommunityProfile },
     Profiles { events: Vec<String> },
     ClaimUsername { name: String },

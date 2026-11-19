@@ -189,8 +189,35 @@ impl Store {
                 }
                 serde_json::Value::Object(profiles)
             }
+            SocialOp::SetPush {provider,subscription,categories} => self.set_push(owner,device,&provider,subscription,categories)?,
+            SocialOp::OpenPush {route} => self.push_route(owner,device,&route)?,
+            SocialOp::NotificationThread { target,anchor } => self.activity_thread(owner,&target,&anchor)?,
+            SocialOp::NotificationInbox => self.notification_inbox(owner,device)?,
+            SocialOp::ReadNotification { category, target, through } => {
+                self.read_notification(owner,device,&category,&target,through)?;
+                json!({})
+            }
+            SocialOp::MuteNotifications { target, muted } => {
+                ensure!(target.len()==64 && hex::decode(&target).is_ok(),"invalid thread");
+                if muted {
+                    self.db.execute("INSERT OR IGNORE INTO inbox_mutes VALUES(?,?)", [owner,&target])?;
+                } else {
+                    self.db.execute("DELETE FROM inbox_mutes WHERE owner=? AND target=?", [owner,&target])?;
+                }
+                json!({})
+            }
+            SocialOp::DismissRequest { peer } => {
+                valid_peer(&peer,owner)?;
+                ensure!(self.db.query_row("SELECT EXISTS(SELECT 1 FROM dm_devices WHERE owner=? AND device=?)",
+                    [owner,device],|r| r.get::<_,bool>(0))?,"open this account's messaging installation");
+                self.db.execute("UPDATE dm_mail SET packet=NULL WHERE recipient=? AND sender=? AND held=1", [owner,&peer])?;
+                json!({})
+            }
             SocialOp::PrivacyStatus => {
                 let mut result = self.privacy_status(owner)?;
+                result["notifications"] = self.notification_inbox(owner,device)?;
+                result["pushCapabilities"] = crate::push::capabilities();
+                result["pushCategories"] = self.push_categories(owner,device)?;
                 result["currentProfile"] =
                     serde_json::to_value(self.current_profile(home, owner)?)?;
                 if let Some(domain) = crate::usernames::domain(home) {

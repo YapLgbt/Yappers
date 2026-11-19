@@ -431,7 +431,7 @@ async fn serve_one(path: PathBuf, public_manifest: Option<PathBuf>) -> Result<()
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
-            _ = interval.tick() => { if let Err(error) = server.sync_once().await { eprintln!("federation sync: {error:#}"); } }
+            _ = interval.tick() => { if let Err(error)=server.dispatch_notifications().await {eprintln!("push dispatch: {error}");} if let Err(error) = server.sync_once().await { eprintln!("federation sync: {error:#}"); } }
         }
     }
     server.close().await;
@@ -701,7 +701,7 @@ async fn main() -> Result<()> {
             loop {
                 tokio::select! {
                     _=tokio::signal::ctrl_c()=>break,
-                    _=interval.tick()=>{if let Err(error)=server.sync_once().await {eprintln!("HA federation sync: {error}");}}
+                    _=interval.tick()=>{if let Err(error)=server.dispatch_notifications().await {eprintln!("push dispatch: {error}");} if let Err(error)=server.sync_once().await {eprintln!("HA federation sync: {error}");}}
                 }
             }
             server.close().await;

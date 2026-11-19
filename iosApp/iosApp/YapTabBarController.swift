@@ -86,6 +86,7 @@ final class YapTabBarController: UITabBarController, UITabBarControllerDelegate,
         item.leftBarButtonItem = UIBarButtonItem(primaryAction: UIAction(title: "Inbox", image: UIImage(systemName: "tray")) { [weak self] _ in
             self?.openInbox(.messages, contact: nil, in: destination)
         })
+        item.leftBarButtonItem?.accessibilityIdentifier = "Inbox"
         item.leftBarButtonItem?.accessibilityLabel = "Inbox"
 
         let navigation = UINavigationController(rootViewController: content)
@@ -107,6 +108,10 @@ final class YapTabBarController: UITabBarController, UITabBarControllerDelegate,
             post.isEnabled = actions.postEnabled
             item.rightBarButtonItem = post
         }
+        let count = actions.inboxCount
+        item.leftBarButtonItem?.image = count == 0 ? UIImage(systemName: "tray") : nil
+        item.leftBarButtonItem?.title = count == 0 ? nil : "Inbox (\(count))"
+        item.leftBarButtonItem?.accessibilityLabel = count == 0 ? "Inbox" : "Inbox, \(count) unread"
         item.titleView?.accessibilityCustomActions = actions.refreshLabel.map { label in
             [UIAccessibilityCustomAction(name: label) { _ in actions.refresh(); return true }]
         }
@@ -189,7 +194,7 @@ final class YapTabBarController: UITabBarController, UITabBarControllerDelegate,
             self?.openInbox(nextPage, contact: nextContact, in: destination)
         }, onOpenProfileSettings: { [weak self] in
             self?.openProfileSettings()
-        }, onCloseStack: { [weak navigation] in
+        }, onOpenPost: { [weak self] route in self?.openPost(route, in: destination) }, onCloseStack: { [weak navigation] in
             navigation?.popToRootViewController(animated: false)
         })
         let item = content.navigationItem

@@ -954,3 +954,49 @@ async fn historical_bylines_follow_account_edits_across_devices_and_homes() -> a
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn account_inbox_groups_replies_and_monotonically_reconciles_reads() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let home = Server::start(config(&dir.path().join("home"), new_secret(), "public")).await?;
+    let origin = home.endpoint.id().to_string();
+    let alice = portable_client(&home,"public",&wallet(&origin)).await;
+    let bob = portable_client(&home,"public",&wallet(&origin)).await;
+    alice.feed().await?;
+    bob.feed().await?;
+    let post = alice.prepare(action("First thread"))?.event;
+    let target = post.id.clone();
+    alice.submit(post).await?;
+    let reply = || Action::Reply {parent:target.clone(),body:"Hello".into(),display_name:"Anonymous neighbor".into()};
+    alice.submit(alice.prepare(reply())?.event).await?;
+    let inbox = json!({"type":"social","op":{"kind":"notificationInbox"}});
+    assert_eq!(command(&alice,inbox.clone()).await?["activity"],json!([]));
+    let first=bob.prepare(reply())?.event;
+    let first_id=first.id.clone();
+    bob.submit(first.clone()).await?;
+    bob.submit(first).await?;
+    let row=command(&alice,inbox.clone()).await?["activity"][0].clone();
+    assert_eq!(row["first"],first_id);
+    assert_eq!(row["unread"],1);
+    assert!(row.get("actor").is_none());
+    let second=bob.prepare(reply())?.event;
+    let second_id=second.id.clone();
+    bob.submit(second).await?;
+    assert_eq!(command(&alice,inbox.clone()).await?["activity"][0]["unread"],2);
+    let read = |through:&Value| json!({"type":"social","op":{"kind":"readNotification","category":"reply","target":target,"through":through}});
+    command(&alice,read(&row["through"])).await?;
+    let next=command(&alice,inbox.clone()).await?["activity"][0].clone();
+    assert_eq!(next["unread"],1);
+    assert_eq!(next["first"],second_id);
+    command(&alice,read(&next["through"])).await?;
+    command(&alice,read(&row["through"])).await?;
+    assert_eq!(command(&alice,inbox.clone()).await?["activity"][0]["unread"],0);
+    assert_eq!(command(&bob,inbox.clone()).await?["activity"],json!([]));
+    let mute=|muted|json!({"type":"social","op":{"kind":"muteNotifications","target":target,"muted":muted}});
+    command(&alice,mute(true)).await?;
+    assert_eq!(command(&alice,inbox.clone()).await?["activity"],json!([]));
+    command(&alice,mute(false)).await?;
+    alice.submit(alice.prepare(Action::Delete{target})?.event).await?;
+    assert_eq!(command(&alice,inbox).await?["activity"],json!([]));
+    Ok(())
+}

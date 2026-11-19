@@ -29,6 +29,10 @@ pub mod portability;
 #[cfg(feature = "server")]
 mod privacy;
 #[cfg(feature = "server")]
+mod push;
+#[cfg(feature = "server")]
+mod notifications;
+#[cfg(feature = "server")]
 mod profiles;
 mod private_group_client;
 #[cfg(feature = "server")]

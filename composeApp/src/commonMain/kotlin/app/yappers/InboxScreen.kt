@@ -30,9 +30,16 @@ internal fun InboxScreen(
     onPrivacy: () -> Unit, onApprove: (String) -> Unit,
     onSelect: (MessageContact?) -> Unit, onClose: () -> Unit, onBrowse: () -> Unit, onJoin: () -> Unit, onRefresh: () -> Unit,
     onReport: ((ReportTarget) -> Unit)?, onBlock: (MessageContact) -> Unit, onUnblock: (String) -> Unit,
+    onActivity: (InboxItem) -> Unit, onRead: (InboxItem) -> Unit, onDismissRequest: (String) -> Unit,
+    onPush: (Set<String>) -> Unit,
     nativePage: InboxPage? = null, openPage: (InboxPage) -> Unit = {},
     onSend: suspend (MessageContact, String) -> Boolean
 ) {
+    var activity by remember { mutableStateOf(false) }
+    val inbox = connection.privacy.notifications
+    val current = inbox.messages.firstOrNull { it.target == contact?.peer && it.unread > 0 }
+    val visible = current != null && connection.messages.any { it.id == current.last && it.peer == current.target }
+    LaunchedEffect(current?.through, visible) { if (current != null && visible) onRead(current) }
     val navigation = LocalMaterialNavigation.current
     var managing by remember { mutableStateOf(nativePage == InboxPage.Blocked) }
     var requests by remember { mutableStateOf(nativePage == InboxPage.Requests) }
@@ -63,12 +70,24 @@ internal fun InboxScreen(
                             val label = connection.snapshot.posts.firstOrNull { it.visibility?.peer == peer }?.author ?: "Account ${peer.take(12)}"
                             add(FormSection(label, buildList {
                                 add(FormRow("accept", "Accept") { onApprove(peer) })
+                                add(FormRow("dismiss", "Dismiss") { onDismissRequest(peer) })
                                 if (onReport != null) add(FormRow("report", "Report account") { onReport(ReportTarget("account", peer)) })
                                 add(FormRow("block", "Block", destructive = true) { onBlock(MessageContact(peer, label)) })
                             }))
                         }
                     }
                     else -> {
+                        add(FormSection(rows=listOf(FormRow("activity","Activity","choice",checked=activity){activity=true},
+                            FormRow("messages","Messages","choice",checked=!activity){activity=false})))
+                        if (connection.privacy.pushAvailable) add(FormSection("Device notifications", listOf("reply" to "Replies to my posts", "message" to "Direct messages", "request" to "Message requests").map { (kind,label) ->
+                            val categories=connection.privacy.pushCategories
+                            FormRow("push-$kind", label,"choice", checked=kind in categories) { onPush(if(kind in categories) categories-kind else categories+kind) }
+                        }))
+                        if (activity) {
+                            add(FormSection(rows=if(inbox.activity.isEmpty()) listOf(FormRow("empty","No replies yet","text"))
+                                else inbox.activity.map { item -> FormRow(item.target,item.title,"disclosure",
+                                    if(item.unread>0) "${item.unread} new ${if(item.unread==1) "reply" else "replies"}" else "Read") {onActivity(item)} }))
+                        } else {
                         if (connection.requests.isNotEmpty()) add(FormSection(rows = listOf(
                             FormRow("requests", "Message requests (${connection.requests.size})", "disclosure") { openPage(InboxPage.Requests) })))
                         inboxStatus?.let { add(FormSection(rows = listOf(FormRow("status", it, "text")))) }
@@ -78,10 +97,11 @@ internal fun InboxScreen(
                         } else {
                             val photos = remember(connection.snapshot.posts) { inboxPhotos(connection.snapshot.posts) }
                             add(FormSection(rows = recent.map { message ->
-                                FormRow(message.peer, message.label, "conversation", message.body, value = photos[message.peer].orEmpty()) {
+                                FormRow(message.peer, message.label + if(inbox.messages.any { it.target==message.peer && it.unread>0 }) " · Unread" else "", "conversation", message.body, value = photos[message.peer].orEmpty()) {
                                     onSelect(MessageContact(message.peer, message.label))
                                 }
                             }))
+                        }
                         }
                     }
                 }
@@ -111,7 +131,33 @@ internal fun InboxScreen(
                         TextButton(onClick = goBack) { Text(if (managing || requests) "Back" else "Done") }
                     }
                 }
-                if (managing) {
+                if (!managing && !requests) item {
+                    Row {
+                        FilterChip(selected=activity,onClick={activity=true},label={Text("Activity")})
+                        Spacer(Modifier.width(8.dp))
+                        FilterChip(selected=!activity,onClick={activity=false},label={Text("Messages")})
+                    }
+                    if (connection.privacy.pushAvailable) {
+                        Text("Device notifications", style=MaterialTheme.typography.titleSmall)
+                        listOf("reply" to "Replies to my posts","message" to "Direct messages","request" to "Message requests").forEach { (kind,label) ->
+                            val categories=connection.privacy.pushCategories
+                            Row(verticalAlignment=Alignment.CenterVertically) {
+                                Checkbox(checked=kind in categories,onCheckedChange={onPush(if(it) categories+kind else categories-kind)})
+                                Text(label)
+                            }
+                        }
+                    }
+                }
+                if (activity && !managing && !requests) {
+                    if(inbox.activity.isEmpty()) item { Text("No replies yet") }
+                    items(inbox.activity,key={it.target}) { item ->
+                        Column(Modifier.fillMaxWidth().clickable {onActivity(item)}.padding(vertical=14.dp)) {
+                            Text(item.title,fontWeight=FontWeight.SemiBold)
+                            Text(if(item.unread>0) "${item.unread} new ${if(item.unread==1) "reply" else "replies"}" else "Read")
+                        }
+                        HorizontalDivider()
+                    }
+                } else if (managing) {
                     if (blocks.isEmpty()) item { Text("You haven’t blocked anyone.") }
                     items(blocks, key = { it.id }) { block ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -128,6 +174,7 @@ internal fun InboxScreen(
                             Text(label ?: "Account ${peer.take(12)}", style = MaterialTheme.typography.titleMedium)
                             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 FilledTonalButton(onClick = { onApprove(peer) }) { Text("Accept") }
+                                TextButton(onClick={onDismissRequest(peer)}) { Text("Dismiss") }
                                 if (onReport != null) TextButton(onClick = { onReport(ReportTarget("account",peer)) }) { Text("Report account") }
                                 TextButton(onClick = { onBlock(MessageContact(peer,label ?: "Account ${peer.take(12)}")) }) { Text("Block") }
                             }
@@ -154,7 +201,7 @@ internal fun InboxScreen(
                     }
                     items(recent, key = { it.peer }) { m ->
                         Column(Modifier.fillMaxWidth().clickable { onSelect(MessageContact(m.peer, m.label)) }.padding(vertical = 14.dp)) {
-                            Text(m.label, fontWeight = FontWeight.SemiBold)
+                            Text(m.label + if(inbox.messages.any {it.target==m.peer && it.unread>0}) " · Unread" else "", fontWeight = FontWeight.SemiBold)
                             Text(m.body, maxLines = 2)
                         }
                         HorizontalDivider()

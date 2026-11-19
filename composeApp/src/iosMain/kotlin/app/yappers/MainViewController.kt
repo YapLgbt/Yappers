@@ -109,6 +109,7 @@ class ApplePostRoute internal constructor(post: Post, internal val destination: 
 class AppleToolbarActions internal constructor(
     val postEnabled: Boolean,
     val refreshLabel: String?,
+    val inboxCount: Int,
     private val onPost: () -> Unit,
     private val onRefresh: () -> Unit,
 ) {
@@ -183,7 +184,7 @@ class AppleAppSession(
         activeTab = { activeTab },
         selectTab = onSelectTab,
         setRootBars = onSetRootBars,
-        updateToolbar = { enabled, label, post, refresh -> onToolbar(AppleToolbarActions(enabled, label, post, refresh)) },
+        updateToolbar = { enabled, label, count, post, refresh -> onToolbar(AppleToolbarActions(enabled, label, count, post, refresh)) },
         openInbox = onOpenInbox,
         openProfileSettings = onOpenProfileSettings,
         openPrivateGroups = onOpenPrivateGroups,
@@ -215,14 +216,14 @@ class AppleAppSession(
 
     fun makeInbox(tab: String, page: InboxPage, contact: MessageContact?, onSelectTab: (String) -> Unit,
                   onOpenInbox: (InboxPage, MessageContact?) -> Unit, onOpenProfileSettings: () -> Unit,
-                  onCloseStack: () -> Unit): UIViewController {
+                  onOpenPost: (ApplePostRoute) -> Unit, onCloseStack: () -> Unit): UIViewController {
         val live = networking.state.value.enabled
         val scope = networking.state.value.messagingScope
         return makeContent(tab, PlatformNavigation(
             activeTab = { activeTab },
             selectTab = onSelectTab,
             openInbox = onOpenInbox,
-            openPost = { _, _ -> },
+            openPost = { post, destination -> onOpenPost(ApplePostRoute(post, destination)) },
             closePost = {},
             inboxPage = page,
             openProfileSettings = onOpenProfileSettings,

@@ -25,6 +25,12 @@ data class DevicePrivacy(
     val blocks: List<DeviceBlock> = emptyList(), val pendingUnblocks: Set<String> = emptySet(),
     val revoked: Set<String> = emptySet(),
     val approved: Set<String> = emptySet(), val pendingApprovals: Set<String> = emptySet(),
+    val notifications: NotificationInbox = NotificationInbox(),
+    val pendingReads: Map<String, Long> = emptyMap(),
+    val pendingMutes: Map<String, Boolean> = emptyMap(),
+    val pushCategories: Set<String> = emptySet(),
+    val registeredPushToken: String? = null,
+    val pushAvailable: Boolean = false,
     val mutedThreads: Map<String, String> = emptyMap()
 ) {
     val allowsPublicReplica get() = homeAllowsPublicView && blocks.isEmpty() && pendingUnblocks.isEmpty()

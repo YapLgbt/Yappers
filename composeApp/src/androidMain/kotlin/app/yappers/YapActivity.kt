@@ -1,5 +1,6 @@
 package app.yappers
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -16,6 +17,8 @@ class YapActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (AndroidPush.configured(this)) InboxPush.registration = AndroidPush(this)
+        acceptInboxIntent(intent)
         enableEdgeToEdge()
         val files = AndroidFiles(this)
         val nearby = AndroidNearby(this)
@@ -31,6 +34,24 @@ class YapActivity : ComponentActivity() {
                     })
             }
         }
+    }
+
+    private fun acceptInboxIntent(intent: Intent) {
+        if (intent.action == AndroidInboxService.OPEN) {
+            intent.getStringExtra("route")?.let(InboxPush::open)
+            intent.removeExtra("route")
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        acceptInboxIntent(intent)
+    }
+
+    override fun onDestroy() {
+        if ((InboxPush.registration as? AndroidPush)?.activity === this) InboxPush.registration = null
+        super.onDestroy()
     }
 
     override fun onStart() {

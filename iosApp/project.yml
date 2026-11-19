@@ -35,6 +35,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.yappers.prototype
+        'CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]': iosApp/Push.entitlements
         'CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]': iosApp/Simulator.entitlements
         PRODUCT_NAME: Yap
         PRODUCT_MODULE_NAME: YappersIOS
