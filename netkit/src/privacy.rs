@@ -2,7 +2,11 @@
 //! Home-local observations, inbox permissions and private message requests.
 use crate::home_sql::HomeDb as Connection;
 use crate::model::{Action, AuthorVisibility, Envelope};
-use crate::{messaging::PrivacySettings, model::now, store::Store};
+use crate::{
+    messaging::{PrivacySettings, mail_cutoff},
+    model::now,
+    store::Store,
+};
 use anyhow::{Result, ensure};
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
@@ -58,7 +62,7 @@ pub(crate) fn needs_request(
     }
     Ok(db.query_row(
         "SELECT EXISTS(SELECT 1 FROM dm_mail WHERE recipient=? AND sender=? AND held=1 AND packet IS NOT NULL AND created>=?)",
-        params![owner,peer,now()-30*86400], |r| r.get(0),
+        params![owner,peer,mail_cutoff(now())], |r| r.get(0),
     )?)
 }
 
@@ -78,7 +82,7 @@ pub(crate) fn approve(db: &Connection, owner: &str, peer: &str) -> Result<()> {
         [owner, peer],
     )?;
     let packets = db.prepare("SELECT id,packet,created FROM dm_mail WHERE recipient=? AND sender=? AND held=1 AND packet IS NOT NULL AND created>=? ORDER BY seq")?
-        .query_map(params![owner,peer,now()-30*86400],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        .query_map(params![owner,peer,mail_cutoff(now())],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     for (id, packet, created) in packets {
         db.execute("DELETE FROM dm_mail WHERE id=?", [&id])?;
         db.execute(
@@ -92,12 +96,23 @@ pub(crate) fn approve(db: &Connection, owner: &str, peer: &str) -> Result<()> {
 impl Store {
     // A receipt signed by this home is local evidence. Remote timestamps cannot backdate age.
     pub(crate) fn recover_local_first_seen(&self, home: &str) -> Result<()> {
-        self.db.execute("INSERT INTO first_seen(owner,since)
-            SELECT COALESCE(json_extract(envelope,'$.event.payload.account.payload.account'),author),
-                   MIN(json_extract(envelope,'$.acceptedAt'))
-            FROM events WHERE json_extract(envelope,'$.event.payload.home')=?
-            GROUP BY COALESCE(json_extract(envelope,'$.event.payload.account.payload.account'),author)
-            ON CONFLICT(owner) DO UPDATE SET since=MIN(since,excluded.since)",[home])?;
+        self.db.execute(
+            "DELETE FROM first_seen WHERE owner IN (SELECT account FROM deleted_accounts)",
+            [],
+        )?;
+        self.db.execute(
+            "WITH local_events(owner,accepted_at) AS (
+                SELECT COALESCE(json_extract(envelope,'$.event.payload.account.payload.account'),author),
+                       json_extract(envelope,'$.acceptedAt')
+                FROM events WHERE json_extract(envelope,'$.event.payload.home')=?
+             )
+             INSERT INTO first_seen(owner,since)
+             SELECT owner,MIN(accepted_at) FROM local_events AS e
+             WHERE NOT EXISTS(SELECT 1 FROM deleted_accounts AS d WHERE d.account=e.owner)
+             GROUP BY owner
+             ON CONFLICT(owner) DO UPDATE SET since=MIN(since,excluded.since)",
+            [home],
+        )?;
         Ok(())
     }
     pub(crate) fn ages(&self) -> Result<HashMap<String, u8>> {
@@ -138,7 +153,7 @@ impl Store {
     }
     pub(crate) fn privacy_status(&self, owner: &str) -> Result<Value> {
         let requests=self.db.prepare("SELECT sender FROM dm_mail WHERE recipient=? AND held=1 AND packet IS NOT NULL AND created>=? GROUP BY sender ORDER BY MAX(seq) DESC")?
-            .query_map(params![owner,now()-30*86400],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            .query_map(params![owner,mail_cutoff(now())],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let has_blocks: bool = self.db.query_row(
             "SELECT EXISTS(SELECT 1 FROM user_blocks WHERE owner=?)",
             [owner],

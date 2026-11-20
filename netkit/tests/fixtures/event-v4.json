@@ -1,0 +1,20 @@
+{
+  "id": "6de7afe80707f90b51e4a7f3cc79c9e46432e168f905e8bd9aee0c3685275898",
+  "payload": {
+    "version": 4,
+    "home": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+    "community": "example",
+    "author": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+    "sequence": 1,
+    "createdAt": 1760000000,
+    "nonce": "0303030303030303030303030303030303030303030303030303030303030303",
+    "action": {
+      "kind": "post",
+      "body": "Hello neighbors",
+      "topic": "Friends",
+      "anonymous": true,
+      "displayName": "Anonymous neighbor"
+    }
+  },
+  "signature": "8113ab19e7b05fd600c7d12fce6ef2d06a08b8691ea40fae30c8fab6531f3cab143c4e9dd66ec616ab62c5e10536d26e05a6ea70698e74fb67c8111e813e0b0e"
+}

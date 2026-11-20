@@ -1,14 +1,39 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Select public threads in display order before opening their protected content.
-use crate::{model::*, store::Store};
+use crate::{messaging::PrivacySettings, model::*, store::Store};
 use anyhow::{Result, ensure};
 use rusqlite::types::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 pub(crate) struct FeedPage {
     pub posts: Vec<RemotePost>,
     pub events: Vec<Envelope>,
     pub event_count: usize,
+}
+
+struct FeedVisibility<'a> {
+    viewer: &'a str,
+    blocked: &'a HashSet<String>,
+    settings: &'a PrivacySettings,
+}
+
+impl FeedVisibility<'_> {
+    fn filter_authors(&self, store: &Store, events: &mut Vec<Envelope>) -> Result<()> {
+        events.retain(|event| !self.blocked.contains(event.event.owner_id()));
+        if self.settings.feed_days > 0 {
+            let ages = store.page_ages(events)?;
+            events.retain(|event| {
+                let author = event.event.owner_id();
+                author == self.viewer
+                    || ages.get(author).copied().unwrap_or(0) >= self.settings.feed_days
+            });
+        }
+        Ok(())
+    }
+
+    fn hides_anonymous(&self, event: &Envelope) -> bool {
+        self.settings.hide_anonymous && event.event.owner_id() != self.viewer
+    }
 }
 
 impl Store {
@@ -20,12 +45,13 @@ impl Store {
         mut visible: impl FnMut(&Envelope) -> bool,
     ) -> Result<FeedPage> {
         let mut events = self.events(community)?;
+        let event_count = events.len();
         events.retain(|event| visible(event));
         let mut posts = project_nearby(&events, community, viewer, &self.hidden()?, nearby);
         self.apply_current_bylines(&mut posts, &events)?;
         Ok(FeedPage {
             posts,
-            event_count: events.len(),
+            event_count,
             events,
         })
     }
@@ -36,19 +62,94 @@ impl Store {
         viewer: &str,
         nearby: Option<&Nearby>,
     ) -> Result<FeedPage> {
-        if !self.is_native() {
-            return self.filtered_feed_page(community, viewer, nearby, |_| true);
+        if self.is_native() {
+            self.native_feed_page(community, viewer, nearby, None)
+        } else {
+            self.filtered_feed_page(community, viewer, nearby, |_| true)
         }
+    }
+
+    pub(crate) fn personalized_feed_page(
+        &self,
+        community: &str,
+        viewer: &str,
+        nearby: Option<&Nearby>,
+        blocked: &HashSet<String>,
+        settings: &PrivacySettings,
+    ) -> Result<FeedPage> {
+        if blocked.is_empty() && !settings.hide_anonymous && settings.feed_days == 0 {
+            return self.feed_page(community, viewer, nearby);
+        }
+        let visibility = FeedVisibility {
+            viewer,
+            blocked,
+            settings,
+        };
+        if self.is_native() {
+            return self.native_feed_page(community, viewer, nearby, Some(&visibility));
+        }
+        // The HA image stores unsealed event actions.
+        let ages = if settings.feed_days > 0 {
+            self.ages()?
+        } else {
+            Default::default()
+        };
+        self.filtered_feed_page(community, viewer, nearby, |event| {
+            let owner = event.event.owner_id();
+            !blocked.contains(owner)
+                && (owner == viewer
+                    || !crate::native_content::is_content(&event.event.payload.action)
+                    || ((!settings.hide_anonymous || crate::usernames::named(&event.event))
+                        && ages.get(owner).copied().unwrap_or(0) >= settings.feed_days))
+        })
+    }
+
+    fn native_feed_page(
+        &self,
+        community: &str,
+        viewer: &str,
+        nearby: Option<&Nearby>,
+        visibility: Option<&FeedVisibility<'_>>,
+    ) -> Result<FeedPage> {
         ensure!(
             !self.db.is_autocommit()?,
             "feed page requires a pinned snapshot"
         );
-        let mut events = self.feed_roots(community, nearby)?;
+        let mut events = self.feed_roots(community, nearby, visibility)?;
         let roots = events
             .iter()
             .map(|e| e.event.id.clone())
             .collect::<Vec<_>>();
-        let replies = crate::feed_replies::latest(&self.db, community, &roots)?;
+        let replies = if let Some(visibility) = visibility {
+            crate::feed_replies::latest_where(&self.db, community, &roots, |db, community, ids| {
+                let mut statement = db.prepare_cached(&crate::feed_replies::VISIBLE_HEADERS)?;
+                let mut headers = Vec::new();
+                for raw in statement.query_map(
+                    rusqlite::params![serde_json::to_string(ids)?, community],
+                    |row| row.get::<_, String>(0),
+                )? {
+                    headers.push(serde_json::from_str(&raw?)?);
+                }
+                visibility.filter_authors(self, &mut headers)?;
+                let mut visible = HashSet::new();
+                let mut routing = db.prepare_cached(
+                    "SELECT routing FROM home_openings WHERE target=? AND private=0",
+                )?;
+                for header in headers {
+                    if visibility.hides_anonymous(&header) {
+                        let sealed = routing
+                            .query_row([&header.event.id], |row| row.get::<_, Vec<u8>>(0))?;
+                        if crate::native_content::reply_route(db, &header, &sealed)?.1 {
+                            continue;
+                        }
+                    }
+                    visible.insert(header.event.id);
+                }
+                Ok(visible)
+            })?
+        } else {
+            crate::feed_replies::latest(&self.db, community, &roots)?
+        };
         let ids: Vec<_> = replies.into_values().flatten().collect();
         for batch in ids.chunks(FEED_POST_LIMIT) {
             let mut statement = self.db.prepare(
@@ -71,7 +172,10 @@ impl Store {
         // Candidate selection has already excluded moderated and erased entries. Reuse
         // the shared model for thread ordering, ownership and wire representation.
         let mut posts = project(&events, community, viewer, &BTreeSet::new());
-        let votes = self.feed_votes(community, &roots, viewer)?;
+        let mut votes = self.feed_votes(community, &roots, viewer)?;
+        if visibility.is_some_and(|v| !v.blocked.is_empty()) {
+            self.remove_blocked_votes(community, &roots, viewer, &mut votes)?;
+        }
         for post in &mut posts {
             (post.score, post.vote) = votes.get(&post.id).copied().unwrap_or_default();
         }
@@ -83,7 +187,12 @@ impl Store {
         })
     }
 
-    fn feed_roots(&self, community: &str, nearby: Option<&Nearby>) -> Result<Vec<Envelope>> {
+    fn feed_roots(
+        &self,
+        community: &str,
+        nearby: Option<&Nearby>,
+        visibility: Option<&FeedVisibility<'_>>,
+    ) -> Result<Vec<Envelope>> {
         const SELECT: &str = "SELECT envelope FROM events e WHERE community=?
             AND json_extract(envelope,'$.event.payload.action.kind')='erased'
             AND json_extract(envelope,'$.event.payload.action.reply')=0
@@ -105,17 +214,26 @@ impl Store {
                 ]);
             }
             sql.push_str(ORDER);
-            args.push(Value::Integer(FEED_POST_LIMIT as i64));
+            let limit = (FEED_POST_LIMIT - selected.len()).max(32);
+            args.push(Value::Integer(limit as i64));
             let mut statement = self.db.prepare(&sql)?;
             let mut batch: Vec<Envelope> = Vec::new();
             for raw in statement.query_map(args, |r| r.get::<_, String>(0))? {
                 batch.push(serde_json::from_str(&raw?)?);
             }
-            let full = batch.len() == FEED_POST_LIMIT;
+            let full = batch.len() == limit;
             if let Some(last) = batch.last() {
                 after = Some((last.accepted_at, last.event.id.clone()));
             }
+            if let Some(visibility) = visibility {
+                visibility.filter_authors(self, &mut batch)?;
+            }
             crate::native_content::hydrate_public_page(&self.db, &mut batch)?;
+            if let Some(visibility) = visibility {
+                batch.retain(|event| {
+                    !visibility.hides_anonymous(event) || crate::usernames::named(&event.event)
+                });
+            }
             if let Some(filter) = nearby {
                 batch.retain(|event| match &event.event.payload.action {
                     Action::PostV2 {
@@ -181,13 +299,28 @@ mod tests {
         let vote = make(
             1001,
             Action::Vote {
-                target: parent,
+                target: parent.clone(),
                 value: 1,
             },
+        )?;
+        let voter = signing_key(&new_secret())?;
+        let blocked_vote = Envelope::accept(
+            SignedEvent::create(
+                &voter,
+                author.clone(),
+                "city".into(),
+                1,
+                Action::Vote {
+                    target: parent.clone(),
+                    value: 1,
+                },
+            )?,
+            &key,
         )?;
         store.operation(|s| {
             s.accept(&reply)?;
             s.accept(&vote)?;
+            s.accept(&blocked_vote)?;
             for post in &posts {
                 s.accept(post)?;
             }
@@ -221,6 +354,25 @@ mod tests {
         })?;
         store.operation(|s| {
             assert_eq!(s.feed_page("city", "", None)?.posts.len(), FEED_POST_LIMIT);
+            let settings = PrivacySettings {
+                hide_anonymous: true,
+                ..PrivacySettings::default()
+            };
+            let blocked = blocked_vote.event.owner_id();
+            s.db.execute(
+                "INSERT INTO user_blocks VALUES(?,?,?,'Blocked account')",
+                [&author, blocked, &new_secret()],
+            )?;
+            let page = s.personalized_feed_page(
+                "city",
+                &author,
+                None,
+                &HashSet::from([blocked.to_owned()]),
+                &settings,
+            )?;
+            assert_eq!(page.posts.len(), FEED_POST_LIMIT);
+            let thread = page.posts.iter().find(|post| post.id == parent).unwrap();
+            assert_eq!((thread.score, thread.vote), (1, 1));
             assert!(s.existing(last).is_err());
             Ok(())
         })

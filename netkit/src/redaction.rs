@@ -16,11 +16,22 @@ impl Store {
         } else {
             None
         };
-        Ok(Response::Accepted {
+        let mut response = Response::Accepted {
             event_id: envelope.event.id.clone(),
             envelope: Some(Box::new(envelope)),
             erased,
-        })
+        };
+        if let Response::Accepted {
+            erased: Some(_), ..
+        } = &response
+            && serde_json::to_vec(&response)?.len() > crate::MAX_FRAME
+            && let Response::Accepted { erased, .. } = &mut response
+        {
+            // The signed deletion is authoritative on its own. The erased
+            // acceptance is supplemental and repeats that proof in its body.
+            *erased = None;
+        }
+        Ok(response)
     }
 
     pub(crate) fn erased_ids(&self, community: &str) -> Result<Vec<String>> {

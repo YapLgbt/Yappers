@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Headless user-owned account/recovery workflow. All secrets remain in mode-0600 files.
+use crate::private_file::{PrivateFileLock, private_write};
 use anyhow::{Context, Result, ensure};
 use clap::Subcommand;
 use std::{
     fs,
-    io::Write,
     path::{Path, PathBuf},
 };
 use yappers_netkit::{
@@ -106,33 +106,9 @@ pub enum AccountCommand {
     },
 }
 
-/// Lock files use OS advisory locks; separate processes may never sign from one wallet.
-struct WalletLock {
-    file: fs::File,
-}
-impl WalletLock {
-    fn acquire(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            fs::create_dir_all(parent)?;
-        }
-        let lock = path.with_extension("wallet-lock");
-        let mut options = fs::OpenOptions::new();
-        options.create(true).write(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let file = options.open(lock)?;
-        file.try_lock()
-            .context("account wallet is already in use")?;
-        Ok(Self { file })
-    }
-}
-impl Drop for WalletLock {
-    fn drop(&mut self) {
-        let _ = self.file.unlock();
-    }
+fn lock_wallet(path: &Path) -> Result<PrivateFileLock> {
+    PrivateFileLock::acquire(&path.with_extension("wallet-lock"))
+        .context("account wallet is already in use")
 }
 fn private_read(path: &Path) -> Result<Vec<u8>> {
     #[cfg(unix)]
@@ -148,33 +124,6 @@ fn private_read(path: &Path) -> Result<Vec<u8>> {
         "private input exceeds capacity"
     );
     Ok(fs::read(path)?)
-}
-fn private_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        fs::create_dir_all(parent)?;
-    }
-    let temporary = path.with_extension(format!("{}.tmp", &new_secret()[..16]));
-    let mut options = fs::OpenOptions::new();
-    options.create_new(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let result = (|| -> Result<()> {
-        let mut file = options.open(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)?;
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        fs::File::open(parent)?.sync_all()?;
-        Ok(())
-    })();
-    let _ = fs::remove_file(temporary);
-    result
 }
 fn read_wallet(path: &Path) -> Result<AccountWallet> {
     let wallet: AccountWallet = serde_json::from_slice(&private_read(path)?)?;
@@ -288,7 +237,7 @@ pub async fn execute(command: AccountCommand) -> Result<()> {
             join: invitation,
             legacy_identity,
         } => {
-            let _lock = WalletLock::acquire(&path)?;
+            let _lock = lock_wallet(&path)?;
             let invitation = join(&invitation)?;
             let wallet = if path.exists() {
                 read_wallet(&path)?
@@ -336,7 +285,7 @@ pub async fn execute(command: AccountCommand) -> Result<()> {
             body,
             name,
         } => {
-            let _lock = WalletLock::acquire(&path)?;
+            let _lock = lock_wallet(&path)?;
             let mut wallet = read_wallet(&path)?;
             let client = client(&wallet, join(&invitation)?).await?;
             let result = async {
@@ -367,7 +316,7 @@ pub async fn execute(command: AccountCommand) -> Result<()> {
             wallet: path,
             join: invitation,
         } => {
-            let _lock = WalletLock::acquire(&path)?;
+            let _lock = lock_wallet(&path)?;
             let mut wallet = read_wallet(&path)?;
             let client = client(&wallet, join(&invitation)?).await?;
             let result = flush(&client, &mut wallet, &path).await;
@@ -388,7 +337,7 @@ pub async fn execute(command: AccountCommand) -> Result<()> {
                 "export must use a separate output file"
             );
             ensure!(!output.exists(), "export output already exists");
-            let _lock = WalletLock::acquire(&path)?;
+            let _lock = lock_wallet(&path)?;
             let wallet = read_wallet(&path)?;
             let data = local_data
                 .map(|p| -> Result<serde_json::Value> {
@@ -442,7 +391,7 @@ pub async fn execute(command: AccountCommand) -> Result<()> {
                 path != input && path != invitation_path && path != passphrase_file,
                 "import wallet must be a separate file"
             );
-            let _lock = WalletLock::acquire(&path)?;
+            let _lock = lock_wallet(&path)?;
             let mut bundle =
                 decrypt_recovery(&private_read(&input)?, passphrase(&passphrase_file)?)?;
             ensure!(
@@ -529,7 +478,7 @@ pub async fn execute(command: AccountCommand) -> Result<()> {
                 output != path && !output.exists(),
                 "device output must be a new file"
             );
-            let _lock = WalletLock::acquire(&path)?;
+            let _lock = lock_wallet(&path)?;
             let wallet = read_wallet(&path)?;
             let enrolled = wallet.transition(wallet.validate()?.payload.home.clone(), true)?;
             // Persist new state on both local wallets before registration. Existing device keeps its counter/key.

@@ -6,7 +6,7 @@
 //! A conflicting envelope or reused author sequence must roll back the whole page.
 
 use crate::home_sql::HomeDb;
-use crate::{MAX_PAGE_ENTRIES, model::*};
+use crate::{MAX_FRAME, MAX_PAGE_ENTRIES, model::*};
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeSet;
@@ -135,6 +135,16 @@ impl Store {
         username: Option<&UsernameReceipt>,
     ) -> Result<()> {
         envelope.validate()?;
+        ensure!(
+            serde_json::to_vec(&LogEntry {
+                cursor: i64::MAX as u64,
+                envelope: envelope.clone(),
+                username: username.cloned(),
+            })?
+            .len()
+                <= MAX_FRAME - 256,
+            "accepted event exceeds federation frame"
+        );
         let tx = self.db.transaction()?;
         Self::insert(&tx, envelope)?;
         if let Some(receipt) = username {
@@ -297,14 +307,25 @@ impl Store {
         let rows = statement.query_map(params![after as i64, limit], |r| {
             Ok((r.get::<_, i64>(0)? as u64, r.get::<_, String>(1)?))
         })?;
+        let capacity = MAX_FRAME
+            .checked_sub(
+                serde_json::to_vec(&Response::Page {
+                    generation: generation.to_owned(),
+                    entries: Vec::new(),
+                    next: i64::MAX as u64,
+                    more: false,
+                })?
+                .len(),
+            )
+            .ok_or_else(|| anyhow::anyhow!("federation page metadata exceeds frame"))?;
+        let mut remaining = capacity;
         let mut next = after;
         let mut entries = Vec::new();
         for row in rows {
             let (cursor, json) = row?;
-            next = cursor;
             let envelope: Envelope = serde_json::from_str(&json)?;
             if communities.contains(&envelope.event.payload.community) {
-                if let Some(peer) = suspended_peer {
+                let entry = if let Some(peer) = suspended_peer {
                     let proof = if matches!(envelope.event.payload.action, Action::Delete { .. }) {
                         Some(envelope)
                     } else {
@@ -312,7 +333,9 @@ impl Store {
                     };
                     if let Some(envelope)=proof && let Action::Delete{target}=&envelope.event.payload.action
                         && self.db.query_row("SELECT EXISTS(SELECT 1 FROM peer_deliveries WHERE peer=? AND community=? AND target=?)",params![peer,envelope.event.payload.community,target],|r|r.get::<_,bool>(0))? {
-                        entries.push(LogEntry {cursor,envelope,username:None});
+                        Some(LogEntry {cursor,envelope,username:None})
+                    } else {
+                        None
                     }
                 } else {
                     // Filter scope and suspension against the catalog before fetching a body.
@@ -324,9 +347,32 @@ impl Store {
                     } else {
                         envelope
                     };
-                    entries.push(self.log_entry(cursor, envelope)?);
+                    Some(self.log_entry(cursor, envelope)?)
+                };
+                if let Some(mut entry) = entry {
+                    let mut bytes = serde_json::to_vec(&entry)?.len() + 1;
+                    if bytes > capacity
+                        && let Some(proof) = entry.envelope.deletion.take()
+                    {
+                        // A standalone signed proof retires the opening by target, owner
+                        // and scope independently of its original acceptance header.
+                        entry = LogEntry {
+                            cursor,
+                            envelope: *proof,
+                            username: None,
+                        };
+                        bytes = serde_json::to_vec(&entry)?.len() + 1;
+                    }
+                    if bytes > remaining {
+                        ensure!(next > after, "single federation entry exceeds frame");
+                        break;
+                    }
+                    remaining -= bytes;
+                    entries.push(entry);
                 }
             }
+            // Advance over filtered rows, but leave the first unshipped row for the next page.
+            next = cursor;
         }
         let more: bool = self.db.query_row(
             "SELECT EXISTS(SELECT 1 FROM events WHERE cursor>?1)",
@@ -389,6 +435,85 @@ impl Store {
             None,
         )?;
 
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod federation_page_tests {
+    use super::*;
+    use crate::portability::AccountRecord;
+
+    #[test]
+    fn federation_pages_preserve_rows_at_the_byte_boundary() -> Result<()> {
+        let mut db = Connection::open_in_memory()?;
+        migrations::apply(&mut db)?;
+        let mut store = Store::from_sqlite(db);
+        let author = signing_key(&new_secret())?;
+        let home = signing_key(&new_secret())?;
+        let home_id = hex::encode(home.verifying_key().as_bytes());
+        let devices = (0..210)
+            .map(|_| {
+                signing_key(&new_secret()).map(|key| hex::encode(key.verifying_key().as_bytes()))
+            })
+            .chain(std::iter::once(Ok(hex::encode(
+                author.verifying_key().as_bytes(),
+            ))))
+            .collect::<Result<BTreeSet<_>>>()?;
+        let account = AccountRecord::signed(&author, None, home_id.clone(), devices)?;
+        for sequence in 1..=u64::from(MAX_PAGE_ENTRIES) {
+            let community = if sequence % 11 == 1 {
+                "other"
+            } else {
+                "public"
+            };
+            let event = SignedEvent::create_for_account(
+                &author,
+                home_id.clone(),
+                community.into(),
+                sequence,
+                Action::Post {
+                    body: "Neighborhood notice".into(),
+                    topic: "Plans".into(),
+                    display_name: "Neighbor".into(),
+                    anonymous: false,
+                },
+                account.clone(),
+            )?;
+            store.accept(&Envelope::accept(event, &home)?)?;
+        }
+
+        let mut cursor = 0;
+        let scopes = BTreeSet::from(["public".to_string()]);
+        let generation = new_secret();
+        let mut observed = Vec::new();
+        let mut page_count = 0;
+        loop {
+            let response = store.page(cursor, MAX_PAGE_ENTRIES, &scopes, &generation)?;
+            assert!(serde_json::to_vec(&response)?.len() <= MAX_FRAME);
+            let Response::Page {
+                entries,
+                next,
+                more,
+                ..
+            } = response
+            else {
+                anyhow::bail!("expected federation page");
+            };
+            assert!(next > cursor);
+            observed.extend(entries.into_iter().map(|entry| entry.cursor));
+            page_count += 1;
+            cursor = next;
+            if !more {
+                break;
+            }
+        }
+        let expected = (1..=u64::from(MAX_PAGE_ENTRIES))
+            .filter(|seq| seq % 11 != 1)
+            .collect::<Vec<_>>();
+        assert_eq!(observed, expected);
+        assert_eq!(cursor, u64::from(MAX_PAGE_ENTRIES));
+        assert!(page_count > 1);
         Ok(())
     }
 }

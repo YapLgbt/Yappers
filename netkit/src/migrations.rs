@@ -12,6 +12,7 @@ const GUARD_STEPS: &[&str] = &[
     include_str!("../migrations/guard/0001_guard.sql"),
     include_str!("../migrations/guard/0002_native_head.sql"),
     include_str!("../migrations/guard/0003_deleted_accounts.sql"),
+    include_str!("../migrations/guard/0004_opening_reservations.sql"),
 ];
 
 pub(crate) fn guard_version(db: &Connection, schema: &str) -> Result<usize> {

@@ -2,11 +2,15 @@
 //! Account inbox state is part of the home database and its committed HA image.
 //! Views join the current moderated events, so federation replay, erasure and
 //! out-of-order arrival do not create a second notification history.
-use crate::{model::now, store::Store};
+use crate::{messaging::mail_cutoff, model::now, store::Store};
 use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
+
+pub(crate) const REPLY_ACTOR_VISIBLE: &str = "SELECT NOT EXISTS(SELECT 1 FROM user_blocks WHERE
+         (owner=?1 AND peer=?2) OR (owner=?2 AND peer=?1))
+     AND (?3-COALESCE((SELECT since FROM first_seen WHERE owner=?2),?3))/86400>=?4";
 
 impl Store {
     fn sqlite_activity(&self, owner: &str) -> Result<Vec<Value>> {
@@ -63,7 +67,7 @@ impl Store {
                     AND NOT EXISTS(SELECT 1 FROM user_blocks b WHERE
                     (b.owner=m.recipient AND b.peer=m.sender) OR (b.owner=m.sender AND b.peer=m.recipient))
                 GROUP BY m.sender,m.held ORDER BY MAX(m.seq) DESC")?;
-            let mut rows = stmt.query(params![owner, now() - 30 * 86400])?;
+            let mut rows = stmt.query(params![owner, mail_cutoff(now())])?;
             while let Some(r) = rows.next()? {
                 let row = json!({"target":r.get::<_,String>(0)?,"through":r.get::<_,i64>(2)?,
                     "last":r.get::<_,String>(5)?,"unread":r.get::<_,i64>(3)?,"created":r.get::<_,i64>(4)?});
@@ -283,11 +287,7 @@ impl Store {
                AND json_extract(p.envelope,'$.deletion') IS NULL
                AND NOT EXISTS(SELECT 1 FROM hidden WHERE id=p.id)",
         )?;
-        let mut actor = self.db.prepare(
-            "SELECT NOT EXISTS(SELECT 1 FROM user_blocks WHERE
-                 (owner=?1 AND peer=?2) OR (owner=?2 AND peer=?1))
-             AND (?3-COALESCE((SELECT since FROM first_seen WHERE owner=?2),?3))/86400>=?4",
-        )?;
+        let mut actor = self.db.prepare_cached(REPLY_ACTOR_VISIBLE)?;
         let mut rows = candidates.query(params![owner, target, cursor])?;
         while let Some(row) = rows.next()? {
             let header: crate::Envelope = serde_json::from_str(&row.get::<_, String>(0)?)?;

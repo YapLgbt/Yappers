@@ -28,6 +28,7 @@ pub(crate) struct NativeHome {
     pub(crate) primary: Primary,
     pub(crate) guard: Arc<NativeGuard>,
     pub(crate) path: PathBuf,
+    pub(crate) catalog_id: String,
     pub(crate) disclosure: Arc<crate::server::DisclosureFence>,
     pub(crate) feed_replies: crate::feed_replies::FeedReplies,
     admin: OnceLock<crate::native_admin::Admin>,
@@ -115,13 +116,14 @@ impl NativeHome {
         Ok(read_marker(path, true)?.is_some())
     }
 
-    fn own(path: &Path, guard_path: &Path, owner: File) -> Result<Arc<Self>> {
+    fn own(path: &Path, guard_path: &Path, owner: File, catalog_id: &str) -> Result<Arc<Self>> {
         let guard = Arc::new(NativeGuard::open(guard_path)?);
         let primary = wait(Primary::open(&Self::primary_path(path)))?;
         Ok(Arc::new(Self {
             primary,
             guard,
             path: path.to_owned(),
+            catalog_id: catalog_id.to_owned(),
             disclosure: Arc::default(),
             feed_replies: Default::default(),
             admin: OnceLock::new(),
@@ -154,10 +156,11 @@ impl NativeHome {
                 primary_path.is_file() && primary_path.metadata()?.len() > 0,
                 "missing native Home primary"
             );
-            let home = Self::own(&path, &guard_path, owner)?;
+            let home = Self::own(&path, &guard_path, owner, &id)?;
             let store = home.connection()?;
             store.verify_binding(&id)?;
             native_guard::reconcile(&store.db)?;
+            native_guard::recover_opening_reservations(&store.db, None)?;
             (home, store)
         } else {
             let existing_guard_lock = guard_path
@@ -215,7 +218,7 @@ impl NativeHome {
                 None => backup::lock_authority(&path)?,
             };
             let id = read_marker(&path, false)?.context("missing adoption record")?;
-            let home = Self::own(&path, &guard_path, owner)?;
+            let home = Self::own(&path, &guard_path, owner, &id)?;
             let mut store = home.connection()?;
             let prior: Option<String> = store
                 .db
@@ -228,6 +231,7 @@ impl NativeHome {
             if let Some(prior) = prior {
                 ensure!(prior == id, "native Home belongs to another catalog");
                 native_guard::reconcile(&store.db)?;
+                native_guard::recover_opening_reservations(&store.db, None)?;
             } else if fresh {
                 native_guard::initialize_head(&store.db)?;
                 store
@@ -297,9 +301,7 @@ impl Store {
                 Ok(value)
             })();
             if let Err(err) = &attempt {
-                if !self.db.is_autocommit()? {
-                    self.db.rollback_operation()?;
-                }
+                self.db.rollback_operation()?;
                 if crate::home_sql::retryable(err) && start.elapsed() < Duration::from_secs(4) {
                     std::thread::sleep(delay);
                     delay = (delay * 2).min(Duration::from_millis(32));
@@ -342,6 +344,7 @@ impl Store {
 
     fn adopt(&mut self, source: &Store, id: &str, cutover: bool) -> Result<()> {
         native_guard::initialize_head(&self.db)?;
+        native_guard::recover_opening_reservations(&self.db, None)?;
         // setval restores deleted cursor tails and requires exclusive access to the allocator.
         self.db.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
@@ -354,7 +357,7 @@ impl Store {
             self.db.commit_operation()?;
             Ok(())
         })();
-        if result.is_err() && !self.db.is_autocommit()? {
+        if result.is_err() {
             self.db.rollback_operation()?;
         }
         result
@@ -384,7 +387,7 @@ impl Store {
         let mut published = Vec::new();
         let result = (|| {
             let staged = stage.join("home");
-            let home = NativeHome::own(&staged, guard, owner_lock(&staged)?)?;
+            let home = NativeHome::own(&staged, guard, owner_lock(&staged)?, &id)?;
             let mut dest = home.connection()?;
             dest.adopt(source, &id, false)?;
             drop(dest);

@@ -22,7 +22,7 @@ The records below document earlier releases. Transport v4 negotiated `yappers/ne
 
 One request and one response are UTF-8 JSON documents on a single QUIC bidirectional stream. The sender finishes its half-stream; EOF terminates the document. Both sides cap a document at 1 MiB. Connections and streams are bounded by a 20-second request deadline. The server handles one request per connection, caps concurrent connections at 64, and refuses excess arrivals. JSON is not logged with credentials.
 
-Configuration supports at most 32 communities and 16 peers. Pull pages scan at most 100 log rows. A sync cycle handles at most 20 pages per peer. The prototype database caps distinct events at 10,000. A home applies 120 accepted events per author/community per rolling minute. These limits are executable defaults, not a production abuse-prevention system.
+Configuration supports at most 32 communities and 16 peers. Pull pages scan at most 100 log rows and fit within one 1 MiB response. When the next authorized entry would exceed that budget, the page ends before its cursor and the next pull starts there. An erased entry whose combined header and proof cannot fit can send the independently verifiable deletion proof. A sync cycle handles at most 20 pages per peer. A home applies 120 accepted events per author/community per rolling minute.
 
 ### Event format
 
@@ -67,7 +67,7 @@ The signing key must match the event's designated home. Home acceptance time mus
 
 Requests use the `type` discriminator:
 
-- `feed`: `token`, `community`, `author`. Returns `feed` with `posts` and `eventCount`. `author` selects the viewer's own vote/mine presentation; it is not a secret and does not grant authority.
+- `feed`: `token`, `community`, `author`. Returns `feed` with `posts` and `eventCount`. The count covers events stored for the community, independent of the current display filters. `author` selects the viewer's own vote/mine presentation; it is not a secret and does not grant authority.
 - `submit`: `token`, `event`. Returns `accepted` with `eventId` only after durable acceptance.
 - `pull`: `after`, optional `generation`, `limit` (1–100). Restricted to trusted transport endpoint identities. Returns `page` with `generation`, `entries`, `next`, and `more`.
 
@@ -87,7 +87,7 @@ An `error` response has a machine-oriented `code` and human-readable `message`. 
 
 ### Projection and bounded history
 
-The event set is authoritative; the feed is a bounded view of it. V1 returns the latest 200 posts and up to 200 replies per post. If that projection exceeds the wire cap, the server returns an explicit capacity error; it does not truncate bytes or falsely acknowledge a read. Event-log replication remains paginated and complete up to configured database capacity. Client feed/thread pagination, log compaction, full history export, and snapshot checkpoints are required before large communities are supported.
+The feed is a bounded view of the event set. A page includes up to 200 recent posts and up to 200 replies per post. The Home budgets room for roots before adding each conversation’s newest replies. When the frame budget shortens a conversation, the post carries `moreReplies`. An authenticated `feedReplies` social call takes the post ID, the ID of the oldest reply already displayed as `before` (or an omitted cursor if none are displayed), and the original `nearby` filter when present. It returns an earlier page in display order and a `more` flag. This continuation reads the current visible feed window. If the post or cursor falls out of that window, refresh the feed before continuing.
 
 Deletion requires target ownership. A deletion arriving before its target takes effect once that target arrives. A vote arriving before its post is retained and materializes when the post arrives. The home rejects new replies/votes whose post is not currently known; a queued client can retry after federation catches up.
 

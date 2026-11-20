@@ -169,7 +169,8 @@ fn legacy_epoch_change_fences_a_native_branch_and_preserves_current_keys() -> Re
 #[test]
 fn rolled_back_post_can_retry_but_cannot_resurrect_a_retired_key() -> Result<()> {
     let dir = tempdir()?;
-    let mut store = Store::open(&dir.path().join("catalog"))?;
+    let path = dir.path().join("catalog");
+    let mut store = Store::open(&path)?;
     let signer = signing_key(&new_secret())?;
     let home = hex::encode(signer.verifying_key().as_bytes());
     let accepted = |seq, action| {
@@ -208,9 +209,9 @@ fn rolled_back_post_can_retry_but_cannot_resurrect_a_retired_key() -> Result<()>
         )?,
         0
     );
-    assert_eq!(guard(&store.db)?.key(&base, scope)?, reserved);
+    assert!(guard(&store.db)?.key(&base, scope).is_err());
     store.accept(&post)?;
-    assert_eq!(guard(&store.db)?.key(&base, scope)?, reserved);
+    assert_ne!(guard(&store.db)?.key(&base, scope)?, reserved);
     let deleted = accepted(2, Action::Delete { target: id.clone() })?;
     store.accept(&deleted)?;
     store.accept(&post)?;
@@ -222,6 +223,33 @@ fn rolled_back_post_can_retry_but_cannot_resurrect_a_retired_key() -> Result<()>
         guard(&store.db)?
             .reserve_key(&head(&store.db)?, scope)
             .is_err()
+    );
+
+    let durable = accepted(3, post.event.payload.action.clone())?;
+    let abandoned = accepted(4, post.event.payload.action.clone())?;
+    // Leave both reservation records across reopen, with only one committed body.
+    store.db.begin_operation()?;
+    store.accept(&durable)?;
+    store.db.execute_batch("COMMIT")?;
+    drop(store);
+    let mut store = Store::open(&path)?;
+    assert_eq!(store.existing(&durable.event.id)?, Some(durable));
+    store.db.begin_operation()?;
+    store.accept(&abandoned)?;
+    store.db.execute_batch("ROLLBACK")?;
+    drop(store);
+    let store = Store::open(&path)?;
+    assert!(store.existing(&abandoned.event.id)?.is_none());
+    let authority = guard(&store.db)?.writer()?;
+    assert_eq!(
+        authority.query_row("SELECT count(*) FROM opening_reservations", [], |r| r
+            .get::<_, i64>(0))?,
+        0
+    );
+    assert_eq!(
+        authority.query_row("SELECT count(*) FROM opening_keys", [], |r| r
+            .get::<_, i64>(0))?,
+        1
     );
     Ok(())
 }

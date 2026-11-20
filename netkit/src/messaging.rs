@@ -12,6 +12,11 @@ use vodozemac::{Curve25519PublicKey, olm::OlmMessage};
 pub const PREKEY_BATCH: usize = 12;
 pub const MAIL_PAGE: usize = 8;
 
+#[cfg(feature = "server")]
+pub(crate) fn mail_cutoff(at: i64) -> i64 {
+    at - 30 * 86400
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Signed<T> {
     pub record: AccountRecord,
@@ -78,6 +83,11 @@ impl Payload for Letter {
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum SocialOp {
     PrivacyFeed {
+        nearby: Option<crate::Nearby>,
+    },
+    FeedReplies {
+        post: String,
+        before: Option<String>,
         nearby: Option<crate::Nearby>,
     },
     PrivacyStatus,

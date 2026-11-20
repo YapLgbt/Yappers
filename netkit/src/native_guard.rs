@@ -225,7 +225,12 @@ impl NativeGuard {
         Ok(result)
     }
 
-    pub(crate) fn reserve_key(&self, expected: &Stamp, scope: Scope<'_>) -> Result<[u8; 32]> {
+    fn reserve_key_for(
+        &self,
+        expected: &Stamp,
+        scope: Scope<'_>,
+        reservation: Option<(&str, &str)>,
+    ) -> Result<[u8; 32]> {
         let mut db = self.writer()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         check(&tx, expected)?;
@@ -235,16 +240,39 @@ impl NativeGuard {
             "SELECT EXISTS(SELECT 1 FROM known_deletions WHERE target=? AND owner=? AND community=? AND private<=?)",
             args, |r| r.get::<_, bool>(0)
         )?, "opening permanently retired");
-        tx.execute(
+        let inserted = tx.execute(
             "INSERT OR IGNORE INTO opening_keys VALUES(?,?,?,?,randomblob(32))",
             args,
         )?;
+        if let Some((catalog, operation)) = reservation {
+            if inserted != 0 {
+                tx.execute("INSERT INTO unconfirmed_opening_keys VALUES(?,?,?,?)", args)?;
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO opening_reservations
+                 SELECT target,owner,community,private,?5,?6 FROM unconfirmed_opening_keys
+                 WHERE target=?1 AND owner=?2 AND community=?3 AND private=?4",
+                params![
+                    scope.target,
+                    scope.owner,
+                    scope.community,
+                    scope.private,
+                    catalog,
+                    operation
+                ],
+            )?;
+        }
         let key = tx.query_row(
             "SELECT key FROM opening_keys WHERE target=? AND owner=? AND community=? AND private=?",
             args, |r| r.get(0)
         ).context("missing current opening key")?;
         tx.commit()?;
         Ok(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reserve_key(&self, expected: &Stamp, scope: Scope<'_>) -> Result<[u8; 32]> {
+        self.reserve_key_for(expected, scope, None)
     }
 
     pub(crate) fn key(&self, expected: &Stamp, scope: Scope<'_>) -> Result<[u8; 32]> {
@@ -613,10 +641,88 @@ pub(crate) fn opening_key(
         "opening deleted in native catalog");
     let current = head(db)?;
     if create {
-        guard(db)?.reserve_key(&current, scope)
+        let home = db.native_home().context("expected native Home")?;
+        db.with_opening_operation(|operation| {
+            home.guard
+                .reserve_key_for(&current, scope, Some((&home.catalog_id, operation)))
+        })
     } else {
         guard(db)?.key(&current, scope)
     }
+}
+
+/// A reservation can be resolved after its outer transaction ends, or on startup
+/// while the owner's lock guarantees that this catalog has no active writers.
+/// A key shared by overlapping writes survives until one commits or all abort.
+/// Existing confirmed keys may protect backups and are never reclaimed here.
+pub(crate) fn recover_opening_reservations(db: &HomeDb, operation: Option<&str>) -> Result<()> {
+    let home = db.native_home().context("expected native Home")?;
+    ensure!(
+        db.is_autocommit()?,
+        "opening recovery requires committed state"
+    );
+    let pending = {
+        let authority = home.guard.writer()?;
+        let sql = if operation.is_some() {
+            "SELECT target,owner,community,private,operation FROM opening_reservations WHERE catalog=?1 AND operation=?2"
+        } else {
+            "SELECT target,owner,community,private,operation FROM opening_reservations WHERE catalog=?1 AND ?2 IS NULL"
+        };
+        authority
+            .prepare(sql)?
+            .query_map(params![home.catalog_id, operation], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, bool>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let mut opening = db.prepare_cached(
+        "SELECT EXISTS(SELECT 1 FROM home_openings WHERE target=? AND owner=? AND community=? AND private=?)",
+    )?;
+    let live = pending
+        .iter()
+        .map(|(target, owner, community, private, _)| {
+            opening.query_row(params![target, owner, community, private], |r| {
+                r.get::<_, bool>(0)
+            })
+        })
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut authority = home.guard.writer()?;
+    let tx = authority.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    for ((target, owner, community, private, operation), live) in pending.into_iter().zip(live) {
+        let scope = params![target, owner, community, private];
+        if live {
+            tx.execute(
+                "DELETE FROM unconfirmed_opening_keys WHERE target=? AND owner=? AND community=? AND private=?",
+                scope,
+            )?;
+            tx.execute(
+                "DELETE FROM opening_reservations WHERE target=? AND owner=? AND community=? AND private=?",
+                scope,
+            )?;
+        } else {
+            tx.execute(
+                "DELETE FROM opening_reservations WHERE target=? AND owner=? AND community=? AND private=? AND catalog=? AND operation=?",
+                params![target, owner, community, private, home.catalog_id, operation],
+            )?;
+            tx.execute(
+                "DELETE FROM opening_keys WHERE target=?1 AND owner=?2 AND community=?3 AND private=?4
+                 AND EXISTS(SELECT 1 FROM unconfirmed_opening_keys WHERE target=?1 AND owner=?2 AND community=?3 AND private=?4)
+                 AND NOT EXISTS(SELECT 1 FROM opening_reservations WHERE target=?1 AND owner=?2 AND community=?3 AND private=?4)",
+                scope,
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 fn stage(db: &HomeDb, intent: Intent) -> Result<()> {

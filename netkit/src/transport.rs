@@ -308,6 +308,88 @@ async fn rpc_once(route: Route<'_>, address: &EndpointAddr, request: &Request) -
 /// The app consumes hydrated rows. On the wire each disclosed account contributes
 /// its profile once, even when it wrote many of the returned posts and replies.
 #[cfg(feature = "server")]
+fn row_profile(row: &mut serde_json::Value) -> (Option<String>, Option<serde_json::Value>) {
+    let peer = row["visibility"]["peer"].as_str().map(str::to_owned);
+    let profile = if peer.is_some() && !row["profile"].is_null() {
+        row.as_object_mut()
+            .and_then(|fields| fields.remove("profile"))
+    } else {
+        None
+    };
+    (peer, profile)
+}
+
+/// Account for the same packed fields as the encoder and the client's limit
+/// on expanded profile bytes. Keep the largest profile for a peer in case a
+/// Home has bylines for several of that peer's origins in the selected rows.
+#[cfg(feature = "server")]
+pub(crate) struct FeedBudget {
+    remaining: usize,
+    expanded_profiles: usize,
+    profiles: std::collections::HashMap<String, (usize, usize)>,
+    packed: bool,
+}
+
+#[cfg(feature = "server")]
+impl FeedBudget {
+    pub(crate) fn new(remaining: usize, packed: bool) -> Self {
+        Self {
+            remaining,
+            expanded_profiles: MAX_FRAME,
+            profiles: Default::default(),
+            packed,
+        }
+    }
+
+    pub(crate) fn add_post(&mut self, post: &RemotePost) -> Result<bool> {
+        self.add(post, post.visibility.as_ref(), post.profile.as_ref())
+    }
+
+    pub(crate) fn add_reply(&mut self, reply: &RemoteReply) -> Result<bool> {
+        self.add(reply, reply.visibility.as_ref(), reply.profile.as_ref())
+    }
+
+    fn add(
+        &mut self,
+        row: &impl serde::Serialize,
+        visibility: Option<&AuthorVisibility>,
+        profile: Option<&CommunityProfile>,
+    ) -> Result<bool> {
+        let peer = visibility
+            .and_then(|vis| vis.peer.as_deref())
+            .filter(|_| self.packed);
+        let mut bytes = serde_json::to_vec(row)?.len() + 1;
+        let mut expansion = 0;
+        let mut next = (0, 0);
+        if let Some(peer) = peer {
+            let (count, size) = self.profiles.get(peer).copied().unwrap_or_default();
+            let max = if let Some(profile) = profile {
+                let profile_bytes = serde_json::to_vec(profile)?.len();
+                bytes -= b"\"profile\":,".len() + profile_bytes;
+                size.max(profile_bytes)
+            } else {
+                size
+            };
+            bytes += max - size;
+            if size == 0 && max > 0 {
+                bytes += serde_json::to_vec(peer)?.len() + 2;
+            }
+            expansion = max + count * (max - size);
+            next = (count + 1, max);
+        }
+        if bytes > self.remaining || expansion > self.expanded_profiles {
+            return Ok(false);
+        }
+        self.remaining -= bytes;
+        self.expanded_profiles -= expansion;
+        if let Some(peer) = peer {
+            self.profiles.insert(peer.to_owned(), next);
+        }
+        Ok(true)
+    }
+}
+
+#[cfg(feature = "server")]
 pub(crate) fn encode_response(response: &Response) -> Result<Vec<u8>> {
     if !matches!(
         response,
@@ -319,10 +401,7 @@ pub(crate) fn encode_response(response: &Response) -> Result<Vec<u8>> {
     let mut profiles = serde_json::Map::new();
     for post in value["posts"].as_array_mut().unwrap() {
         let mut pack = |row: &mut serde_json::Value| {
-            if let Some(peer) = row["visibility"]["peer"].as_str().map(str::to_owned)
-                && !row["profile"].is_null()
-            {
-                let profile = row.as_object_mut().unwrap().remove("profile").unwrap();
+            if let (Some(peer), Some(profile)) = row_profile(row) {
                 profiles.insert(peer, profile);
             }
         };
@@ -335,7 +414,7 @@ pub(crate) fn encode_response(response: &Response) -> Result<Vec<u8>> {
     Ok(serde_json::to_vec(&value)?)
 }
 
-fn decode_response(bytes: &[u8]) -> Result<Response> {
+pub(crate) fn decode_response(bytes: &[u8]) -> Result<Response> {
     #[derive(serde::Deserialize)]
     struct Dictionary {
         #[serde(default)]

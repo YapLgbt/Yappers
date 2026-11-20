@@ -43,6 +43,7 @@ pub fn moderate_ha(path: &Path, grant: &FullHomeStandby, event: &str, hide: bool
     db.busy_timeout(Duration::from_secs(5))?;
     db.execute_batch("PRAGMA secure_delete=ON; PRAGMA synchronous=EXTRA")?;
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    migrate_receipt_disclosures(&tx)?;
     let (rev,image):(u64,Vec<u8>)=tx.query_row("SELECT revision,image FROM head JOIN membership USING(singleton) WHERE home=?1 AND standby=?2",
         params![grant.home,grant.standby.id.to_string()],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let mut store = Store {
@@ -100,11 +101,122 @@ pub struct HaOptions {
     pub grant: FullHomeStandby,
     pub role: HaRole,
 }
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+enum ReceiptPolicy {
+    /// A write acknowledgment can be replayed without running the write again.
+    Durable,
+    /// Retry against current state when a saved read is stale.
+    Read,
+    /// Preserve deduplication for calls that both disclose data and change state.
+    #[default]
+    ReadAndWrite,
+    /// Only a terminal deletion confirmation is a durable acknowledgment.
+    AccountDeletion,
+}
+
+impl ReceiptPolicy {
+    fn for_request(call: &Request) -> Self {
+        use crate::{messaging::SocialOp, private_groups::Operation as PrivateGroup};
+        match call {
+            Request::PublicReplicaFeed { .. }
+            | Request::DeletionsAfter { .. }
+            | Request::PeerProfiles { .. }
+            | Request::AccountLookup { .. }
+            | Request::AccountDeleteAvailability { .. }
+            | Request::Feed { .. } => Self::Read,
+            Request::Social { op, .. } => match op.as_ref() {
+                SocialOp::PrivacyFeed { .. }
+                | SocialOp::Feed { .. }
+                | SocialOp::FeedReplies { .. }
+                | SocialOp::Contact { .. }
+                | SocialOp::Profiles { .. }
+                | SocialOp::PrivacyStatus
+                | SocialOp::NotificationInbox
+                | SocialOp::NotificationThread { .. }
+                | SocialOp::Blocks
+                | SocialOp::OpenPush { .. } => Self::Read,
+                SocialOp::Inbox { .. } | SocialOp::Claim { .. } => Self::ReadAndWrite,
+                SocialOp::SetPush { .. }
+                | SocialOp::ReadNotification { .. }
+                | SocialOp::MuteNotifications { .. }
+                | SocialOp::DismissRequest { .. }
+                | SocialOp::SetProfile { .. }
+                | SocialOp::ClaimUsername { .. }
+                | SocialOp::SetPrivacy { .. }
+                | SocialOp::Approve { .. }
+                | SocialOp::Block { .. }
+                | SocialOp::Unblock { .. }
+                | SocialOp::Publish { .. }
+                | SocialOp::Deliver { .. } => Self::Durable,
+            },
+            Request::PrivateGroup { op, .. } => match op.as_ref() {
+                PrivateGroup::Roster { .. }
+                | PrivateGroup::RosterAfter { .. }
+                | PrivateGroup::Read { .. } => Self::Read,
+                PrivateGroup::Create { .. }
+                | PrivateGroup::Change { .. }
+                | PrivateGroup::Publish { .. } => Self::Durable,
+            },
+            Request::AnnounceAccount { .. }
+            | Request::AccountRegister { .. }
+            | Request::AccountExport { .. }
+            | Request::Directory { .. }
+            | Request::EnrollHost { .. }
+            | Request::CreateGroup { .. }
+            | Request::JoinGroup { .. }
+            | Request::Groups { .. }
+            | Request::GroupsAfter { .. }
+            | Request::PullPublicProjection { .. }
+            | Request::Pull { .. } => Self::ReadAndWrite,
+            Request::AccountDelete { .. } => Self::AccountDeletion,
+            Request::AccountImport { .. }
+            | Request::Submit { .. }
+            | Request::ReportAvailability
+            | Request::SubmitReport { .. }
+            | Request::ReportStatus { .. }
+            | Request::ServerSource
+            | Request::HomeOperation { .. } => Self::Durable,
+        }
+    }
+
+    fn durable(self, result: &str) -> bool {
+        self == Self::Durable
+            || (self == Self::AccountDeletion
+                && matches!(
+                    serde_json::from_str::<Response>(result),
+                    Ok(Response::AccountDeleted { .. })
+                ))
+    }
+}
+
+const EXPIRED_RECEIPT: &str =
+    r#"{"type":"error","code":"expired","message":"Content changed; refresh"}"#;
+const DURABLE_RECEIPT: i64 = -1;
+
+fn migrate_receipt_disclosures(db: &Connection) -> Result<()> {
+    // Keep the established ledger tables usable during a rolling upgrade.
+    // The trigger also sees revisions published by the offline moderation CLI.
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS receipt_epoch(singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL);
+         INSERT OR IGNORE INTO receipt_epoch VALUES(1,0);
+         CREATE TABLE IF NOT EXISTS receipt_visibility(remote TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(remote,id));
+         CREATE TRIGGER IF NOT EXISTS receipt_epoch_publish AFTER UPDATE OF image ON head BEGIN
+             UPDATE receipt_epoch SET revision=NEW.revision WHERE singleton=NEW.singleton;
+         END;
+         CREATE TRIGGER IF NOT EXISTS receipt_visibility_expire AFTER DELETE ON receipts BEGIN
+             DELETE FROM receipt_visibility WHERE remote=OLD.remote AND id=OLD.id;
+         END;",
+    )?;
+    Ok(())
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct Operation {
     remote: String,
     id: String,
     digest: String,
+    #[serde(default)]
+    receipt_policy: ReceiptPolicy,
 }
 impl Operation {
     fn new(remote: &str, id: String, bytes: &[u8]) -> Result<Self> {
@@ -116,6 +228,7 @@ impl Operation {
             remote: remote.into(),
             id,
             digest: blake3::hash(bytes).to_hex().to_string(),
+            receipt_policy: ReceiptPolicy::Durable,
         })
     }
 }
@@ -183,6 +296,10 @@ impl Ledger {
             CREATE TABLE IF NOT EXISTS head(singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL, image BLOB NOT NULL);
             CREATE TABLE IF NOT EXISTS seed_receipt(digest TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS receipts(remote TEXT NOT NULL, id TEXT NOT NULL, digest TEXT NOT NULL, response TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(remote,id));")?;
+        // Install the authority-local migration atomically before serving.
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        migrate_receipt_disclosures(&tx)?;
+        tx.commit()?;
         crate::backup::attach(&mut db, path)?;
         let guard_lock = crate::backup::lock_authority(path)?;
         crate::backup::verify_epoch(&db)?;
@@ -242,7 +359,10 @@ impl Ledger {
                     return Ok((Answer::Seeded, Vec::new()));
                 }
                 tx.execute("INSERT INTO seed_receipt VALUES(?)", [digest])?;
-                tx.execute("INSERT INTO head VALUES(1,1,?1)", [&image])?;
+                tx.execute(
+                    "INSERT INTO head(singleton,revision,image) VALUES(1,1,?1)",
+                    [&image],
+                )?;
                 remember_guard_state(&tx, &image, true)?;
                 for deletion in deletion_set(&image)? {
                     deletion.remember(&tx)?;
@@ -251,20 +371,42 @@ impl Ledger {
                 Answer::Seeded
             }
             Control::Open { op, known } => {
-                let rev: u64 = self
-                    .db
-                    .query_row("SELECT revision FROM head", [], |r| r.get(0))?;
-                let prior: Option<(String,String)> = self.db.query_row("SELECT digest,response FROM receipts WHERE remote=?1 AND id=?2 AND expires>=?3",
-                    params![op.remote,op.id,now()], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
-                if let Some((digest, result)) = prior {
+                // Pin the revision and its receipt before an operator can publish
+                // a concurrently updated moderation decision on another connection.
+                let tx = self.db.unchecked_transaction()?;
+                let (rev, disclosure_revision): (u64, i64) = tx.query_row(
+                    "SELECT head.revision,receipt_epoch.revision FROM head JOIN receipt_epoch USING(singleton)",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
+                let prior: Option<(String, String, Option<i64>)> = tx.query_row(
+                    "SELECT r.digest,r.response,v.revision FROM receipts r LEFT JOIN receipt_visibility v USING(remote,id)
+                     WHERE r.remote=?1 AND r.id=?2 AND r.expires>=?3",
+                    params![op.remote, op.id, now()],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                ).optional()?;
+                if let Some((digest, result, receipt_revision)) = prior {
                     ensure!(digest == op.digest, "request ID reused");
-                    return Ok((
-                        Answer::Committed {
-                            revision: rev,
-                            result,
-                        },
-                        data,
-                    ));
+                    let valid = match receipt_revision {
+                        Some(revision) => {
+                            revision == DURABLE_RECEIPT || revision == disclosure_revision
+                        }
+                        // An unmarked content-bearing receipt has no proof of current access.
+                        None => op.receipt_policy.durable(&result),
+                    };
+                    if valid || op.receipt_policy != ReceiptPolicy::Read {
+                        return Ok((
+                            Answer::Committed {
+                                revision: rev,
+                                result: if valid {
+                                    result
+                                } else {
+                                    EXPIRED_RECEIPT.into()
+                                },
+                            },
+                            data,
+                        ));
+                    }
                 }
                 // Let the in-flight operation finish. A crashed worker stops delaying other
                 // callers once its short, authority-clock permit expires.
@@ -284,9 +426,7 @@ impl Ledger {
                     issued: Instant::now(),
                 });
                 if known != Some(rev) {
-                    data = self
-                        .db
-                        .query_row("SELECT image FROM head", [], |r| r.get(0))?;
+                    data = tx.query_row("SELECT image FROM head", [], |r| r.get(0))?;
                 }
                 Answer::Ready {
                     revision: rev,
@@ -301,6 +441,7 @@ impl Ledger {
                         && granted.op.remote == op.remote
                         && granted.op.id == op.id
                         && granted.op.digest == op.digest
+                        && granted.op.receipt_policy == op.receipt_policy
                         && granted.issued.elapsed() < OPERATION_TTL,
                     "operation fenced"
                 );
@@ -339,7 +480,11 @@ impl Ledger {
                         }
                         // A cached feed, contact lookup, export or earlier acceptance
                         // may contain the opening. Fence its operation ID against reruns.
-                        tx.execute("UPDATE receipts SET response=?", [r#"{"type":"error","code":"expired","message":"Content changed; refresh"}"#])?;
+                        tx.execute("UPDATE receipts SET response=?", [EXPIRED_RECEIPT])?;
+                        tx.execute(
+                            "UPDATE receipt_visibility SET revision=?",
+                            [DURABLE_RECEIPT],
+                        )?;
                     }
                     tx.execute(
                         "UPDATE head SET revision=?1,image=?2 WHERE revision=?3",
@@ -347,10 +492,27 @@ impl Ledger {
                     )?
                 };
                 ensure!(updated == 1, "stale revision");
-                tx.execute("DELETE FROM receipts WHERE expires<?1", [now()])?;
+                let receipt_revision = if op.receipt_policy.durable(&result) {
+                    DURABLE_RECEIPT
+                } else {
+                    tx.query_row("SELECT revision FROM receipt_epoch", [], |r| {
+                        r.get::<_, i64>(0)
+                    })?
+                };
+                let now = now();
+                tx.execute("DELETE FROM receipts WHERE expires<?1", [now])?;
+                ensure!(
+                    tx.execute(
+                        "INSERT INTO receipts(remote,id,digest,response,expires) VALUES(?1,?2,?3,?4,?5)
+                         ON CONFLICT(remote,id) DO UPDATE SET response=excluded.response,expires=excluded.expires
+                         WHERE receipts.digest=excluded.digest",
+                        params![op.remote, op.id, op.digest, result, now + RECEIPT_TTL],
+                    )? == 1,
+                    "request ID reused"
+                );
                 tx.execute(
-                    "INSERT INTO receipts VALUES(?1,?2,?3,?4,?5)",
-                    params![op.remote, op.id, op.digest, result, now() + RECEIPT_TTL],
+                    "INSERT OR REPLACE INTO receipt_visibility(remote,id,revision) VALUES(?1,?2,?3)",
+                    params![op.remote, op.id, receipt_revision],
                 )?;
                 tx.commit()?;
                 self.permit = None;
@@ -427,8 +589,15 @@ fn remember_guard_state(ledger: &Connection, image: &[u8], seed: bool) -> Result
     }
     if changed > 0 {
         // A retry of a read-only preflight must not certify a superseded registration.
-        ledger.execute("UPDATE receipts SET response=? WHERE json_valid(response) AND json_extract(response,'$.type')='accountDeleteAvailable'",
-            [r#"{"type":"error","code":"expired","message":"Account changed; refresh"}"#])?;
+        let expired = r#"{"type":"error","code":"expired","message":"Account changed; refresh"}"#;
+        ledger.execute(
+            "UPDATE receipts SET response=? WHERE json_valid(response) AND json_extract(response,'$.type')='accountDeleteAvailable'",
+            [expired],
+        )?;
+        ledger.execute(
+            "UPDATE receipt_visibility SET revision=? WHERE (remote,id) IN (SELECT remote,id FROM receipts WHERE response=?)",
+            params![DURABLE_RECEIPT, expired],
+        )?;
     }
     if changed > 0 || deliveries > 0 || retired {
         ledger.execute("UPDATE guard.state SET epoch=epoch+1", [])?;
@@ -670,7 +839,9 @@ impl Ha {
         })
         .await??;
         let (rev, permit) = match answer {
-            Answer::Committed { result, .. } => return Ok(serde_json::from_str(&result)?),
+            Answer::Committed { result, .. } => {
+                return transport::decode_response(result.as_bytes());
+            }
             Answer::Ready { revision, permit } => (revision, permit),
             _ => bail!("home commit authority unavailable"),
         };
@@ -700,7 +871,7 @@ impl Ha {
                             code: "rejected".into(),
                             message: e.to_string(),
                         });
-                        let serialized = serde_json::to_string(&response)?;
+                        let serialized = String::from_utf8(transport::encode_response(&response)?)?;
                         ensure!(serialized.len() <= MAX_FRAME, "home response exceeds bound");
                         let image = if ok
                             && before
@@ -738,7 +909,7 @@ impl Ha {
                 if ok {
                     *cache = Some(revision);
                 }
-                Ok(serde_json::from_str(&result)?)
+                transport::decode_response(result.as_bytes())
             }
             _ => bail!("operation fenced before commit"),
         }
@@ -766,22 +937,22 @@ impl Ha {
                 }
             }));
         }
-        // Previous federation receipts must never bypass a later policy suspension.
-        let bytes = if matches!(
-            call,
-            Request::Pull { .. }
-                | Request::DeletionsAfter { .. }
-                | Request::PeerProfiles { .. }
-                | Request::PullPublicProjection { .. }
-                | Request::EnrollHost { .. }
-        ) {
+        // Previous disclosures must never bypass a changed admission policy.
+        let receipt_policy = ReceiptPolicy::for_request(&call);
+        let bytes = if receipt_policy != ReceiptPolicy::Durable {
             serde_json::to_vec(&(&self.policy, &call))?
         } else {
             serde_json::to_vec(&call)?
         };
-        let op = Operation::new(remote, id, &bytes)?;
+        let mut op = Operation::new(remote, id, &bytes)?;
+        op.receipt_policy = receipt_policy;
         self.run(state, op, || state.dispatch(remote, call)).await
     }
+    pub(super) async fn expire_mail(&self, state: &Arc<State>) -> Result<bool> {
+        self.background(state, state.ha_blocking(|store| store.sweep_expired_mail()))
+            .await
+    }
+
     pub(super) async fn push_operation(
         &self,
         state: &Arc<State>,
@@ -993,6 +1164,54 @@ mod tests {
         assert!(!health(800).has_headroom());
         assert!(!health(1000).has_headroom());
     }
+
+    #[test]
+    fn publication_of_a_new_image_fences_reads_and_keeps_write_acknowledgments() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let route = grant();
+        let path = dir.path().join("ledger");
+        let seed = Store::open(&dir.path().join("seed"))?.snapshot()?;
+        let mut ledger = Ledger::open(&path, &route)?;
+        ledger.exchange(true, Control::Seed, seed)?;
+        let operations = [
+            ReceiptPolicy::Read,
+            ReceiptPolicy::ReadAndWrite,
+            ReceiptPolicy::Durable,
+        ]
+        .map(|receipt_policy| Operation {
+            receipt_policy,
+            ..Operation::new("device", new_secret(), b"call").unwrap()
+        });
+        for operation in &operations {
+            let (permit, _) = begin(&mut ledger, true, operation);
+            ledger.exchange(true, commit(operation, &permit), Vec::new())?;
+        }
+        let open = |op: &Operation| Control::Open {
+            op: op.clone(),
+            known: None,
+        };
+        let [read, mixed, acknowledgment] = &operations;
+        assert!(matches!(
+            ledger.exchange(false, open(read), Vec::new())?.0,
+            Answer::Committed { result, .. } if result == "durable receipt"
+        ));
+
+        moderate_ha(&path, &route, &new_secret(), true)?;
+        drop(ledger);
+        let mut ledger = Ledger::open(&path, &route)?;
+        let (permit, _) = begin(&mut ledger, false, read);
+        ledger.exchange(false, commit(read, &permit), Vec::new())?;
+        assert!(matches!(
+            ledger.exchange(false, open(mixed), Vec::new())?.0,
+            Answer::Committed { result, .. } if result == EXPIRED_RECEIPT
+        ));
+        assert!(matches!(
+            ledger.exchange(false, open(acknowledgment), Vec::new())?.0,
+            Answer::Committed { result, .. } if result == "durable receipt"
+        ));
+        Ok(())
+    }
+
     #[test]
     fn account_retirement_fences_ha_receipts_and_snapshot_rollback() -> Result<()> {
         let dir = tempfile::tempdir()?;

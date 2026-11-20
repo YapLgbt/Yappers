@@ -2,12 +2,16 @@
 //! Installation-scoped, opt-in delivery. The provider receives only a generic
 //! alert and an opaque route token. Opening it requires the enrolled account/device.
 use crate::{
+    messaging::mail_cutoff,
     model::{new_secret, now},
     store::Store,
 };
 use anyhow::{Result, ensure};
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
+
+const PUSH_BATCH: i64 = 16;
 pub(crate) fn capabilities() -> Value {
     let enabled = std::env::var("YAP_PUSH_PROVIDERS").unwrap_or_default();
     let has = |name: &str| enabled.split(',').any(|s| s == name);
@@ -177,7 +181,7 @@ impl Store {
             let message=self.db.query_row("SELECT m.seq,m.created,m.id FROM dm_mail m JOIN dm_devices d ON d.owner=m.recipient
                 WHERE m.recipient=?1 AND d.device=?2 AND m.sender=?3 AND m.held=0 AND m.created>=?4
                 AND NOT EXISTS(SELECT 1 FROM user_blocks b WHERE (b.owner=?1 AND b.peer=?3) OR (b.owner=?3 AND b.peer=?1))
-                ORDER BY m.seq DESC LIMIT 1",params![owner,device,target,now()-30*86400],|r|Ok(json!({
+                ORDER BY m.seq DESC LIMIT 1",params![owner,device,target,mail_cutoff(now())],|r|Ok(json!({
                     "target":target,"through":r.get::<_,i64>(0)?,"created":r.get::<_,i64>(1)?,"last":r.get::<_,String>(2)?,"unread":0
                 }))).optional()?;
             if let Some(item) = message {
@@ -186,6 +190,141 @@ impl Store {
         }
         Ok(json!({}))
     }
+    fn pending_mail_pushes(
+        &self,
+        owner: &str,
+        device: &str,
+        category: &str,
+        baseline: i64,
+        time: i64,
+    ) -> Result<Vec<(String, i64)>> {
+        let mut statement = self.db.prepare_cached(
+            "SELECT m.sender,MAX(m.seq) AS latest
+             FROM dm_mail m
+             JOIN dm_devices d ON d.owner=m.recipient AND d.device=?2
+             LEFT JOIN inbox_reads a ON a.owner=m.recipient AND a.kind='message' AND a.target=m.sender
+             LEFT JOIN push_routes r ON r.owner=m.recipient AND r.device=?2 AND r.category=?3 AND r.target=m.sender
+             WHERE m.recipient=?1 AND m.seq>?4 AND m.created>=?5
+               AND m.seq>COALESCE(r.delivered,0) AND COALESCE(r.retry_at,0)<=?6
+               AND ((?3='request' AND m.held=1 AND m.packet IS NOT NULL)
+                 OR (?3='message' AND m.held=0 AND m.seq>COALESCE(a.through,0)))
+               AND NOT EXISTS(SELECT 1 FROM user_blocks b WHERE
+                 (b.owner=m.recipient AND b.peer=m.sender) OR (b.owner=m.sender AND b.peer=m.recipient))
+             GROUP BY m.sender ORDER BY latest DESC LIMIT ?7",
+        )?;
+        Ok(statement
+            .query_map(
+                params![
+                    owner,
+                    device,
+                    category,
+                    baseline,
+                    mail_cutoff(time),
+                    time,
+                    PUSH_BATCH
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn pending_reply_pushes(
+        &self,
+        owner: &str,
+        device: &str,
+        baseline: i64,
+        time: i64,
+    ) -> Result<Vec<(String, i64)>> {
+        if !self.is_native() {
+            let mut statement = self.db.prepare_cached(
+                "SELECT n.target,MAX(n.seq) AS latest
+                 FROM inbox_visible n
+                 LEFT JOIN inbox_reads a ON a.owner=n.owner AND a.kind='reply' AND a.target=n.target
+                 LEFT JOIN push_routes r ON r.owner=n.owner AND r.device=?2 AND r.category='reply' AND r.target=n.target
+                 WHERE n.owner=?1 AND n.seq>MAX(?3,COALESCE(a.through,0),COALESCE(r.delivered,0))
+                   AND COALESCE(r.retry_at,0)<=?4
+                 GROUP BY n.target ORDER BY latest DESC LIMIT ?5",
+            )?;
+            return Ok(statement
+                .query_map(params![owner, device, baseline, time, PUSH_BATCH], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?
+                .collect::<rusqlite::Result<_>>()?);
+        }
+        let mut statement = self.db.prepare_cached(
+            "SELECT e.community,e.id,MAX(?3,COALESCE(a.through,0),COALESCE(r.delivered,0))
+             FROM events e
+             LEFT JOIN inbox_reads a ON a.owner=?1 AND a.kind='reply' AND a.target=e.id
+             LEFT JOIN push_routes r ON r.owner=?1 AND r.device=?2 AND r.category='reply' AND r.target=e.id
+             WHERE COALESCE(json_extract(e.envelope,'$.event.payload.account.payload.account'),e.author)=?1
+               AND json_extract(e.envelope,'$.event.payload.action.kind')='erased'
+               AND json_extract(e.envelope,'$.event.payload.action.reply')=0
+               AND json_extract(e.envelope,'$.deletion') IS NULL
+               AND COALESCE(r.retry_at,0)<=?4
+               AND NOT EXISTS(SELECT 1 FROM hidden h WHERE h.id=e.id)
+               AND NOT EXISTS(SELECT 1 FROM inbox_mutes m WHERE m.owner=?1 AND m.target=e.id)",
+        )?;
+        let mut by_community = BTreeMap::<String, Vec<_>>::new();
+        for row in statement.query_map(params![owner, device, baseline, time], |row| {
+            Ok((row.get(0)?, (row.get(1)?, row.get(2)?)))
+        })? {
+            let (community, parent) = row?;
+            by_community.entry(community).or_default().push(parent);
+        }
+        let prefs = crate::privacy::settings(&self.db, owner)?;
+        let mut lookup = self.db.prepare_cached(
+            "SELECT CASE WHEN ?3 THEN e.envelope ELSE NULL END,
+                    COALESCE(json_extract(e.envelope,'$.event.payload.account.payload.account'),e.author)
+             FROM events e WHERE e.id=?1 AND CAST(e.community AS TEXT)=?2
+               AND json_extract(e.envelope,'$.deletion') IS NULL
+               AND NOT EXISTS(SELECT 1 FROM hidden h WHERE h.id=e.id)",
+        )?;
+        let mut actor = self
+            .db
+            .prepare_cached(crate::notifications::REPLY_ACTOR_VISIBLE)?;
+        let mut opening = self
+            .db
+            .prepare_cached("SELECT routing FROM home_openings WHERE target=? AND private=0")?;
+        let mut pending = Vec::new();
+        for (community, parents) in by_community {
+            pending.extend(crate::feed_replies::pending_arrivals(
+                &self.db,
+                &community,
+                &parents,
+                |id| {
+                    let found: Option<(Option<String>, String)> = lookup
+                        .query_row(params![id, community, prefs.hide_anonymous], |row| {
+                            Ok((row.get(0)?, row.get(1)?))
+                        })
+                        .optional()?;
+                    let Some((header, author)) = found else {
+                        return Ok(false);
+                    };
+                    if author == owner
+                        || !actor
+                            .query_row(params![owner, author, time, prefs.feed_days], |row| {
+                                row.get::<_, bool>(0)
+                            })?
+                    {
+                        return Ok(false);
+                    }
+                    if let Some(header) = header {
+                        let header = serde_json::from_str(&header)?;
+                        let sealed = opening.query_row([id], |row| row.get::<_, Vec<u8>>(0))?;
+                        return Ok(!crate::native_content::reply_route(
+                            &self.db, &header, &sealed,
+                        )?
+                        .1);
+                    }
+                    Ok(true)
+                },
+            )?);
+        }
+        pending.sort_unstable_by_key(|(_, cursor)| std::cmp::Reverse(*cursor));
+        pending.truncate(PUSH_BATCH as usize);
+        Ok(pending)
+    }
+
     pub(crate) fn claim_push(&self) -> Result<Value> {
         let tx = self.db.unchecked_transaction()?;
         let devices = tx
@@ -210,12 +349,7 @@ impl Store {
                 continue;
             }
             let categories: Vec<String> = serde_json::from_str(&cats)?;
-            let inbox = self.notification_inbox(&owner, &device)?;
-            for (category, field) in [
-                ("reply", "activity"),
-                ("message", "messages"),
-                ("request", "requests"),
-            ] {
+            for category in ["reply", "message", "request"] {
                 if !categories.iter().any(|c| c == category) {
                     continue;
                 }
@@ -224,19 +358,20 @@ impl Store {
                     [&owner, &device, category],
                     |r| r.get(0),
                 )?;
-                for row in inbox[field].as_array().into_iter().flatten() {
-                    let seq = row["through"].as_i64().unwrap_or(0);
-                    if seq <= start || row["unread"] == 0 {
-                        continue;
-                    }
-                    let target = row["target"].as_str().unwrap();
+                let time = now();
+                let pending = if category == "reply" {
+                    self.pending_reply_pushes(&owner, &device, start, time)?
+                } else {
+                    self.pending_mail_pushes(&owner, &device, category, start, time)?
+                };
+                for (target, seq) in pending {
                     tx.execute("INSERT OR IGNORE INTO push_routes(token,owner,device,category,target) VALUES(?,?,?,?,?)",params![new_secret(),owner,device,category,target])?;
                     let route:Option<String>=tx.query_row("UPDATE push_routes SET leasing=?,retry_at=? WHERE owner=? AND device=? AND category=? AND target=? AND delivered<? AND retry_at<=? RETURNING token",
-                        params![seq,now()+90,owner,device,category,target,seq,now()],|r|r.get(0)).optional()?;
+                        params![seq,time+90,owner,device,category,target,seq,time],|r|r.get(0)).optional()?;
                     if let Some(token) = route {
                         jobs.push(json!({"route":token,"seq":seq,"provider":provider,"subscription":serde_json::from_str::<Value>(&sub)?,"category":category}));
                     }
-                    if jobs.len() >= 16 {
+                    if jobs.len() >= PUSH_BATCH as usize {
                         tx.commit()?;
                         return Ok(json!(jobs));
                     }
@@ -272,7 +407,86 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{model::signing_key, portability::AccountWallet};
+    use crate::{
+        model::{Action, Envelope, SignedEvent, signing_key},
+        portability::AccountWallet,
+    };
+
+    #[test]
+    fn reply_pushes_follow_late_parents_and_recheck_visibility_without_reading_bodies() -> Result<()>
+    {
+        let dir = tempfile::tempdir()?;
+        let mut store = Store::open(&dir.path().join("home"))?;
+        let key = signing_key(&new_secret())?;
+        let home = hex::encode(key.verifying_key().as_bytes());
+        let wallet = AccountWallet::create(new_secret(), home.clone())?;
+        let record = store.register_account(&wallet.chain)?;
+        let owner = &record.payload.account;
+        let device = record.payload.devices.first().unwrap();
+        let author = signing_key(&wallet.device_secret)?;
+        let neighbor = signing_key(&new_secret())?;
+        let parent = Envelope::accept(
+            SignedEvent::create_for_account(
+                &author,
+                home.clone(),
+                "scope".into(),
+                1,
+                Action::Post {
+                    body: "Parent".into(),
+                    topic: "Plans".into(),
+                    display_name: "Owner".into(),
+                    anonymous: false,
+                },
+                record.clone(),
+            )?,
+            &key,
+        )?;
+        let reply = Envelope::accept(
+            SignedEvent::create(
+                &neighbor,
+                home,
+                "scope".into(),
+                1,
+                Action::Reply {
+                    parent: parent.event.id.clone(),
+                    body: "Reply".into(),
+                    display_name: "Anonymous neighbor".into(),
+                },
+            )?,
+            &key,
+        )?;
+        store.db.execute(
+            "INSERT INTO push_devices VALUES(?,?,'fcm','\"sample-token\"','[\"reply\"]')",
+            params![owner, device],
+        )?;
+        store.db.execute(
+            "INSERT INTO push_starts VALUES(?,?,'reply',0)",
+            params![owner, device],
+        )?;
+        store.accept(&reply)?;
+        assert_eq!(store.claim_push()?, json!([]));
+        store.accept(&parent)?;
+        store.update_privacy(
+            owner,
+            &crate::messaging::PrivacySettings {
+                hide_anonymous: true,
+                ..Default::default()
+            },
+        )?;
+        assert_eq!(store.claim_push()?, json!([]));
+        store.db.execute(
+            "UPDATE home_openings SET sealed=x'00' WHERE target=?",
+            [&reply.event.id],
+        )?;
+        store.update_privacy(owner, &Default::default())?;
+        let jobs = store.claim_push()?;
+        let route = jobs[0]["route"].as_str().unwrap();
+        assert_eq!(jobs[0]["category"], "reply");
+        store.finish_push(&jobs, &json!({route: "ok"}))?;
+        assert_eq!(store.claim_push()?, json!([]));
+        Ok(())
+    }
+
     #[test]
     fn delivery_is_fenced_scoped_and_rechecked_after_policy_changes() -> Result<()> {
         let dir = tempfile::tempdir()?;

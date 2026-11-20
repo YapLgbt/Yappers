@@ -92,7 +92,7 @@ fn cross_community_proofs_purge_and_predeletion_archive_agree() -> Result<()> {
         ("held", "other", owner.as_str()),
         ("keep", "other", "third"),
     ] {
-        store.db.execute("INSERT INTO dm_mail(id,sender,recipient,packet,created,held) VALUES(?1,?2,?3,'encrypted',1,1)",params![id,sender,recipient])?;
+        store.db.execute("INSERT INTO dm_mail(id,sender,recipient,packet,created,held) VALUES(?1,?2,?3,'encrypted',?4,1)",params![id,sender,recipient,crate::now()])?;
     }
     for sql in [
         "INSERT INTO dm_devices VALUES(?1,'device','identity')",

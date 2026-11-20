@@ -40,6 +40,30 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?;
         Ok(votes)
     }
+
+    pub(crate) fn remove_blocked_votes(
+        &self,
+        community: &str,
+        targets: &[String],
+        viewer: &str,
+        votes: &mut HashMap<String, (i64, i8)>,
+    ) -> Result<()> {
+        let mut read = self.db.prepare_cached(
+            "SELECT t.value,SUM(v.value) FROM json_each(?1) t
+             CROSS JOIN user_blocks b ON b.owner=?3
+             CROSS JOIN feed_owner_votes v
+               ON v.community=?2 AND v.target=CAST(t.value AS TEXT) AND v.owner=b.peer
+             GROUP BY t.value",
+        )?;
+        let mut rows = read.query(params![serde_json::to_string(targets)?, community, viewer])?;
+        while let Some(row) = rows.next()? {
+            let target: String = row.get(0)?;
+            if let Some((score, _)) = votes.get_mut(&target) {
+                *score -= row.get::<_, i64>(1)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

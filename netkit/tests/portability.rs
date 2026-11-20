@@ -15,6 +15,52 @@ fn key(secret: &str) -> String {
 fn wallet(home: &str) -> AccountWallet {
     AccountWallet::create(new_secret(), home.into()).unwrap()
 }
+
+#[tokio::test]
+async fn continued_reply_windows_respect_feed_visibility() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let home = Server::start(config(&dir.path().join("home"), new_secret(), "community")).await?;
+    let endpoint = home.endpoint.id().to_string();
+    let writer = portable_client(&home, "community", &wallet(&endpoint)).await;
+    let reader = portable_client(&home, "community", &wallet(&endpoint)).await;
+    let post = writer.prepare(action("Neighborhood notes"))?.event;
+    writer.submit(post.clone()).await?;
+    let mut named = Vec::new();
+    for name in ["Named neighbor", "Anonymous neighbor", "Named neighbor"] {
+        let reply = writer
+            .prepare(Action::Reply {
+                parent: post.id.clone(),
+                body: "Neighborhood reply".into(),
+                display_name: name.into(),
+            })?
+            .event;
+        writer.submit(reply.clone()).await?;
+        if name != "Anonymous neighbor" {
+            named.push(reply.id);
+        }
+    }
+    reader.feed().await?;
+    privacy_op(&reader, json!({"kind":"setPrivacy","settings":{"hideAnonymous":true,"feedDays":0,"dmDays":0,"approvedOnly":false}})).await;
+    let Response::Feed { posts, .. } = reader.feed().await? else {
+        anyhow::bail!("expected feed");
+    };
+    assert_eq!(posts[0].replies.len(), 2);
+    let before = &posts[0].replies[1].id;
+    let page = command(
+        &reader,
+        json!({"type":"social","op":{"kind":"feedReplies","post":post.id,"before":before}}),
+    )
+    .await?;
+    assert_eq!(page["replies"].as_array().unwrap().len(), 1);
+    assert_eq!(page["replies"][0]["id"], posts[0].replies[0].id);
+    assert!(named.contains(&posts[0].replies[0].id));
+    assert_eq!(page["more"], false);
+    writer.close().await;
+    reader.close().await;
+    home.close().await;
+    Ok(())
+}
+
 fn action(body: &str) -> Action {
     Action::PostV2 {
         area: None,
@@ -1135,7 +1181,18 @@ async fn account_deletion_survives_lost_ack_and_restore_of_an_older_backup() -> 
         &archive,
         &cfg.database_path,
     )?;
-    let restored = Server::start(cfg).await?;
+    let restored = Server::start(cfg.clone()).await?;
+    let db = support::primary(&cfg.database_path).await?;
+    let account = &owner.validate()?.payload.account;
+    let mut seen = db
+        .query(
+            "SELECT COUNT(*) FROM first_seen WHERE owner=?",
+            [account.as_str()],
+        )
+        .await?;
+    assert_eq!(seen.next().await?.unwrap().get::<i64>(0)?, 0);
+    drop(seen);
+    drop(db);
     let writer = portable_client(&restored, "nearby", &owner).await;
     let reader = portable_client(&restored, "nearby", &neighbor).await;
     // The exported root can sign a newer grant. It still cannot resurrect

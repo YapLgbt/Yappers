@@ -8,7 +8,13 @@ use rusqlite::{
     Error, Result, ToSql, TransactionBehavior,
     types::{FromSql, FromSqlError, ToSqlOutput, Value, ValueRef},
 };
-use std::{cell::Cell, error::Error as StdError, future::Future, ops::Deref, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    error::Error as StdError,
+    future::Future,
+    ops::Deref,
+    sync::Arc,
+};
 
 fn wait<T>(future: impl Future<Output = turso::Result<T>>) -> Result<T> {
     futures_lite::future::block_on(tokio::task::unconstrained(future)).map_err(native_failure)
@@ -168,6 +174,7 @@ pub struct HomeDb {
     backend: Backend,
     home: Option<Arc<NativeHome>>,
     next_savepoint: Cell<u64>,
+    opening_operation: RefCell<Option<String>>,
 }
 
 impl From<rusqlite::Connection> for HomeDb {
@@ -176,6 +183,7 @@ impl From<rusqlite::Connection> for HomeDb {
             backend: Backend::Sqlite(conn),
             home: None,
             next_savepoint: Cell::new(0),
+            opening_operation: RefCell::default(),
         }
     }
 }
@@ -186,6 +194,7 @@ impl HomeDb {
             backend: Backend::Native(conn),
             home: Some(home),
             next_savepoint: Cell::new(0),
+            opening_operation: RefCell::default(),
         }
     }
     pub fn sqlite(&self) -> Option<&rusqlite::Connection> {
@@ -272,6 +281,20 @@ impl HomeDb {
         if !self.is_autocommit()? {
             self.execute_batch("ROLLBACK")?;
         }
+        self.finish_opening_operation().map_err(guard_error)
+    }
+
+    pub(crate) fn with_opening_operation<T>(&self, reserve: impl FnOnce(&str) -> T) -> T {
+        let mut operation = self.opening_operation.borrow_mut();
+        reserve(operation.get_or_insert_with(crate::new_secret))
+    }
+
+    fn finish_opening_operation(&self) -> anyhow::Result<()> {
+        let mut operation = self.opening_operation.borrow_mut();
+        if let Some(id) = operation.as_deref() {
+            crate::native_guard::recover_opening_reservations(self, Some(id))?;
+            *operation = None;
+        }
         Ok(())
     }
 
@@ -280,7 +303,8 @@ impl HomeDb {
             return self.execute_batch("COMMIT");
         };
         use crate::native_guard;
-        if !native_guard::has_intents(self).map_err(guard_error)? {
+        let has_intents = native_guard::has_intents(self).map_err(guard_error)?;
+        if !has_intents && self.opening_operation.borrow().is_none() {
             // The request may have read an account or permission before a
             // concurrent revocation. Validate its pinned head and commit under
             // the same shared gate so publication cannot interleave.
@@ -290,7 +314,12 @@ impl HomeDb {
         }
 
         let _publication = home.guard.publication().map_err(guard_error)?;
-        let result = native_guard::before_commit(self)
+        let prepare = if has_intents {
+            native_guard::before_commit(self)
+        } else {
+            native_guard::verify_current(self)
+        };
+        let result = prepare
             .map_err(guard_error)
             .and_then(|()| self.execute_batch("COMMIT"));
         if let Err(original) = result {
@@ -310,12 +339,14 @@ impl HomeDb {
             return Err(original);
         }
 
-        native_guard::after_commit(self).map_err(|err| {
-            // The logical write has committed. Retrying the domain operation
-            // could duplicate it even when the guard itself reports Busy.
-            home.guard.fence();
-            Error::UserFunctionError(Box::new(UnresolvedCommit(err)))
-        })
+        native_guard::after_commit(self)
+            .and_then(|()| self.finish_opening_operation())
+            .map_err(|err| {
+                // The logical write has committed. Retrying the domain operation
+                // could duplicate it even when the guard itself reports Busy.
+                home.guard.fence();
+                Error::UserFunctionError(Box::new(UnresolvedCommit(err)))
+            })
     }
 }
 
@@ -506,15 +537,12 @@ impl<'db> HomeTx<'db> {
         Ok(())
     }
     fn abort(&mut self) -> Result<()> {
-        if self.db.is_autocommit()? {
-            self.active = false;
-            return Ok(());
-        }
         match self.savepoint {
-            Some(n) => self.db.execute_batch(&format!(
+            Some(n) if !self.db.is_autocommit()? => self.db.execute_batch(&format!(
                 "ROLLBACK TO home_domain_{n}; RELEASE home_domain_{n}"
             ))?,
-            None => self.db.execute_batch("ROLLBACK")?,
+            Some(_) => {}
+            None => self.db.rollback_operation()?,
         }
         self.active = false;
         Ok(())
@@ -544,6 +572,7 @@ mod tests {
             backend: Backend::Native(db.connect().map_err(native_failure)?),
             home: None,
             next_savepoint: Cell::new(0),
+            opening_operation: RefCell::default(),
         })
     }
 

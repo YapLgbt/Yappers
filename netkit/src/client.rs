@@ -509,6 +509,7 @@ impl Client {
                             | SetPush { .. }
                             | OpenPush { .. }
                             | NotificationThread { .. }
+                            | FeedReplies { .. }
                             | NotificationInbox
                             | ReadNotification { .. }
                             | MuteNotifications { .. }

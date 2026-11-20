@@ -167,9 +167,18 @@ fn contents(db: &Connection, table: &str) -> Result<Vec<Envelope>> {
         .collect()
 }
 
+fn prune_expired_mail(copy: &Store) -> Result<()> {
+    copy.db.execute(
+        "DELETE FROM dm_mail WHERE created<?",
+        [crate::messaging::mail_cutoff(crate::now())],
+    )?;
+    Ok(())
+}
+
 pub(crate) fn seal_snapshot(db: &Connection, image: &[u8], key: &[u8]) -> Result<Vec<u8>> {
     let mut copy = Store::from_sqlite(Connection::open_in_memory()?);
     copy.restore_snapshot(image)?;
+    prune_expired_mail(&copy)?;
     copy.db.execute_batch("DELETE FROM public_projections;
         CREATE TABLE backup_openings(target TEXT,private INTEGER, ciphertext BLOB,PRIMARY KEY(target,private));")?;
     for (table, id_column, private) in TABLES {
@@ -230,6 +239,7 @@ pub(crate) fn seal_snapshot(db: &Connection, image: &[u8], key: &[u8]) -> Result
 }
 
 pub(crate) fn recover_openings(copy: &mut Store, guard: &Connection) -> Result<()> {
+    prune_expired_mail(copy)?;
     for (table, id_column, private) in TABLES {
         for mut e in contents(copy.db.sqlite().context("expected SQLite staging")?, table)? {
             if e.deletion.is_some() || !matches!(e.event.payload.action, Action::Erased { .. }) {

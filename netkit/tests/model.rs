@@ -32,6 +32,19 @@ fn signatures_bind_every_field_and_reject_noncanonical_keys() {
     bad.accepted_at -= 1;
     assert!(bad.validate().is_err());
 }
+
+#[test]
+fn documented_v4_signing_vector_verifies() {
+    let event: SignedEvent = serde_json::from_str(include_str!("fixtures/event-v4.json")).unwrap();
+    event.validate().unwrap();
+    assert_eq!(
+        event.header().unwrap().action,
+        Action::Erased {
+            commitment: "ca6ac6d2af303ac6e565367c3648f6764212feb4119aa478516693ee62cd445e".into(),
+            reply: false,
+        }
+    );
+}
 #[test]
 fn anonymous_payload_omits_alias_and_utf16_limits_match_kotlin() {
     let (_, author, id) = setup();

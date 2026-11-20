@@ -12,6 +12,17 @@ use serde_json::json;
 use std::collections::HashSet;
 
 impl Store {
+    pub(crate) fn sweep_expired_mail(&self) -> Result<bool> {
+        const BATCH: usize = 512;
+        let deleted = self.db.execute(
+            "DELETE FROM dm_mail WHERE seq IN (
+                SELECT seq FROM dm_mail WHERE created<? ORDER BY created LIMIT ?
+             )",
+            params![mail_cutoff(now()), BATCH],
+        )?;
+        Ok(deleted == BATCH)
+    }
+
     fn block_peers(&self, owner: &str) -> Result<HashSet<String>> {
         Ok(self
             .db
@@ -19,16 +30,39 @@ impl Store {
             .query_map([owner], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?)
     }
-    fn contact_event(
+    fn visible_contact(&self, community: &str, id: &str) -> Result<SignedEvent> {
+        let raw: String = self
+            .db
+            .query_row(
+                "SELECT envelope FROM events e WHERE e.id=?1 AND e.community=?2
+               AND NOT EXISTS(SELECT 1 FROM hidden WHERE id=e.id)",
+                [id, community],
+                |row| row.get(0),
+            )
+            .optional()?
+            .context("post or reply unavailable")?;
+        let event = crate::native_content::hydrate(&self.db, &raw, false)?.event;
+        if let Action::Reply { parent, .. } = &event.payload.action {
+            let parent_visible: bool = self.db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM events e WHERE e.id=?1 AND e.community=?2
+                   AND json_extract(e.envelope,'$.deletion') IS NULL
+                   AND (json_extract(e.envelope,'$.event.payload.action.kind') IN ('post','postV2')
+                     OR (json_extract(e.envelope,'$.event.payload.action.kind')='erased'
+                         AND json_extract(e.envelope,'$.event.payload.action.reply')=0))
+                   AND NOT EXISTS(SELECT 1 FROM hidden WHERE id=e.id))",
+                [parent, community],
+                |row| row.get(0),
+            )?;
+            ensure!(parent_visible, "post or reply unavailable");
+        }
+        Ok(event)
+    }
+    fn contact_identity(
         &self,
         community: &str,
-        event: &str,
+        event: &SignedEvent,
         allow_anonymous: bool,
     ) -> Result<(String, String)> {
-        let event = self
-            .existing(event)?
-            .context("post or reply unavailable")?
-            .event;
         ensure!(event.payload.community == community, "wrong community");
         let fallback = match &event.payload.action {
             Action::Post {
@@ -60,7 +94,7 @@ impl Store {
             }
             _ => bail!("choose a post or reply"),
         };
-        let name = if crate::usernames::named(&event) {
+        let name = if crate::usernames::named(event) {
             self.current_profile(&event.payload.home, event.owner_id())?
                 .map(|record| record.name)
         } else {
@@ -83,49 +117,36 @@ impl Store {
         op: SocialOp,
     ) -> Result<Response> {
         let owner = record.payload.account.as_str();
-        let enhanced = matches!(&op, SocialOp::PrivacyFeed { .. });
+        let continuation = match &op {
+            SocialOp::FeedReplies { post, before, .. } => Some((post.clone(), before.clone())),
+            _ => None,
+        };
+        let enhanced = matches!(&op, SocialOp::PrivacyFeed { .. }) || continuation.is_some();
         let result = match op {
-            SocialOp::PrivacyFeed { nearby } | SocialOp::Feed { nearby } => {
+            SocialOp::PrivacyFeed { nearby }
+            | SocialOp::Feed { nearby }
+            | SocialOp::FeedReplies { nearby, .. } => {
                 if let Some(n) = &nearby {
                     n.validate()?;
                 }
                 let blocked = self.block_peers(owner)?;
                 let policy = crate::privacy::settings(&self.db, owner)?;
-                let (page, ages) = if blocked.is_empty()
-                    && !policy.hide_anonymous
-                    && policy.feed_days == 0
-                {
-                    let page = self.feed_page(community, owner, nearby.as_ref())?;
-                    let ages = if enhanced {
-                        self.page_ages(&page.events)?
-                    } else {
-                        Default::default()
-                    };
-                    (page, ages)
-                } else {
-                    let ages = self.ages()?;
-                    let page =
-                        self.filtered_feed_page(community, owner, nearby.as_ref(), |event| {
-                            let author = event.event.owner_id();
-                            if blocked.contains(author) {
-                                return false;
-                            }
-                            if author == owner
-                                || !crate::native_content::is_content(&event.event.payload.action)
-                            {
-                                return true;
-                            }
-                            let meta = crate::privacy::visibility(event, &ages);
-                            !(policy.hide_anonymous && meta.anonymous)
-                                && meta.age >= policy.feed_days
-                        })?;
-                    (page, ages)
-                };
                 let crate::feed_page::FeedPage {
                     mut posts,
                     events,
                     event_count,
-                } = page;
+                } = self.personalized_feed_page(
+                    community,
+                    owner,
+                    nearby.as_ref(),
+                    &blocked,
+                    &policy,
+                )?;
+                let ages = if enhanced {
+                    self.page_ages(&events)?
+                } else {
+                    Default::default()
+                };
                 let visibility = |event: &Envelope| crate::privacy::visibility(event, &ages);
                 let by_id: std::collections::HashMap<_, _> =
                     events.iter().map(|e| (e.event.id.as_str(), e)).collect();
@@ -139,6 +160,15 @@ impl Store {
                             reply.visibility = Some(visibility(e));
                         }
                     }
+                }
+                if let Some((target, before)) = continuation {
+                    let post = posts
+                        .into_iter()
+                        .find(|post| post.id == target)
+                        .context("conversation unavailable; refresh the feed")?;
+                    return Ok(Response::Social {
+                        result: crate::server::preceding_replies(post.replies, before.as_deref())?,
+                    });
                 }
                 let chain = self.account_chain(owner)?;
                 let mut deleted = self.erased_ids(community)?;
@@ -287,15 +317,20 @@ impl Store {
                 json!({})
             }
             SocialOp::Contact { event } => {
-                let (peer, label) = self.contact_event(community, &event, false)?;
+                let event = self.visible_contact(community, &event)?;
+                let (peer, label) = self.contact_identity(community, &event, false)?;
                 valid_peer(&peer, owner)?;
                 ensure!(!self.unavailable(owner, &peer)?, "messaging unavailable");
-                json!({"peer":peer,"label":label,"event":self.existing(&event)?.context("missing contact event")?.event})
+                json!({"peer":peer,"label":label,"event":event})
             }
             SocialOp::Block { target } => {
                 let (peer, label) = match target {
                     Target::Event(id) => {
-                        let (peer, label) = self.contact_event(community, &id, true)?;
+                        let event = self
+                            .existing(&id)?
+                            .context("post or reply unavailable")?
+                            .event;
+                        let (peer, label) = self.contact_identity(community, &event, true)?;
                         // Avoid retaining a copy of a post's byline in the block list.
                         let label = if label == "Anonymous neighbor" {
                             label
@@ -452,10 +487,6 @@ impl Store {
                 }
                 let id = digest(&letter)?;
                 let tx = self.db.transaction()?;
-                tx.execute(
-                    "DELETE FROM dm_mail WHERE created < ?",
-                    [now() - 30 * 86400],
-                )?;
                 if !tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM dm_mail WHERE id=?)",
                     [&id],
@@ -471,8 +502,8 @@ impl Store {
                     let held = crate::privacy::needs_request(&tx, peer, owner, &policy)?;
                     if held {
                         let (total, from_sender): (u32,u32) = tx.query_row(
-                            "SELECT COUNT(*), COUNT(CASE WHEN sender=? THEN 1 END) FROM dm_mail WHERE recipient=? AND held=1 AND packet IS NOT NULL",
-                            [owner,peer], |r| Ok((r.get(0)?,r.get(1)?)))?;
+                            "SELECT COUNT(*), COUNT(CASE WHEN sender=? THEN 1 END) FROM dm_mail WHERE recipient=? AND held=1 AND packet IS NOT NULL AND created>=?",
+                            params![owner,peer,mail_cutoff(now())], |r| Ok((r.get(0)?,r.get(1)?)))?;
                         if total >= 128 || from_sender >= 8 {
                             return Ok(Response::Social {
                                 result: json!({"accepted":false}),
@@ -496,14 +527,10 @@ impl Store {
                     |r| r.get(0),
                 )?;
                 ensure!(matches, "messaging is registered to a different device");
-                self.db.execute(
-                    "DELETE FROM dm_mail WHERE created < ?",
-                    [now() - 30 * 86400],
-                )?;
                 self.db.execute("UPDATE dm_mail SET packet=NULL WHERE recipient=? AND seq<=? AND held=0 AND packet IS NOT NULL",params![owner,after])?;
                 let mut incoming = Vec::new();
                 let mut query=self.db.prepare("SELECT seq,packet,sender,created FROM dm_mail WHERE recipient=? AND seq>? AND held=0 AND packet IS NOT NULL AND created>=? ORDER BY seq LIMIT ?")?;
-                let mut rows = query.query(params![owner, after, now() - 30 * 86400, MAIL_PAGE])?;
+                let mut rows = query.query(params![owner, after, mail_cutoff(now()), MAIL_PAGE])?;
                 while let Some(r) = rows.next()? {
                     incoming.push(Incoming {
                         cursor: r.get(0)?,
@@ -516,5 +543,62 @@ impl Store {
             }
         };
         Ok(Response::Social { result })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contact_visibility_follows_post_and_reply_moderation() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut store = Store::open(&dir.path().join("home"))?;
+        let key = signing_key(&new_secret())?;
+        let home = hex::encode(key.verifying_key().to_bytes());
+        let community = "neighborhood";
+        let sign = |sequence, action| {
+            Envelope::accept(
+                SignedEvent::create(&key, home.clone(), community.into(), sequence, action)?,
+                &key,
+            )
+        };
+        let post = sign(
+            1,
+            Action::Post {
+                body: "Neighborhood meeting".into(),
+                display_name: "Neighbor".into(),
+                topic: "Plans".into(),
+                anonymous: false,
+            },
+        )?;
+        let reply = sign(
+            2,
+            Action::Reply {
+                parent: post.event.id.clone(),
+                body: "See you there".into(),
+                display_name: "Neighbor".into(),
+            },
+        )?;
+        store.accept(&post)?;
+        store.accept(&reply)?;
+
+        let mut staging = Store::from_sqlite(rusqlite::Connection::open_in_memory()?);
+        staging.restore_snapshot(&store.snapshot()?)?;
+        for store in [store, staging] {
+            assert_eq!(
+                store.visible_contact(community, &reply.event.id)?.id,
+                reply.event.id
+            );
+            store.moderate(&reply.event.id, true)?;
+            assert!(store.visible_contact(community, &reply.event.id).is_err());
+            store.moderate(&reply.event.id, false)?;
+            store.moderate(&post.event.id, true)?;
+            assert!(store.visible_contact(community, &post.event.id).is_err());
+            assert!(store.visible_contact(community, &reply.event.id).is_err());
+            store.moderate(&post.event.id, false)?;
+            assert!(store.visible_contact(community, &reply.event.id).is_ok());
+        }
+        Ok(())
     }
 }

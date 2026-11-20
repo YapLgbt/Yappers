@@ -926,6 +926,8 @@ pub struct RemotePost {
     pub vote: i8,
     pub mine: bool,
     pub replies: Vec<RemoteReply>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub more_replies: bool,
     pub accepted_at: i64,
 }
 
@@ -1090,6 +1092,7 @@ pub fn project_nearby(
                     .skip(skip_replies)
                     .map(|(_, r)| r)
                     .collect(),
+                more_replies: false,
                 accepted_at: e.accepted_at,
             });
         }

@@ -7,7 +7,7 @@ use anyhow::{Context, Result, anyhow, ensure};
 use rusqlite::params;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    ops::Bound::{Excluded, Unbounded},
+    ops::Bound::{Excluded, Included, Unbounded},
     sync::{Arc, LazyLock, Mutex, PoisonError, RwLock},
 };
 
@@ -51,23 +51,33 @@ impl Watermarks {
 #[derive(Default)]
 struct Routes {
     through: Watermarks,
-    parents: HashMap<Tag, BTreeMap<Rank, i64>>,
+    parents: HashMap<Tag, ThreadRoutes>,
     // Find retired replies without having to recover their erased parent.
     by_id: HashMap<Arc<str>, (Tag, i64)>,
+}
+
+#[derive(Default)]
+struct ThreadRoutes {
+    by_time: BTreeMap<Rank, i64>,
+    by_cursor: BTreeMap<i64, Arc<str>>,
 }
 
 impl Routes {
     fn add(&mut self, tag: Tag, rank: Rank, cursor: i64) {
         self.by_id.insert(rank.1.clone(), (tag, rank.0));
-        self.parents.entry(tag).or_default().insert(rank, cursor);
+        let thread = self.parents.entry(tag).or_default();
+        thread.by_cursor.insert(cursor, rank.1.clone());
+        thread.by_time.insert(rank, cursor);
     }
 
     fn retire(&mut self, id: &str) {
         if let Some((id, (tag, time))) = self.by_id.remove_entry(id)
             && let Some(replies) = self.parents.get_mut(&tag)
         {
-            replies.remove(&(time, id));
-            if replies.is_empty() {
+            if let Some(cursor) = replies.by_time.remove(&(time, id)) {
+                replies.by_cursor.remove(&cursor);
+            }
+            if replies.by_time.is_empty() {
                 self.parents.remove(&tag);
             }
         }
@@ -203,24 +213,48 @@ impl FeedReplies {
     }
 }
 
+fn current_index(
+    home: &Arc<NativeHome>,
+    community: &str,
+    wanted: Watermarks,
+) -> Result<Option<Arc<Community>>> {
+    let index = {
+        let mut communities = home.feed_replies.communities.lock().map_err(poisoned)?;
+        if wanted.reply == 0 {
+            communities.get(community).cloned()
+        } else {
+            Some(communities.entry(community.to_owned()).or_default().clone())
+        }
+    };
+    if let Some(index) = index {
+        index.refresh(home, community, wanted)?;
+        if wanted.reply > 0 {
+            return Ok(Some(index));
+        }
+    }
+    Ok(None)
+}
+
 // Probe only proposed IDs using their unique index, regardless of the size
 // of the community or moderation tables. A hide can be reverted without a new cursor.
 // Turso 0.8.4 otherwise prefers a community-prefix scan for every JSON value.
-const VISIBLE: &str = "SELECT e.id FROM json_each(?) q
+const VISIBLE_CANDIDATES: &str = "FROM json_each(?) q
         CROSS JOIN events e ON e.id=CAST(q.value AS TEXT) WHERE CAST(e.community AS TEXT)=?
         AND json_extract(e.envelope,'$.event.payload.action.kind')='erased'
         AND json_extract(e.envelope,'$.event.payload.action.reply')=1
         AND json_extract(e.envelope,'$.deletion') IS NULL
         AND NOT EXISTS(SELECT 1 FROM hidden h WHERE h.id=e.id)";
 
+pub(crate) static VISIBLE_HEADERS: LazyLock<String> =
+    LazyLock::new(|| format!("SELECT e.envelope {VISIBLE_CANDIDATES}"));
+
 fn visible(db: &HomeDb, community: &str, ids: &[&str]) -> Result<HashSet<String>> {
+    static SQL: LazyLock<String> = LazyLock::new(|| format!("SELECT e.id {VISIBLE_CANDIDATES}"));
     let mut visible = HashSet::new();
-    let mut stmt = db.prepare_cached(VISIBLE)?;
-    for chunk in ids.chunks(BATCH) {
-        let mut rows = stmt.query(params![serde_json::to_string(chunk)?, community])?;
-        while let Some(row) = rows.next()? {
-            visible.insert(row.get(0)?);
-        }
+    let mut stmt = db.prepare_cached(&SQL)?;
+    let mut rows = stmt.query(params![serde_json::to_string(ids)?, community])?;
+    while let Some(row) = rows.next()? {
+        visible.insert(row.get(0)?);
     }
     Ok(visible)
 }
@@ -242,6 +276,15 @@ pub(crate) fn latest(
     community: &str,
     parents: &[String],
 ) -> Result<HashMap<String, Vec<String>>> {
+    latest_where(db, community, parents, visible)
+}
+
+pub(crate) fn latest_where(
+    db: &HomeDb,
+    community: &str,
+    parents: &[String],
+    mut visible: impl FnMut(&HomeDb, &str, &[&str]) -> Result<HashSet<String>>,
+) -> Result<HashMap<String, Vec<String>>> {
     ensure!(
         !db.is_autocommit()?,
         "reply lookup requires a pinned native transaction"
@@ -253,21 +296,9 @@ pub(crate) fn latest(
         return Ok(HashMap::new());
     }
     let wanted = watermarks(db, community)?;
-    let index = {
-        let mut communities = home.feed_replies.communities.lock().map_err(poisoned)?;
-        if wanted.reply == 0 {
-            communities.get(community).cloned()
-        } else {
-            Some(communities.entry(community.to_owned()).or_default().clone())
-        }
-    };
-    let Some(index) = index else {
+    let Some(index) = current_index(home, community, wanted)? else {
         return Ok(HashMap::new());
     };
-    index.refresh(home, community, wanted)?;
-    if wanted.reply == 0 {
-        return Ok(HashMap::new());
-    }
     let mut windows: Vec<_> = parents
         .iter()
         .map(|parent| Window {
@@ -295,6 +326,7 @@ pub(crate) fn latest(
                 let upper = w.before.as_ref().map_or(Unbounded, Excluded);
                 let start = candidates.len();
                 for (rank, _) in replies
+                    .by_time
                     .range((Unbounded, upper))
                     .rev()
                     .filter(|(_, cursor)| **cursor <= wanted.reply)
@@ -311,11 +343,13 @@ pub(crate) fn latest(
         if candidates.is_empty() {
             break;
         }
-        let ids: Vec<&str> = candidates.iter().map(|(_, rank)| rank.1.as_ref()).collect();
-        let found = visible(db, community, &ids)?;
-        for (i, (_, id)) in candidates {
-            if found.contains(id.as_ref()) {
-                windows[i].ids.push(id.to_string());
+        for chunk in candidates.chunks(BATCH) {
+            let ids: Vec<&str> = chunk.iter().map(|(_, rank)| rank.1.as_ref()).collect();
+            let found = visible(db, community, &ids)?;
+            for (i, (_, id)) in chunk {
+                if found.contains(id.as_ref()) {
+                    windows[*i].ids.push(id.to_string());
+                }
             }
         }
     }
@@ -328,6 +362,67 @@ pub(crate) fn latest(
             (w.parent, w.ids)
         })
         .collect())
+}
+
+/// Newest qualifying reply by arrival sequence, which is also the inbox read
+/// cursor. Delivered and read positions let push polling skip old routes.
+pub(crate) fn pending_arrivals(
+    db: &HomeDb,
+    community: &str,
+    parents: &[(String, i64)],
+    mut eligible: impl FnMut(&str) -> Result<bool>,
+) -> Result<Vec<(String, i64)>> {
+    let home = db
+        .native_home()
+        .context("push routing requires a native Home")?;
+    ensure!(
+        !db.is_autocommit()?,
+        "push routing requires a pinned native transaction"
+    );
+    let wanted = watermarks(db, community)?;
+    if parents.iter().all(|(_, through)| *through >= wanted.reply) {
+        return Ok(Vec::new());
+    }
+    let Some(index) = current_index(home, community, wanted)? else {
+        return Ok(Vec::new());
+    };
+    let mut pending = Vec::new();
+    for (parent, through) in parents {
+        if *through >= wanted.reply {
+            continue;
+        }
+        let tag = home.feed_replies.tag(parent);
+        let mut before = Included(wanted.reply);
+        loop {
+            let candidates: Vec<_> = {
+                let routes = index.routes.read().map_err(poisoned)?;
+                let Some(replies) = routes.parents.get(&tag) else {
+                    break;
+                };
+                replies
+                    .by_cursor
+                    .range((Excluded(*through), before))
+                    .rev()
+                    .take(BATCH)
+                    .map(|(&cursor, id)| (cursor, id.clone()))
+                    .collect()
+            };
+            let mut found = false;
+            for (cursor, id) in &candidates {
+                if eligible(id)? {
+                    pending.push((parent.clone(), *cursor));
+                    found = true;
+                    break;
+                }
+            }
+            if found || candidates.len() < BATCH {
+                break;
+            }
+            before = Excluded(candidates[BATCH - 1].0);
+        }
+    }
+    native_guard::verify_current(db)?;
+    Ok(pending)
 }
 
 #[cfg(test)]
@@ -387,7 +482,7 @@ mod tests {
     fn native_visibility_seeks_event_and_moderation_by_id() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let store = Store::open(&dir.path().join("home"))?;
-        let sql = format!("EXPLAIN QUERY PLAN {VISIBLE}");
+        let sql = format!("EXPLAIN QUERY PLAN SELECT e.id {VISIBLE_CANDIDATES}");
         let plan = store
             .db
             .prepare(&sql)?

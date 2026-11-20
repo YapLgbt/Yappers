@@ -80,8 +80,7 @@ pub use ha::{HaOptions, HaRole, export_ha, moderate_ha};
 pub(crate) use store_read::DisclosureFence;
 use store_read::{CatalogOp, Disclosure, NeedsExclusive, StoreWorkers};
 
-/// Reserve space for the response fields and send only complete conversations.
-/// Deletion IDs are fixed-width lowercase hex plus JSON quotes and a comma.
+/// Keep roots visible before spending the remaining frame budget on recent replies.
 pub(crate) fn fit_feed_page(
     posts: &mut Vec<RemotePost>,
     deleted: &mut Vec<String>,
@@ -90,23 +89,80 @@ pub(crate) fn fit_feed_page(
     let budget = MAX_FRAME
         .checked_sub(chain_bytes + 1024)
         .context("account history exceeds feed frame")?;
-    let count = (budget / 67).min(crate::DELETION_PAGE);
+    // Deletion IDs are fixed-width lowercase hex plus JSON quotes and a comma.
+    // Leave room for at least the first root when the account chain and one
+    // deletion cursor fit together with it.
+    let root_bytes = if let Some(post) = posts.first_mut() {
+        let replies = std::mem::take(&mut post.replies);
+        let bytes = serde_json::to_vec(post)?.len() + 32;
+        post.replies = replies;
+        bytes
+    } else {
+        0
+    };
+    let deletion_bytes = if root_bytes <= budget.saturating_sub(67) {
+        budget - root_bytes
+    } else {
+        budget
+    };
+    let count = (deletion_bytes / 67).min(crate::DELETION_PAGE);
     ensure!(
         count > 0 || deleted.is_empty(),
         "account history leaves no room for deletion cursor"
     );
     let more = deleted.len() > count;
     deleted.truncate(count);
-    let mut remaining = budget - 67 * deleted.len();
-    for (index, post) in posts.iter().enumerate() {
-        let size = serde_json::to_vec(post)?.len() + 1;
-        if size > remaining {
-            posts.truncate(index);
+    // The deletion wrapper has always carried inline profiles. Keep that wire
+    // shape for older clients while sizing ordinary feeds with the dictionary.
+    let mut budget = transport::FeedBudget::new(budget - 67 * deleted.len(), !more);
+    let mut pending = Vec::new();
+    for post in posts.iter_mut() {
+        let replies = std::mem::take(&mut post.replies);
+        let had_more = post.more_replies;
+        post.more_replies |= !replies.is_empty();
+        if !budget.add_post(post)? {
             break;
         }
-        remaining -= size;
+        pending.push((replies, had_more));
+    }
+    posts.truncate(pending.len());
+    for (post, (mut replies, had_more)) in posts.iter_mut().zip(pending) {
+        post.more_replies = had_more;
+        while let Some(reply) = replies.pop() {
+            if !budget.add_reply(&reply)? {
+                post.more_replies = true;
+                break;
+            }
+            post.replies.push(reply);
+        }
+        post.replies.reverse();
     }
     Ok(more)
+}
+
+/// Return a bounded preceding window in the same display order as the feed.
+pub(crate) fn preceding_replies(
+    mut replies: Vec<RemoteReply>,
+    before: Option<&str>,
+) -> Result<serde_json::Value> {
+    if let Some(id) = before {
+        let end = replies
+            .iter()
+            .position(|reply| reply.id == id)
+            .context("reply cursor unavailable; refresh the thread")?;
+        replies.truncate(end);
+    }
+    let mut budget = transport::FeedBudget::new(MAX_FRAME - 1024, false);
+    let mut visible = Vec::new();
+    let count = replies.len();
+    while let Some(reply) = replies.pop() {
+        if !budget.add_reply(&reply)? {
+            break;
+        }
+        visible.push(reply);
+    }
+    visible.reverse();
+    Ok(serde_json::json!({ "more": visible.len() < count, "replies": visible }))
 }
 
 impl Response {
@@ -1346,6 +1402,32 @@ impl Server {
                 }
             };
             tokio::pin!(expire_reports);
+            let expire_mail = async {
+                // An unseeded standby cannot lease work until the initial image exists.
+                if accept_state.ha.is_some() {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
+                loop {
+                    let result = match &accept_state.ha {
+                        Some(ha) => ha.expire_mail(&accept_state).await,
+                        None => {
+                            accept_state
+                                .blocking(|op| op.store.sweep_expired_mail())
+                                .await
+                        }
+                    };
+                    let delay = match result {
+                        Ok(true) => 1,
+                        Ok(false) => 60,
+                        Err(error) => {
+                            eprintln!("Mailbox expiry failed: {error}");
+                            60
+                        }
+                    };
+                    tokio::time::sleep(Duration::from_secs(delay)).await;
+                }
+            };
+            tokio::pin!(expire_mail);
             let mut handlers = tokio::task::JoinSet::new();
             loop {
                 let incoming = tokio::select! {
@@ -1354,6 +1436,7 @@ impl Server {
                         None => break,
                     },
                     () = &mut expire_reports, if accept_state.reports.is_some() => break,
+                    () = &mut expire_mail => break,
                     Some(_) = handlers.join_next(), if !handlers.is_empty() => continue,
                 };
                 let Ok(handshake) = work.clone().try_acquire_owned() else {
@@ -1783,6 +1866,61 @@ mod federation_tests {
     }
 
     #[tokio::test]
+    async fn idle_home_expires_mail_and_exports_only_unexpired_rows() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("home");
+        let store = Store::open(&path)?;
+        for (id, created) in [
+            ("expired", crate::messaging::mail_cutoff(now()) - 10),
+            ("current", now()),
+        ] {
+            store.db.execute(
+                "INSERT INTO dm_mail(id,sender,recipient,packet,created) VALUES(?,'a','b','sealed',?)",
+                rusqlite::params![id, created],
+            )?;
+        }
+        let archive = dir.path().join("archive");
+        store.backup(&archive)?;
+        drop(store);
+        let restored = dir.path().join("restored");
+        crate::backup::restore(
+            &path.with_added_extension("deletion-guard"),
+            &archive,
+            &restored,
+        )?;
+        let copy = Store::open(&restored)?;
+        assert_eq!(
+            copy.db
+                .query_row("SELECT id FROM dm_mail", [], |r| r.get::<_, String>(0))?,
+            "current"
+        );
+        drop(copy);
+
+        let server = Server::start(config(path)).await?;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let ids = server
+                    .state
+                    .blocking(|op| {
+                        let mut query =
+                            op.store.db.prepare("SELECT id FROM dm_mail ORDER BY id")?;
+                        Ok(query
+                            .query_map([], |r| r.get::<_, String>(0))?
+                            .collect::<rusqlite::Result<Vec<_>>>()?)
+                    })
+                    .await?;
+                if ids == ["current"] {
+                    return anyhow::Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await??;
+        server.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn overlapping_syncs_advance_while_another_peer_stalls() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let stalled = transport::bind(NetworkMode::Local, None, true).await?;
@@ -1866,6 +2004,85 @@ mod feed_page_tests {
         )?);
         assert_eq!(ids.len(), 3);
         assert_eq!(ids.last().unwrap(), &format!("{:064x}", 2));
+        Ok(())
+    }
+
+    #[test]
+    fn feed_budget_keeps_roots_and_allows_older_reply_windows() -> Result<()> {
+        let make_post = |id, replies| RemotePost {
+            id,
+            replies,
+            headline: "Neighborhood event".into(),
+            area: None,
+            username: None,
+            visibility: None,
+            profile: None,
+            author: "Neighbor".into(),
+            body: "See you there".into(),
+            topic: "Plans".into(),
+            score: 0,
+            vote: 0,
+            mine: false,
+            more_replies: false,
+            accepted_at: 1726681534,
+        };
+        let replies: Vec<_> = (0..200)
+            .map(|index| RemoteReply {
+                id: format!("{index:064x}"),
+                author: "Neighbor".into(),
+                body: "界".repeat(500),
+                profile: Some(CommunityProfile {
+                    photo: "A".repeat(4096),
+                    ..Default::default()
+                }),
+                visibility: Some(AuthorVisibility {
+                    peer: Some(format!("{index:064x}")),
+                    anonymous: false,
+                    age: 7,
+                }),
+                username: None,
+                mine: false,
+            })
+            .collect();
+        let encode = |posts| {
+            transport::encode_response(&Response::Feed {
+                posts,
+                direct: true,
+                privacy: true,
+                deleted: vec![],
+                event_count: 202,
+                account_chain: vec![],
+            })
+        };
+        let mut posts = vec![
+            make_post("new".into(), replies.clone()),
+            make_post("older".into(), vec![]),
+        ];
+        assert!(!fit_feed_page(&mut posts, &mut vec![], 0)?);
+        assert_eq!(posts.len(), 2);
+        assert!(posts[0].more_replies);
+        let preview = posts[0].replies.clone();
+        assert_eq!(preview.last(), replies.last());
+        let encoded = encode(posts)?;
+        assert!(encoded.len() <= MAX_FRAME);
+        transport::decode_response(&encoded)?;
+        let page = preceding_replies(replies.clone(), Some(&preview[0].id))?;
+        let mut previous: Vec<RemoteReply> = serde_json::from_value(page["replies"].clone())?;
+        previous.extend(preview);
+        assert_eq!(previous, replies);
+
+        let shared: Vec<_> = replies
+            .into_iter()
+            .map(|mut reply| {
+                reply.visibility.as_mut().unwrap().peer = Some("0".repeat(64));
+                reply
+            })
+            .collect();
+        let mut posts = vec![make_post("shared".into(), shared.clone())];
+        assert!(!fit_feed_page(&mut posts, &mut vec![], 0)?);
+        assert_eq!(posts[0].replies, shared);
+        assert!(!posts[0].more_replies);
+        transport::decode_response(&encode(posts)?)?;
         Ok(())
     }
 }

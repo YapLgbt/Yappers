@@ -7,14 +7,15 @@
 
 mod account;
 mod health;
+mod private_file;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
+use private_file::{PrivateFileLock, private_write};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::Write,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -277,22 +278,11 @@ struct Identity {
     pending: Vec<SignedEvent>,
 }
 fn private_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension(format!("{}.tmp", &new_secret()[..16]));
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&tmp)?;
-    file.write_all(&serde_json::to_vec_pretty(value)?)?;
-    file.sync_all()?;
-    fs::rename(&tmp, path)?;
-    Ok(())
+    private_write(path, &serde_json::to_vec_pretty(value)?)
+}
+fn lock_identity(path: &Path) -> Result<PrivateFileLock> {
+    PrivateFileLock::acquire(&path.with_added_extension("identity-lock"))
+        .context("client identity is already in use")
 }
 fn identity(path: &Path) -> Result<Identity> {
     if path.exists() {
@@ -336,6 +326,7 @@ async fn client_operation(
     retry: bool,
 ) -> Result<()> {
     let join: JoinConfig = serde_json::from_slice(&fs::read(join)?)?;
+    let _lock = lock_identity(&path)?;
     let mut identity = identity(&path)?;
     let client = Client::open(ClientConfig {
         full_home_standby: None,
@@ -368,7 +359,10 @@ async fn group_operation(
     group: Option<String>,
     output: Option<PathBuf>,
 ) -> Result<()> {
-    let identity = identity(&path)?;
+    let identity = {
+        let _lock = lock_identity(&path)?;
+        identity(&path)?
+    };
     let client = Client::open(ClientConfig {
         full_home_standby: None,
         account_chain: vec![],
@@ -400,20 +394,33 @@ async fn group_operation(
 }
 
 async fn serve_background(server: &Server, period: Duration) {
-    let mut interval = tokio::time::interval(period);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => break,
-            _ = interval.tick() => {
-                if let Err(error) = server.dispatch_notifications().await {
-                    eprintln!("push dispatch: {error:#}");
-                }
-                if let Err(error) = server.sync_once().await {
-                    eprintln!("federation sync: {error:#}");
-                }
+    let ticker = || {
+        let mut interval = tokio::time::interval(period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval
+    };
+    let push = async {
+        let mut interval = ticker();
+        loop {
+            interval.tick().await;
+            if let Err(error) = server.dispatch_notifications().await {
+                eprintln!("push dispatch: {error:#}");
             }
         }
+    };
+    let federation = async {
+        let mut interval = ticker();
+        loop {
+            interval.tick().await;
+            if let Err(error) = server.sync_once().await {
+                eprintln!("federation sync: {error:#}");
+            }
+        }
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        () = push => {},
+        () = federation => {},
     }
 }
 

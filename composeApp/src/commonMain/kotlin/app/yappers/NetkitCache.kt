@@ -50,7 +50,8 @@ internal data class WirePost(
     val profile: CommunityProfile? = null,
     val username: String? = null,
     val visibility: AuthorVisibility? = null,
-    val area: PostArea? = null
+    val area: PostArea? = null,
+    val moreReplies: Boolean = false
 )
 
 /** IDs exist for Compose item identity only; they never encode chronological order. */
