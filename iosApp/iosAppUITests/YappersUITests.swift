@@ -625,8 +625,8 @@ final class YappersUITests: XCTestCase {
         let post = app.buttons.matching(NSPredicate(format: "label CONTAINS 'A book club for the quietly social'")).firstMatch
         XCTAssertTrue(post.waitForExistence(timeout: 20))
         app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "View Soft landing's profile")).firstMatch.tap()
-        reveal(app.cells["Block account"], in: app)
-        app.cells["Block account"].tap()
+        reveal(app.buttons["Block account"], in: app)
+        app.buttons["Block account"].tap()
         XCTAssertTrue(app.alerts.buttons["Cancel"].waitForExistence(timeout: 5), app.debugDescription)
         app.alerts.buttons["Block account"].tap()
         let hidden = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: post)
@@ -690,9 +690,9 @@ final class YappersUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Message"].exists, "Start direct messages from the author's profile")
         capture("Feed without a message shortcut", app: app)
         profile.tap()
-        reveal(app.cells["Message"], in: app)
+        reveal(app.buttons["Message"], in: app)
         capture("Message from the author's profile", app: app)
-        app.cells["Message"].tap()
+        app.buttons["Message"].tap()
         XCTAssertTrue(app.staticTexts["End-to-end encrypted"].waitForExistence(timeout: 8))
         let editor = app.textViews["direct-message-body"]
         let send = app.buttons["Send"]
@@ -1041,7 +1041,7 @@ final class YappersUITests: XCTestCase {
         capture("Named post with text-only byline", app: app)
         app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "View \(postingName)'s profile")).firstMatch.tap()
         XCTAssertTrue(app.staticTexts["they / them"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Shared with this post"].exists)
+        reveal(app.staticTexts["Current public profile"], in: app)
         XCTAssertTrue(app.staticTexts["Queer, here, and collecting tiny joys."].waitForExistence(timeout: 5))
         capture("Public author profile", app: app)
     }

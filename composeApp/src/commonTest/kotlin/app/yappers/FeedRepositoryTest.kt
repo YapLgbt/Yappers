@@ -124,6 +124,6 @@ class FeedRepositoryTest {
         assertEquals("Comet", repo.snapshot.alias)
         assertTrue(repo.snapshot.posts.none { it.mine })
         assertFailsWith<IllegalArgumentException> { repo.publish("Body", "Chatter", true, "x".repeat(81)) }
-        assertFailsWith<IllegalArgumentException> { repo.setProfile("Comet", profile.copy(photo = "x".repeat(4097))) }
+        assertFailsWith<IllegalArgumentException> { repo.setProfile("Comet", profile.copy(photo = "x".repeat(PROFILE_PHOTO_LENGTH + 1))) }
     }
 }

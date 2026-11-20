@@ -17,6 +17,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.dp
+import kotlin.io.encoding.Base64
 
 internal class PhotoFraming(val width: Int, val height: Int) {
     var zoom by mutableFloatStateOf(1f)
@@ -39,10 +40,37 @@ internal interface CropSource {
     val width: Int
     val height: Int
     fun draw(scope: androidx.compose.ui.graphics.drawscope.DrawScope, bounds: Rect)
-    fun encode(bounds: Rect): String
+    fun encode(bounds: Rect, maxLength: Int = PROFILE_PHOTO_LENGTH): String
     fun close()
 }
 internal expect fun decodeCropSource(bytes: ByteArray): CropSource
+
+internal fun profilePhotoSizes(maxLength: Int): List<Int> = when {
+    maxLength > PROFILE_THUMBNAIL_LENGTH -> listOf(PROFILE_PHOTO_SIZE)
+    maxLength > LEGACY_PROFILE_PHOTO_LENGTH -> listOf(PROFILE_THUMBNAIL_SIZE, 320, 256, 192, 128, 96)
+    else -> listOf(96)
+}
+
+internal fun profilePhotoQualities(size: Int): List<Int> = when (size) {
+    PROFILE_PHOTO_SIZE -> listOf(87, 78, 68, 58, 48, 38, 28, 18, 8)
+    96 -> listOf(82, 65, 45, 30, 15, 5)
+    else -> listOf(82, 65, 50, 40)
+}
+
+internal fun fitProfileThumbnail(encoded: String, maxLength: Int): String {
+    val source = runCatching { decodeCropSource(Base64.Default.decode(encoded)) }.getOrElse {
+        if (encoded.length <= maxLength) return encoded
+        throw it
+    }
+    try {
+        val maxSize = if (maxLength <= LEGACY_PROFILE_PHOTO_LENGTH) 128 else PROFILE_THUMBNAIL_SIZE
+        if (encoded.length <= maxLength && maxOf(source.width, source.height) <= maxSize) return encoded
+        val side = minOf(source.width, source.height).toFloat()
+        val left = (source.width - side) / 2
+        val top = (source.height - side) / 2
+        return source.encode(Rect(left, top, left + side, top + side), maxLength)
+    } finally { source.close() }
+}
 
 @Composable
 internal fun PhotoCropEditor(image: CropSource, onCancel: () -> Unit, onCrop: (String) -> Unit) {

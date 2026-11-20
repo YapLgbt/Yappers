@@ -13,6 +13,13 @@
 .privacy-switch + .hint { margin: 0 }
 @media (pointer: coarse) { #refresh { display: none } }
 
+.reading-list:has(> .profile-actions), .profile-sheet > .app-sheet-body { container-type: inline-size; }
+.app-sheet.profile-sheet { width: min(44rem, calc(100% - 2rem)); padding-block-start: .5rem; }
+.profile-sheet > .dialog-title { justify-content: flex-end; }
+.profile-sheet > .app-sheet-body { padding-block: .25rem 1rem; }
+.profile-sheet > .app-sheet-body:focus-visible { outline: 2px solid var(--plum); outline-offset: -2px; }
+.profile-sheet > .app-sheet-actions .btn { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+
 html:has(.profile-editor:modal, #editor:modal) { overflow: hidden; }
 html:has(.reserveScrollbar:modal) { scrollbar-gutter: stable; }
 .profile-editor {
@@ -136,6 +143,8 @@ html:has(.reserveScrollbar:modal) { scrollbar-gutter: stable; }
 .profile-intentions .chip:focus-visible { outline: 2px solid var(--plum); outline-offset: -2px }
 
 @media (max-width: 599px) {
+  .app-sheet.profile-sheet { width: 100%; padding-block-start: .25rem; }
+  .profile-sheet > .app-sheet-actions .btn { width: 100%; }
   .profile-editor {
     width: 100%;
     max-width: none;

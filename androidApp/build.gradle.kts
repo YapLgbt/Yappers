@@ -10,7 +10,7 @@ android {
         applicationId = "app.yappers.android"
         minSdk = 28
         targetSdk = 36
-        versionCode = 3
+        versionCode = 4
         val config = providers.environmentVariable("YAP_FIREBASE_ANDROID_CONFIG").orNull?.let(::file)
             ?: file("google-services.json")
         if (config.exists()) {

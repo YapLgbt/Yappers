@@ -5,14 +5,15 @@ import UniformTypeIdentifiers
 import Yappers
 
 /// Only user-selected backup files leave/enter the sandbox. No recovery key is sent to a server.
-final class AppleRecoveryFiles: NSObject, RecoveryFiles, UIDocumentPickerDelegate {
+final class AppleRecoveryFiles: NSObject, RecoveryFiles, AttachmentFiles, UIDocumentPickerDelegate {
     private let maximum = 16 * 1024 * 1024 + 65536
     private var completion: ((String?, String?) -> Void)?
+    private var attachmentCompletion: ((SelectedAttachment?, String?) -> Void)?
     private var exporting = false
     private var temporary: URL?
 
     func saveRecovery(ciphertext: String, onResult: @escaping (String?, String?) -> Void) {
-        guard completion == nil else { onResult(nil, "A file operation is already open."); return }
+        guard completion == nil, attachmentCompletion == nil else { onResult(nil, "A file operation is already open."); return }
         completion = onResult
         exporting = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -43,9 +44,52 @@ final class AppleRecoveryFiles: NSObject, RecoveryFiles, UIDocumentPickerDelegat
         }
     }
     func loadRecovery(onResult: @escaping (String?, String?) -> Void) {
-        guard completion == nil else { onResult(nil, "A file operation is already open."); return }
+        guard completion == nil, attachmentCompletion == nil else { onResult(nil, "A file operation is already open."); return }
         completion = onResult; exporting = false
         present(UIDocumentPickerViewController(forOpeningContentTypes: [.data], asCopy: false))
+    }
+    func chooseAttachment(onResult: @escaping (SelectedAttachment?, String?) -> Void) {
+        guard completion == nil, attachmentCompletion == nil else { onResult(nil, "A file operation is already open."); return }
+        attachmentCompletion = onResult
+        exporting = false
+        present(UIDocumentPickerViewController(forOpeningContentTypes: [.data], asCopy: false))
+    }
+    func saveAttachment(name: String, parts: [String], onResult: @escaping (String?) -> Void) {
+        guard completion == nil, attachmentCompletion == nil else { onResult("A file operation is already open."); return }
+        guard name == (name as NSString).lastPathComponent, name != ".", name != ".." else {
+            onResult("Invalid attachment filename."); return
+        }
+        completion = { _, error in onResult(error) }
+        exporting = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                let url = directory.appendingPathComponent(name)
+                let attributes: [FileAttributeKey: Any] = [.posixPermissions: 0o600, .protectionKey: FileProtectionType.complete]
+                guard FileManager.default.createFile(atPath: url.path, contents: nil, attributes: attributes) else {
+                    throw self.failure("Couldn’t create the attachment file.")
+                }
+                let handle = try FileHandle(forWritingTo: url)
+                defer { try? handle.close() }
+                var size = 0
+                for part in parts {
+                    guard let data = Data(base64Encoded: part), size + data.count <= 20_000_000 else {
+                        throw self.failure("Invalid attachment data.")
+                    }
+                    try handle.write(contentsOf: data)
+                    size += data.count
+                }
+                DispatchQueue.main.async {
+                    self.temporary = url
+                    self.present(UIDocumentPickerViewController(forExporting: [url], asCopy: true))
+                }
+            } catch {
+                try? FileManager.default.removeItem(at: directory)
+                DispatchQueue.main.async { self.finish(nil, "Couldn’t save this attachment.") }
+            }
+        }
     }
     private func present(_ picker: UIDocumentPickerViewController) {
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first(where: { $0.activationState == .foregroundActive }),
@@ -58,6 +102,7 @@ final class AppleRecoveryFiles: NSObject, RecoveryFiles, UIDocumentPickerDelegat
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         guard let url = urls.first else { finish(nil, nil); return }
         if exporting { finish("saved", nil); return }
+        if attachmentCompletion != nil { readAttachment(url); return }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let access = url.startAccessingSecurityScopedResource()
@@ -77,14 +122,43 @@ final class AppleRecoveryFiles: NSObject, RecoveryFiles, UIDocumentPickerDelegat
             } catch { DispatchQueue.main.async { self.finish(nil, "Could not read this backup. Choose a Yap .age file within 16 MiB.") } }
         }
     }
+    private func readAttachment(_ url: URL) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let handle = try FileHandle(forReadingFrom: url)
+                defer { try? handle.close() }
+                var data = Data()
+                while let chunk = try handle.read(upToCount: 256 * 1024), !chunk.isEmpty {
+                    guard data.count + chunk.count <= 20_000_000 else { throw self.failure("Choose a file within 20 MB.") }
+                    data.append(chunk)
+                }
+                guard !data.isEmpty else { throw self.failure("Choose a file within 20 MB.") }
+                let bytes = data
+                let selected = SelectedAttachment(name: url.lastPathComponent, size: Int32(bytes.count)) { part in
+                    let start = Int(part.intValue) * 256 * 1024
+                    return bytes.subdata(in: start..<min(start + 256 * 1024, bytes.count)).base64EncodedString()
+                }
+                DispatchQueue.main.async {
+                    let callback = self.attachmentCompletion
+                    self.attachmentCompletion = nil
+                    callback?(selected, nil)
+                }
+            } catch { DispatchQueue.main.async { self.finish(nil, error.localizedDescription) } }
+        }
+    }
     private func failure(_ message: String) -> Error { NSError(domain: "YapRecovery", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
     private func finish(_ value: String?, _ error: String?) {
+        let attachmentCallback = attachmentCompletion; attachmentCompletion = nil
         let callback = completion; completion = nil
         if let temporary {
             try? FileManager.default.removeItem(at: temporary.deletingLastPathComponent())
             self.temporary = nil
         }
         callback?(value, error)
+        attachmentCallback?(nil, error)
     }
 }
 

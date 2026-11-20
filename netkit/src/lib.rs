@@ -11,6 +11,9 @@ mod account_erasure;
 #[cfg(feature = "server")]
 pub mod account_store;
 #[cfg(feature = "server")]
+mod attachment_store;
+pub mod attachments;
+#[cfg(feature = "server")]
 pub mod backup;
 #[cfg(target_arch = "wasm32")]
 mod browser;

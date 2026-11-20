@@ -11,13 +11,15 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 
 [features]
 default = []
-server = ["dep:rusqlite", "dep:turso", "dep:futures-lite", "dep:subtle", "dep:chacha20poly1305", "dep:url"]
+server = ["dep:rusqlite", "dep:turso", "dep:futures-lite", "dep:subtle", "dep:url", "dep:jpeg-decoder"]
 
 [dependencies]
+base64 = "0.22"
+jpeg-decoder = { version = "0.3.2", default-features = false, optional = true }
 futures-lite = { version = "2", optional = true }
 turso = { version = "=0.8.4", default-features = false, optional = true }
 url = { version = "2", optional = true }
-chacha20poly1305 = { version = "=0.10.1", optional = true }
+chacha20poly1305 = "=0.10.1"
 # Recovery uses the age v1 scrypt format. This release omits the unused TAG/HPKE recipient stack.
 age = { version = "=0.11.5", default-features = false }
 iroh.workspace = true

@@ -305,6 +305,7 @@ impl SavedGroup {
             );
             posts.push(json!({
                 "id": id, "author": draft.author, "headline": draft.headline, "body": draft.body,
+                "attachment": draft.attachment,
                 "parent": draft.parent, "mine": header.sender == self.device.signing,
             }));
         }

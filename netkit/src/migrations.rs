@@ -3,8 +3,15 @@
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, MAIN_DB, TransactionBehavior};
 
-const STEPS: &[fn(&Connection) -> Result<()>] =
-    &[baseline, peer_scope, mail_requests, inbox, deleted_accounts];
+const STEPS: &[fn(&Connection) -> Result<()>] = &[
+    baseline,
+    peer_scope,
+    mail_requests,
+    inbox,
+    deleted_accounts,
+    profile_portraits,
+    attachments,
+];
 pub(crate) const CURRENT_VERSION: i64 = STEPS.len() as i64;
 
 // Version zero includes guards retained from releases before versioned migrations.
@@ -113,6 +120,16 @@ fn check_unversioned(db: &Connection) -> Result<()> {
 
 fn deleted_accounts(db: &Connection) -> Result<()> {
     db.execute_batch(include_str!("../migrations/0005_deleted_accounts.sql"))?;
+    Ok(())
+}
+
+fn profile_portraits(db: &Connection) -> Result<()> {
+    db.execute_batch(include_str!("../migrations/0006_profile_portraits.sql"))?;
+    Ok(())
+}
+
+fn attachments(db: &Connection) -> Result<()> {
+    db.execute_batch(include_str!("../migrations/0007_attachments.sql"))?;
     Ok(())
 }
 

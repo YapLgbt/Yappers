@@ -253,18 +253,23 @@ class DesktopTest {
                 assertTrue(org.jetbrains.skia.Color.getR(previewPixel()) > 200)
                 compose.onNodeWithText("Use crop").performClick()
                 val rendered = assertNotNull(decodeProfilePhoto(assertNotNull(saved))).asSkiaBitmap()
-                assertTrue(org.jetbrains.skia.Color.getR(rendered.getColor(72, 48)) > 200)
+                assertEquals(PROFILE_PHOTO_SIZE, rendered.height)
+                assertTrue(org.jetbrains.skia.Color.getR(rendered.getColor(rendered.width * 3 / 4, rendered.height / 2)) > 200)
                 val crop = PhotoFraming(image.width, image.height)
                 assertEquals(60f, crop.bounds.left)
                 for ((shift, red) in listOf(4f to true, -4f to false)) {
                     crop.adjust(2f, androidx.compose.ui.geometry.Offset(shift, 0f))
                     assertTrue(crop.bounds.left >= 0 && crop.bounds.right <= image.width)
                     val jpeg = encodePhotoCrop(image, crop.bounds)
-                    assertTrue(jpeg.length <= 4096)
+                    assertTrue(jpeg.length <= PROFILE_PHOTO_LENGTH)
                     val thumbnail = assertNotNull(decodeProfilePhoto(jpeg))
-                    assertEquals(96, thumbnail.height)
-                    val pixel = thumbnail.asSkiaBitmap().getColor(48, 48)
+                    assertEquals(PROFILE_PHOTO_SIZE, thumbnail.height)
+                    val pixel = thumbnail.asSkiaBitmap().getColor(thumbnail.width / 2, thumbnail.height / 2)
                     assertEquals(red, org.jetbrains.skia.Color.getR(pixel) > org.jetbrains.skia.Color.getB(pixel))
+                    val legacy = fitProfileThumbnail(jpeg, LEGACY_PROFILE_PHOTO_LENGTH)
+                    assertTrue(legacy.length <= LEGACY_PROFILE_PHOTO_LENGTH)
+                    assertEquals(96, assertNotNull(decodeProfilePhoto(legacy)).height)
+                    assertEquals(legacy, fitProfileThumbnail(legacy, LEGACY_PROFILE_PHOTO_LENGTH))
                 }
             }
         } finally { surface.close() }

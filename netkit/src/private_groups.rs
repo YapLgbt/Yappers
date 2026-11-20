@@ -396,11 +396,18 @@ pub struct Draft {
     pub headline: Option<String>,
     pub body: String,
     pub parent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<crate::attachments::Attachment>,
 }
 impl Draft {
     pub(crate) fn check(&self) -> Result<()> {
         text(&self.author, 30, false)?;
-        text(&self.body, 3000, true)?;
+        if let Some(file) = &self.attachment {
+            file.check()?;
+        }
+        if self.attachment.is_none() || !self.body.is_empty() {
+            text(&self.body, 3000, true)?;
+        }
         match (&self.headline, &self.parent) {
             (Some(title), None) => text(title, 100, false),
             (None, Some(parent)) => hash_id(parent),

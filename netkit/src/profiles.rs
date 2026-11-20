@@ -2,6 +2,7 @@
 //! Current home-authorized public profiles. Profile revisions are independent of post IDs.
 use crate::{CommunityProfile, store::Store};
 use anyhow::{Context, Result, ensure};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -113,11 +114,66 @@ impl Store {
         name: String,
         profile: CommunityProfile,
     ) -> Result<ProfileRecord> {
+        self.set_profile_with_portrait(home, owner, expected, name, profile, None)
+    }
+
+    pub(crate) fn profile_portrait(&self, home: &str, owner: &str) -> Result<Option<String>> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT portrait FROM public_profile_portraits WHERE home=? AND owner=?",
+                [home, owner],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub(crate) fn has_profile_portrait(&self, home: &str, owner: &str) -> Result<bool> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM public_profile_portraits WHERE home=? AND owner=?)",
+            [home, owner],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub(crate) fn set_profile_with_portrait(
+        &self,
+        home: &str,
+        owner: &str,
+        expected: u64,
+        name: String,
+        profile: CommunityProfile,
+        portrait: Option<String>,
+    ) -> Result<ProfileRecord> {
+        if let Some(portrait) = &portrait {
+            ensure!(
+                !profile.photo.is_empty()
+                    && portrait.len() <= crate::model::MAX_PROFILE_PORTRAIT_LENGTH,
+                "invalid profile portrait"
+            );
+            let bytes = STANDARD
+                .decode(portrait)
+                .context("invalid profile portrait encoding")?;
+            let mut decoder = jpeg_decoder::Decoder::new(bytes.as_slice());
+            decoder
+                .read_info()
+                .context("invalid profile portrait JPEG")?;
+            ensure!(
+                decoder
+                    .info()
+                    .is_some_and(|info| info.width == 1024 && info.height == 1024),
+                "profile portraits must be 1024 by 1024 pixels"
+            );
+        }
         let tx = self.db.unchecked_transaction()?;
         let existing = self.current_profile(home, owner)?;
+        let photo_changed = existing
+            .as_ref()
+            .is_none_or(|current| current.profile.photo != profile.photo);
         if let Some(current) = &existing
             && current.name == name
             && current.profile == profile
+            && (portrait.is_none() || portrait == self.profile_portrait(home, owner)?)
         {
             return Ok(current.clone());
         }
@@ -134,6 +190,18 @@ impl Store {
             profile,
         };
         self.import_profile(home, owner, record.clone())?;
+        if let Some(portrait) = portrait {
+            self.db.execute(
+                "INSERT INTO public_profile_portraits(home,owner,portrait) VALUES(?,?,?)
+                ON CONFLICT(home,owner) DO UPDATE SET portrait=excluded.portrait",
+                params![home, owner, portrait],
+            )?;
+        } else if photo_changed {
+            self.db.execute(
+                "DELETE FROM public_profile_portraits WHERE home=? AND owner=?",
+                [home, owner],
+            )?;
+        }
         tx.commit()?;
         Ok(record)
     }
@@ -142,6 +210,33 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maximum_profiles_fit_a_full_lookup_response() -> Result<()> {
+        let mut record = ProfileRecord {
+            revision: i64::MAX as u64,
+            name: "界".repeat(30),
+            profile: CommunityProfile {
+                pronouns: "界".repeat(40),
+                bio: "界".repeat(280),
+                identity: "界".repeat(80),
+                interests: "界".repeat(120),
+                here_for: vec!["Chosen family".into(); 6],
+                photo: "A".repeat(crate::model::MAX_PROFILE_PHOTO_LENGTH),
+            },
+        };
+        record.validate()?;
+        let records: std::collections::BTreeMap<_, _> = (0..crate::model::PROFILE_LOOKUP_BATCH)
+            .map(|index| (format!("{index:064x}"), &record))
+            .collect();
+        let response = crate::Response::Social {
+            result: serde_json::to_value(records)?,
+        };
+        assert!(serde_json::to_vec(&response)?.len() <= crate::MAX_FRAME);
+        record.profile.photo.push('A');
+        assert!(record.validate().is_err());
+        Ok(())
+    }
 
     #[test]
     fn page_profiles_match_exact_home_and_owner_across_batches() -> Result<()> {

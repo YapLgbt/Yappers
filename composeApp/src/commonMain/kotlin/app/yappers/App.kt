@@ -133,9 +133,11 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
     if (failure != null) PlatformConfirmation("Couldn’t delete account", failure.orEmpty(), "OK",
         onCancel = { failure = null }, cancel = "", destructive = false) { failure = null }
     key(generation) {
-        AccountContent(storage, networking, foreground, initialTab, photoLibrary, desktop, recoveryFiles,
-            nearbyServices, syncInView, installationWelcome, onWelcomeComplete, contentState, platformNavigation,
-            onDeleteAccount = { submit(true) }, canSubmitDeletion = !submitting)
+        CompositionLocalProvider(LocalAttachmentFiles provides (recoveryFiles as? AttachmentFiles)) {
+            AccountContent(storage, networking, foreground, initialTab, photoLibrary, desktop, recoveryFiles,
+                nearbyServices, syncInView, installationWelcome, onWelcomeComplete, contentState, platformNavigation,
+                onDeleteAccount = { submit(true) }, canSubmitDeletion = !submitting)
+        }
     }
 }
 
@@ -660,13 +662,14 @@ private fun AccountContent(storage: LocalStorage, networking: NetkitController?,
                                                     if (live) act { networking.unblockAccount(id); networking.sync() }
                                                     else change { repository.setDemoBlock(id, null) }
                                                 },
-                                                onSend = { peer, body ->
+                                                onDownload = { file -> checkNotNull(networking).downloadAttachment(file) },
+                                                onSend = { peer, body, file ->
                                                     try {
                                                         val controller = checkNotNull(networking)
                                                         if (platformNavigation != null && inboxPage != null && !platformNavigation.matchesInboxScope(controller.state.value)) {
                                                             return@InboxScreen false
                                                         }
-                                                        controller.sendMessage(peer, body)
+                                                        controller.sendMessage(peer, body, file)
                                                         scope.launch { controller.sync() }
                                                         true
                                                     } catch (failure: Exception) {
@@ -842,7 +845,15 @@ private fun AccountContent(storage: LocalStorage, networking: NetkitController?,
             }
             val event = author.event
             val actionable = !author.mine && (!live || event != null)
-            AuthorProfileSheet(author.name, author.username, author.profile, onDismiss = { shownAuthor = null },
+            var portrait by remember(event, author.profile?.photo) { mutableStateOf<String?>(null) }
+            LaunchedEffect(event, author.profile?.photo) {
+                if (live && event != null && networking != null && !author.profile?.photo.isNullOrEmpty()) {
+                    try { portrait = networking.profilePortrait(event) }
+                    catch (failure: Exception) { if (failure is CancellationException) throw failure }
+                }
+            }
+            val profile = portrait?.let { author.profile?.copy(photo = it) } ?: author.profile
+            AuthorProfileSheet(author.name, author.username, profile, onDismiss = { shownAuthor = null },
                 onMessage = if (live && connection.directAvailable && connection.messagingScope != null && actionable && event != null && author.peer != null) ({ contact(event) }) else null,
                 onBlock = if (actionable) ({
                     shownAuthor = null
@@ -1461,28 +1472,9 @@ private fun Profile(state: FeedSnapshot, live: Boolean, connection: NetkitState,
     }
     fun androidx.compose.foundation.lazy.LazyListScope.publicProfile() {
         item(key = "profile-identity") {
-            val identity: @Composable ColumnScope.() -> Unit = {
-                Text(state.alias, style = if (native != null) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold)
-                if (live) UsernameControl(connection, networking)
-                if (state.profile.pronouns.isNotBlank()) Text(state.profile.pronouns, color = MaterialTheme.colorScheme.primary)
-                if (native == null && state.profile.identity.isNotBlank()) Text(state.profile.identity, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (native != null && LocalDensity.current.fontScale >= 1.6f) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ProfilePortrait(state.alias, state.profile)
-                    Column(verticalArrangement = Arrangement.spacedBy(3.dp), content = identity)
-                }
-            } else Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                ProfilePortrait(state.alias, state.profile)
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (native != null) 3.dp else 0.dp), content = identity)
-            }
-        }
-        if (native == null) {
-            if (state.profile.bio.isNotBlank()) item { Text(state.profile.bio,
-                style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            if (state.profile.hereFor.isNotEmpty()) item { ProfileIntentions(state.profile.hereFor) }
-            if (state.profile.interests.isNotBlank()) item { Text(state.profile.interests, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            val username = connection.privacy.username.takeIf { live }
+            ProfileOverview(state.alias, username, state.profile, own = true, usernameAction =
+                if (live && username == null) ({ UsernameControl(connection, networking) }) else null)
         }
         item {
             FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1503,22 +1495,7 @@ private fun Profile(state: FeedSnapshot, live: Boolean, connection: NetkitState,
                 FormRow("settings", "Settings", "disclosure", symbol = "gearshape", identifier = "profile-settings", onTap = onSettings)
             )))), "inline", Modifier.fillMaxWidth())
         }
-        if (native != null) {
-            if (state.profile.bio.isNotBlank()) item { Text(state.profile.bio, style = postBodyStyle) }
-            val details = listOf("Identity" to state.profile.identity, "Here for" to state.profile.hereFor.distinct().joinToString(", "),
-                "Current joys" to state.profile.interests).filter { it.second.isNotBlank() }
-            if (details.isNotEmpty()) item {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    details.forEach { (label, value) ->
-                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(value, style = MaterialTheme.typography.bodyLarge)
-                        }
-                    }
-                }
-            }
-            ownPosts()
-        }
+        if (native != null) ownPosts()
     }
     LazyColumn(state = listState, contentPadding = PaddingValues(22.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         if (!settingsOnly) publicProfile()

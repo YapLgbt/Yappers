@@ -1,11 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { errorMessage, type Community } from './community';
+  import { errorMessage, type Attachment, type Community } from './community';
   import ActionButton from './ActionButton.svelte';
+  import AttachmentPicker from './AttachmentPicker.svelte';
+  import AttachmentDownload from './AttachmentDownload.svelte';
   import Sheet from './Sheet.svelte';
 
   type Summary = { id: string; name: string };
-  type Post = { id: string; author: string; headline: string | null; body: string; parent: string | null };
+  type Post = { id: string; author: string; headline: string | null; body: string; parent: string | null; attachment?: Attachment };
   type Page = {
     name: string; owner: boolean; phase: 'pending' | 'joined' | 'removed';
     posts: Post[]; pending: boolean; before: number | null;
@@ -21,6 +23,7 @@
   let editor = $state<Editor | null>(null);
   let parent = $state<Post | null>(null);
   let input = $state('');
+  let file = $state<File | null>(null);
   let headline = $state('');
   let busy = $state(false);
   let error = $state('');
@@ -64,6 +67,7 @@
   function begin(kind: Editor, responseTo: Post | null = null) {
     editor = kind;
     input = '';
+    file = null;
     headline = '';
     parent = responseTo;
     error = '';
@@ -71,7 +75,7 @@
     queueMicrotask(() => heading?.focus());
   }
   function back() {
-    if (editor) editor = null;
+    if (editor) { editor = null; file = null; }
     else if (group) { group = null; page = null; }
     else { onBack(); return; }
     error = '';
@@ -102,12 +106,14 @@
         editor = null;
         await open(group);
       } else if (group && (post || reply)) {
+        const attachment = file ? await client.uploadAttachment(file) : undefined;
         await request('prepare', { group, draft: {
-          author: alias, headline: post ? headline.trim() : null, body: input.trim(), parent: parent?.id ?? null,
+          author: alias, headline: post ? headline.trim() : null, body: input.trim(), parent: parent?.id ?? null, attachment,
         } });
         if (page) page.pending = true;
         editor = null;
         input = '';
+        file = null;
         headline = '';
         parent = null;
         await publish(group);
@@ -137,15 +143,16 @@
       {#if editor === 'Create private group'}
         <label>{label} <input required maxlength="60" bind:value={input} disabled={busy} /></label>
       {:else}
-        <label>{label} <textarea required maxlength={post || reply ? 3000 : 4096}
+        <label>{label} <textarea required={!(post || reply) || !file} maxlength={post || reply ? 3000 : 4096}
           rows={post || reply ? 6 : 4} bind:value={input} disabled={busy}></textarea></label>
       {/if}
+      {#if post || reply}<AttachmentPicker bind:file disabled={busy}/>{/if}
       {#if editor === 'Approve a device'}
         <p>Approve only a request you received directly from the person you invited.</p>
       {:else if editor === 'Open invitation'}
         <p>The owner will need to approve this device before you can read or post.</p>
       {/if}
-      <ActionButton type="submit" variant="filled" disabled={busy || !input.trim() || (post && !headline.trim())}>
+      <ActionButton type="submit" variant="filled" disabled={busy || (!input.trim() && !((post || reply) && file)) || (post && !headline.trim())}>
         {post ? 'Post' : reply ? 'Send reply' : editor === 'Approve a device' ? 'Approve device' : editor}
       </ActionButton>
     </form>
@@ -199,10 +206,12 @@
             <h2>{root.headline}</h2>
             <p class="byline">{root.author}</p>
             <p class="body">{root.body}</p>
+            {#if root.attachment}<AttachmentDownload attachment={root.attachment} {client}/>{/if}
             {#each current.posts.filter(post => post.parent === root.id).toReversed() as comment (comment.id)}
               <div class="reply">
                 <p class="byline">{comment.author}</p>
                 <p class="body">{comment.body}</p>
+                {#if comment.attachment}<AttachmentDownload attachment={comment.attachment} {client}/>{/if}
               </div>
             {/each}
             <ActionButton disabled={busy || current.pending} onclick={() => begin('Write a reply', root)}>Reply</ActionButton>
@@ -213,6 +222,7 @@
             <h2>Reply to an earlier post</h2>
             <p class="byline">{comment.author}</p>
             <p class="body">{comment.body}</p>
+            {#if comment.attachment}<AttachmentDownload attachment={comment.attachment} {client}/>{/if}
           </article>
         {/each}
         {#if !current.posts.length}<p>No posts since you joined.</p>{/if}

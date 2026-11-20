@@ -26,7 +26,7 @@ private data class PrivateGroupSummary(val id: String, val name: String)
 @Serializable
 private data class PrivatePost(
     val id: String, val author: String, val headline: String? = null,
-    val body: String, val parent: String? = null
+    val body: String, val parent: String? = null, val attachment: Attachment? = null,
 )
 
 @Serializable
@@ -52,6 +52,8 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
     var input by retain { mutableStateOf("") }
     var heading by retain { mutableStateOf("") }
     var reply by retain { mutableStateOf<PrivatePost?>(null) }
+    var file by retain { mutableStateOf<SelectedAttachment?>(null) }
+    val files = LocalAttachmentFiles.current
     var busy by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf("") }
     var discardEditor by remember { mutableStateOf(false) }
@@ -93,13 +95,14 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
     fun begin(kind: String, parent: PrivatePost? = null) {
         editor = kind
         input = ""
+        file = null
         heading = ""
         reply = parent
         notice = ""
     }
     fun dismissEditor() {
         if (busy) return
-        if (input.isNotBlank() || heading.isNotBlank()) discardEditor = true
+        if (input.isNotBlank() || heading.isNotBlank() || file != null) discardEditor = true
         else editor = null
     }
     fun back() {
@@ -114,6 +117,14 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
     fun copy(value: String, label: String) {
         clipboard.setText(AnnotatedString(value))
         notice = label
+    }
+    fun download(attachment: Attachment) {
+        if (files == null) return
+        act {
+            files.saveAttachment(attachment.name, controller.downloadAttachment(attachment)) { error ->
+                if (error != null) notice = error
+            }
+        }
     }
     LaunchedEffect(routeGroup) { act { if (routeGroup == null) list() else open(routeGroup) } }
     AppBackHandler(materialNavigation == null || group != null, ::back)
@@ -137,7 +148,7 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
             "New post" -> "Post body"
             else -> "Reply"
         }
-        val valid = input.isNotBlank() && (!isPost || heading.isNotBlank())
+        val valid = (input.isNotBlank() || (isMessage && file != null)) && (!isPost || heading.isNotBlank())
         return FormSection(rows = buildList {
             if (isPost) add(FormRow("headline", "Headline", kind = "field", fieldValue = { heading }, limit = 100,
                 enabled = !busy, onChange = { heading = it.take(100) }))
@@ -145,6 +156,15 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
             add(FormRow("input", label, kind = if (limit == 60) "field" else "multiline", fieldValue = { input },
                 limit = limit, enabled = !busy, keyboard = if (limit == 4096) "ascii" else "",
                 onChange = { input = it.take(limit) }))
+            if (isMessage && files != null) {
+                file?.let { add(FormRow("attachment-name", it.name, "text")) }
+                add(FormRow("attachment", if (file == null) "Attach file" else "Remove file", symbol = "paperclip", enabled = !busy) {
+                    if (file != null) file = null else files.chooseAttachment { selected, error ->
+                        if (selected != null) file = selected
+                        if (error != null) notice = error
+                    }
+                })
+            }
             add(FormRow("submit", when {
                 isPost -> "Post"
                 isReply -> "Send reply"
@@ -169,16 +189,19 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
                         }
                         else -> {
                             val target = checkNotNull(id)
+                            val attachment = file?.let { controller.uploadAttachment(it) }
                             val draft = buildJsonObject {
                                 put("author", alias)
                                 put("headline", if (isPost) JsonPrimitive(heading.trim()) else JsonNull)
                                 put("body", input.trim())
                                 put("parent", reply?.id?.let(::JsonPrimitive) ?: JsonNull)
+                                if (attachment != null) put("attachment", privateGroupJson.encodeToJsonElement(Attachment.serializer(), attachment))
                             }
                             request("prepare", "group" to JsonPrimitive(target), "draft" to draft)
                             page = page?.copy(pending = true)
                             editor = null
                             input = ""
+                            file = null
                             heading = ""
                             reply = null
                             request("publish", "group" to JsonPrimitive(target))
@@ -263,8 +286,12 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
                     add(FormSection(rows = buildList {
                         add(FormRow(post.id, post.headline ?: "${post.author} · Reply to an earlier post",
                             kind = "text", detail = if (post.parent == null) "${post.author}\n${post.body}" else post.body))
+                        if (files != null) post.attachment?.let { file -> add(FormRow("download-${file.id}-${post.id}",
+                            "Download ${file.name}", enabled = !busy) { download(file) }) }
                         byParent[post.id].orEmpty().asReversed().forEach { comment ->
                             add(FormRow(comment.id, comment.author, kind = "text", detail = comment.body))
+                            if (files != null) comment.attachment?.let { file -> add(FormRow("download-${file.id}-${comment.id}",
+                                "Download ${file.name}", enabled = !busy) { download(file) }) }
                         }
                         if (post.parent == null) add(FormRow("reply-${post.id}", "Reply", enabled = !busy && !current.pending,
                             onTap = { begin("Write a reply", post) }))
@@ -295,7 +322,7 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
                 sections = listOf(FormSection(rows = form.rows.dropLast(1), footer = notice.ifBlank { form.footer })),
                 leading = FormChoice("Cancel", action = ::dismissEditor), leadingEnabled = !busy,
                 trailing = FormChoice(submit.title, action = submit::tap), trailingEnabled = submit.enabled,
-                canDismiss = !busy && input.isBlank() && heading.isBlank(), onDismiss = ::dismissEditor),
+                canDismiss = !busy && input.isBlank() && heading.isBlank() && file == null, onDismiss = ::dismissEditor),
                 "sheet", Modifier)
         }
     } else {
@@ -386,7 +413,7 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
             val model = editorSection(fields)
             val submit = model.rows.last()
             val sheet = rememberEditorSheetState { next ->
-                if (next == SheetValue.Hidden && (busy || input.isNotBlank() || heading.isNotBlank())) {
+                if (next == SheetValue.Hidden && (busy || input.isNotBlank() || heading.isNotBlank() || file != null)) {
                     if (!busy) discardEditor = true
                     false
                 } else true
@@ -402,7 +429,11 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
                         if (notice.isNotEmpty()) item { Text(notice, color = MaterialTheme.colorScheme.error) }
                         model.rows.dropLast(1).forEach { row ->
                             item {
-                                if (row.kind == "text") Text(row.title) else PrivateGroupTextField(row)
+                                when (row.kind) {
+                                    "text" -> Text(row.title)
+                                    "field", "multiline" -> PrivateGroupTextField(row)
+                                    else -> TextButton(onClick = row::tap, enabled = row.enabled) { Text(row.title) }
+                                }
                             }
                         }
                         if (model.footer.isNotEmpty()) item {
@@ -419,6 +450,7 @@ internal fun PrivateGroupsScreen(controller: NetkitController, alias: String, on
             discardEditor = false
             editor = null
             input = ""
+            file = null
             heading = ""
             reply = null
         }

@@ -3,7 +3,7 @@
   import { ToggleGroup } from '@skeletonlabs/skeleton-svelte';
   import AppIcon from './AppIcon.svelte';
   import Avatar from './Avatar.svelte';
-  import { blankProfile, type Community, type Profile } from './community';
+  import { blankProfile, PROFILE_PHOTO_LENGTH, PROFILE_PHOTO_SIZE, type Community, type Profile } from './community';
   import { onDestroy, tick } from 'svelte';
   let { client, profile }: { client: Community; profile: Profile } = $props();
   const intentions = [
@@ -217,13 +217,13 @@
       let photo = draft.photo;
       if (source) {
         const out = document.createElement('canvas');
-        for (const size of [96, 80, 64, 48, 32]) {
-          out.width = out.height = size;
-          paint(out, source);
-          photo = out.toDataURL('image/jpeg', 0.72).split(',')[1];
-          if (photo.length <= 4096) break;
+        out.width = out.height = PROFILE_PHOTO_SIZE;
+        paint(out, source);
+        for (const quality of [0.87, 0.78, 0.68, 0.58, 0.48, 0.38, 0.28, 0.18, 0.08]) {
+          photo = out.toDataURL('image/jpeg', quality).split(',')[1];
+          if (photo.length <= PROFILE_PHOTO_LENGTH) break;
         }
-        if (photo.length > 4096) throw Error('Couldn’t resize this photo. Choose another.');
+        if (photo.length > PROFILE_PHOTO_LENGTH) throw Error('Couldn’t resize this photo. Choose another.');
       }
       const updated = { ...draft, photo, hereFor: [...draft.hereFor] };
       await client.setPublicProfile(alias.trim(), updated, expectedRevision);

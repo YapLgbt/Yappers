@@ -17,25 +17,29 @@ internal class SkiaCropSource(private val image: Image) : CropSource {
     override fun draw(scope: DrawScope, bounds: Rect) = with(scope) {
         drawIntoCanvas { it.skiaCanvas.drawImageRect(image, bounds.skia(), org.jetbrains.skia.Rect.makeWH(size.width, size.height), SamplingMode.MITCHELL, null, true) }
     }
-    override fun encode(bounds: Rect) = encodePhotoCrop(image, bounds)
+    override fun encode(bounds: Rect, maxLength: Int) = encodePhotoCrop(image, bounds, maxLength)
     override fun close() = image.close()
 }
 
-internal fun encodePhotoCrop(image: Image, bounds: Rect): String {
-    val surface = Surface.makeRasterN32Premul(96, 96)
-    try {
-        surface.canvas.clear(org.jetbrains.skia.Color.WHITE)
-        surface.canvas.drawImageRect(image, bounds.skia(), org.jetbrains.skia.Rect.makeWH(96f, 96f), SamplingMode.MITCHELL, null, true)
-        val thumbnail = surface.makeImageSnapshot()
+internal fun encodePhotoCrop(image: Image, bounds: Rect, maxLength: Int = PROFILE_PHOTO_LENGTH): String {
+    val byteLimit = maxLength / 4 * 3
+    for (size in profilePhotoSizes(maxLength)) {
+        val surface = Surface.makeRasterN32Premul(size, size)
         try {
-            for (quality in listOf(82, 65, 45, 30, 15, 5)) {
-                val jpeg = thumbnail.encodeToData(EncodedImageFormat.JPEG, quality) ?: continue
-                try {
-                    if (jpeg.size <= 3072) return Base64.Default.encode(jpeg.bytes)
-                } finally { jpeg.close() }
-            }
-        } finally { thumbnail.close() }
-    } finally { surface.close() }
+            surface.canvas.clear(org.jetbrains.skia.Color.WHITE)
+            surface.canvas.drawImageRect(image, bounds.skia(), org.jetbrains.skia.Rect.makeWH(size.toFloat(), size.toFloat()),
+                SamplingMode.MITCHELL, null, true)
+            val thumbnail = surface.makeImageSnapshot()
+            try {
+                for (quality in profilePhotoQualities(size)) {
+                    val jpeg = thumbnail.encodeToData(EncodedImageFormat.JPEG, quality) ?: continue
+                    try {
+                        if (jpeg.size <= byteLimit) return Base64.Default.encode(jpeg.bytes)
+                    } finally { jpeg.close() }
+                }
+            } finally { thumbnail.close() }
+        } finally { surface.close() }
+    }
     error("Couldn’t save this crop. Try zooming in or choosing another photo.")
 }
 

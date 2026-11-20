@@ -58,6 +58,9 @@ export type View = 'connecting' | 'offline' | 'primary' | 'replica';
 export type ReportSubject = 'post'|'reply'|'message'|'account';
 export interface ReportEvidence {subject: ReportSubject; category: string; text:string; reference:string|null}
 export interface Community {
+  uploadAttachment(file: File): Promise<Attachment>;
+  downloadAttachment(attachment: Attachment): Promise<void>;
+  profilePortrait(event: string, scope?: string): Promise<string | null>;
   setPublicProfile(name:string,profile:PublicProfile,expected:number):Promise<void>;
   resolvePush(route:string):Promise<{category:string;item:ActivityItem}|null>;
   setPushCategories(categories:string[]):Promise<void>;
@@ -85,7 +88,7 @@ export interface Community {
   setNearby(value:Nearby|null):Promise<void>;setPrivacy(change:Partial<Privacy>):Promise<void>;
   inboxError: string;
   messageContact(event: string,scope?:string): Promise<Contact>;
-  sendMessage(contact: Contact, body: string): Promise<void>;
+  sendMessage(contact: Contact, body: string, attachment?: Attachment): Promise<void>;
   unblockAccount(account:BlockedAccount):Promise<void>;
   blockAccount(block: BlockedAccount): Promise<void>;
   approveMessage(peer: string): Promise<void>;
@@ -121,10 +124,13 @@ export function visible(author: Author, profile: Profile) {
 export const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'Please try again.';
 
 export interface Contact { peer: string; label: string }
+export const MAX_ATTACHMENT_BYTES = 20_000_000;
+export interface Attachment {id:string; key:string; name:string; size:number}
 export interface DirectMessage extends Contact {
   timestamp?: number;
   id: string;
   body: string;
+  attachment?: Attachment;
   outgoing: boolean;
   age: number;
   status: 'received' | 'sent' | 'queued' | 'unavailable';
@@ -172,5 +178,7 @@ export interface Locality {city:string; region:string; country:string}
 export interface Group { id:string; name:string; category:string; description:string; locality?:Locality | null; homes:number }
 export interface GroupDetails {name:string;description:string;category:string;locality:Locality | null}
 export interface PublicProfile {pronouns:string;bio:string;identity:string;interests:string;hereFor:string[];photo:string}
+export const PROFILE_PHOTO_SIZE = 1024;
+export const PROFILE_PHOTO_LENGTH = 384 * 1024;
 export const blankProfile = ():PublicProfile => ({pronouns:'',bio:'',identity:'',interests:'',hereFor:[],photo:''});
 export interface Privacy { hideAnonymous:boolean;feedDays:number;dmDays:number;approvedOnly:boolean }

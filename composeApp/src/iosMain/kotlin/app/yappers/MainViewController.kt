@@ -274,6 +274,7 @@ class AppleAppSession(
         val density = LocalDensity.current
         val host = androidx.compose.ui.uikit.LocalUIViewController.current
         CompositionLocalProvider(
+            LocalAttachmentFiles provides (recoveryFiles as? AttachmentFiles),
             LocalRefreshIndicator provides { progress, refreshing -> AppleRefreshIndicatorView(editorFactory, progress, refreshing) },
             LocalTransientNotice provides { message -> editorFactory.showTransientNotice(host, message) },
             LocalSkiaAppearance provides { content -> AppleAppearance(content) },
@@ -286,6 +287,7 @@ class AppleAppSession(
             LocalFeedControl provides { row, modifier -> AppleFeedButton(editorFactory, row, modifier) },
             LocalInlineEditor provides { model -> AppleInlineEditorView(editorFactory, model) },
             LocalPostSheetPresenter provides { model -> ApplePostSheet(model, editorFactory) },
+            LocalAuthorProfilePresenter provides { dismiss, content -> AppleProfileSheet(editorFactory, dismiss, content) },
         ) {
             screen()
         }

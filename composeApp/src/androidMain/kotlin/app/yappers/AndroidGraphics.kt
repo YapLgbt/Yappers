@@ -45,8 +45,8 @@ private fun AnimatedFlag(code: String, phase: Float, modifier: Modifier) {
 }
 
 actual fun decodeProfilePhoto(value: String): ImageBitmap? = runCatching {
-    require(value.length <= 4096)
-    boundedBitmap(Base64.Default.decode(value), 128).asImageBitmap()
+    require(value.length <= PROFILE_PHOTO_LENGTH)
+    boundedBitmap(Base64.Default.decode(value), PROFILE_PHOTO_SIZE).asImageBitmap()
 }.getOrNull()
 
 private fun boundedBitmap(bytes: ByteArray, max: Int): Bitmap {
@@ -69,19 +69,23 @@ internal actual fun decodeCropSource(bytes: ByteArray): CropSource = object : Cr
     override fun draw(scope: DrawScope, bounds: Rect) = with(scope) {
         drawIntoCanvas { paint(it.nativeCanvas, bounds, RectF(0f, 0f, size.width, size.height)) }
     }
-    override fun encode(bounds: Rect): String {
-        val thumb = Bitmap.createBitmap(96, 96, Bitmap.Config.ARGB_8888)
-        try {
-            val canvas = android.graphics.Canvas(thumb)
-            canvas.drawColor(android.graphics.Color.WHITE)
-            paint(canvas, bounds, RectF(0f, 0f, 96f, 96f))
-            for (quality in listOf(82, 65, 45, 30, 15, 5)) {
+    override fun encode(bounds: Rect, maxLength: Int): String {
+        val byteLimit = maxLength / 4 * 3
+        for (size in profilePhotoSizes(maxLength)) {
+            val thumb = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            try {
+                val canvas = android.graphics.Canvas(thumb)
+                canvas.drawColor(android.graphics.Color.WHITE)
+                paint(canvas, bounds, RectF(0f, 0f, size.toFloat(), size.toFloat()))
                 val out = ByteArrayOutputStream()
-                if (thumb.compress(Bitmap.CompressFormat.JPEG, quality, out) && out.size() <= 3072)
-                    return Base64.Default.encode(out.toByteArray())
-            }
-            error("Couldn’t save this crop. Choose another photo.")
-        } finally { thumb.recycle() }
+                for (quality in profilePhotoQualities(size)) {
+                    if (thumb.compress(Bitmap.CompressFormat.JPEG, quality, out) && out.size() <= byteLimit)
+                        return Base64.Default.encode(out.toByteArray())
+                    out.reset()
+                }
+            } finally { thumb.recycle() }
+        }
+        error("Couldn’t save this crop. Choose another photo.")
     }
     override fun close() = bitmap.recycle()
 }

@@ -1,6 +1,10 @@
 import init, {BrowserClient, create_wallet, prepare_action, recover_browser_wallet} from './runtime/yap.js';
 import {load, update, clearDevice} from './store.js';
 
+const PROFILE_LOOKUP_BATCH = 32;
+const LEGACY_PROFILE_PHOTO_LENGTH = 4096;
+const PROFILE_THUMBNAIL_LENGTH = 24 * 1024;
+
 let client;
 export let profile;
 export let replicaFeed;
@@ -142,8 +146,60 @@ function currentProfile(state, record) {
   if (!record || record.revision < (state.profileRevision || 0)) return state;
   return {...state, alias:record.name, publicProfile:record.profile, profileRevision:record.revision};
 }
-function writeProfile(expected, name, profile) {
-  return rpc({type:'social', op:{kind:'setProfile', expected, name, profile}});
+export async function profilePortrait(event, scope) {
+  const command = {type:'social', op:{kind:'profilePortrait',event:event ?? null}};
+  const result = scope ? await scopedRpc(scope, command) : await rpc(command);
+  return result.portrait;
+}
+async function ownProfilePortrait(record) {
+  if (!record?.hasPortrait) return record;
+  const cached = profile.profileRevision === record.revision && profile.publicProfile?.photo !== record.profile.photo
+    ? profile.publicProfile?.photo : null;
+  const portrait = cached || await profilePortrait().catch(() => null);
+  return portrait ? {...record, profile:{...record.profile,photo:portrait}} : record;
+}
+async function fitProfileThumbnail(photo, limit) {
+  let bitmap;
+  try {
+    const binary = Uint8Array.from(atob(photo), character => character.charCodeAt(0));
+    bitmap = await createImageBitmap(new Blob([binary]));
+  } catch (failure) {
+    if (photo.length <= limit) return photo;
+    throw failure;
+  }
+  try {
+    const legacy = limit <= LEGACY_PROFILE_PHOTO_LENGTH;
+    if (photo.length <= limit && Math.max(bitmap.width, bitmap.height) <= (legacy ? 128 : 384)) return photo;
+    const canvas = document.createElement('canvas');
+    const edge = Math.min(bitmap.width, bitmap.height);
+    const context = canvas.getContext('2d');
+    for (const size of legacy ? [96] : [384, 320, 256, 192, 128, 96]) {
+      canvas.width = canvas.height = size;
+      context.fillStyle = '#fff';
+      context.fillRect(0, 0, size, size);
+      context.drawImage(bitmap, (bitmap.width - edge) / 2, (bitmap.height - edge) / 2, edge, edge, 0, 0, size, size);
+      for (const quality of size === 96 ? [0.82, 0.65, 0.45, 0.3, 0.15, 0.05] : [0.82, 0.65, 0.5, 0.4]) {
+        const encoded = canvas.toDataURL('image/jpeg', quality).split(',')[1];
+        if (encoded.length <= limit) return encoded;
+      }
+    }
+    throw new Error('Couldn’t resize this photo. Choose another.');
+  } finally {
+    bitmap.close();
+  }
+}
+async function writeProfile(expected, name, profile) {
+  if (!profile.photo) return rpc({type:'social', op:{kind:'setProfile', expected, name, profile}});
+  const status = await rpc({type:'social',op:{kind:'privacyStatus'}});
+  const limit = Math.min(PROFILE_THUMBNAIL_LENGTH, Math.max(LEGACY_PROFILE_PHOTO_LENGTH,
+    Number.isInteger(status.profilePhotoLimit) ? status.profilePhotoLimit : 0));
+  const photo = await fitProfileThumbnail(profile.photo, limit);
+  const preview = {...profile, photo};
+  if (profile.photo !== photo && profile.photo.length <= status.profilePortraitLimit) {
+    const record = await rpc({type:'social', op:{kind:'setProfilePortrait', expected, name, profile:preview, portrait:profile.photo}});
+    return {...record, profile:{...record.profile,photo:profile.photo}};
+  }
+  return rpc({type:'social', op:{kind:'setProfile', expected, name, profile:preview}});
 }
 export async function setPublicProfile(name, details, expected) {
   await navigator.locks.request('yap-web-delivery-v1', async () => {
@@ -153,7 +209,8 @@ export async function setPublicProfile(name, details, expected) {
       record = await writeProfile(expected, name, details);
     } catch (failure) {
       const status = await rpc({type:'social',op:{kind:'privacyStatus'}}).catch(() => null);
-      if (status?.currentProfile) await modify(s => currentProfile(s, status.currentProfile));
+      const record = await ownProfilePortrait(status?.currentProfile);
+      if (record) await modify(s => currentProfile(s, record));
       throw new Error(String(failure));
     }
     await modify(s => currentProfile(s, record));
@@ -173,8 +230,8 @@ async function savedProfiles(savedPosts) {
   const records = new Map();
   for (const [scope, authors] of scopes) {
     const ids = [...authors.values()];
-    for (let i = 0; i < ids.length; i += 100) {
-      const result = await scopedRpc(scope,{type:'social',op:{kind:'profiles',events:ids.slice(i,i+100)}});
+    for (let i = 0; i < ids.length; i += PROFILE_LOOKUP_BATCH) {
+      const result = await scopedRpc(scope,{type:'social',op:{kind:'profiles',events:ids.slice(i,i+PROFILE_LOOKUP_BATCH)}});
       for (const [peer,record] of Object.entries(result)) records.set(peer, record);
     }
   }
@@ -198,7 +255,7 @@ export async function verifyWelcomeUsername(finish = false) {
         username !== username.split('@')[0] + '@' + domain))
       throw new Error('Your home returned an invalid username. Try again.');
     if (finish && !username) throw new Error('Claim a username before entering the neighborhood.');
-    const record = status.currentProfile || (finish && await writeProfile(0, profile.alias,
+    const record = await ownProfilePortrait(status.currentProfile) || (finish && await writeProfile(0, profile.alias,
       profile.publicProfile || {pronouns:'',bio:'',identity:'',interests:'',photo:'',hereFor:[]}));
     await modify(s => {
       if (s.wallet.deviceSecret !== wallet.deviceSecret) throw new Error('Your account changed. Reopen Yap.');
@@ -456,6 +513,7 @@ async function synchronize() {
     const confirmedBlocks=blocks.blocks.map(b=>profile.blocks.find(local=>local.handle===b.id) || {event:'home-'+b.id,handle:b.id,label:b.label});
     const newlyBlocked=confirmedBlocks.some(b=>!profile.blocks.some(old=>old.handle===b.handle));
     const records = await savedProfiles(newlyBlocked ? {} : profile.savedPosts);
+    const ownProfile = await ownProfilePortrait(privacy.currentProfile);
     await modify(s => {
       const savedPosts = {};
       for (const [id,post] of Object.entries(newlyBlocked ? {} : s.savedPosts || {})) {
@@ -463,7 +521,7 @@ async function synchronize() {
       }
       const scope=s.activeGroup||s.join.community;
       for(const post of latest.posts)if(s.saved.includes(post.id))savedPosts[post.id]={...post,scope};
-      return purgeDeleted({...currentProfile(s,privacy.currentProfile),pushCapabilities:privacy.pushCapabilities,pushCategories:privacy.pushCategories||[],notifications:applyInbox(s,privacy.notifications),savedPosts,outbox:s.outbox.filter(event=>!acceptedFeedEvents.has(event.id)),feedCache:newlyBlocked ? {} : s.feedCache,blocks:[...confirmedBlocks,...s.blocks.filter(b=>!b.handle)], posts:latest.posts, lastSync:Date.now(), safeForPublic:safe,
+      return purgeDeleted({...currentProfile(s,ownProfile),pushCapabilities:privacy.pushCapabilities,pushCategories:privacy.pushCategories||[],notifications:applyInbox(s,privacy.notifications),savedPosts,outbox:s.outbox.filter(event=>!acceptedFeedEvents.has(event.id)),feedCache:newlyBlocked ? {} : s.feedCache,blocks:[...confirmedBlocks,...s.blocks.filter(b=>!b.handle)], posts:latest.posts, lastSync:Date.now(), safeForPublic:safe,
       directAvailable:latest.direct === true && !s.mailboxElsewhere, messageRequests:privacy.requests || [], inboxPolicy:s.pendingPrivacy || privacy.settings, hideAnonymous:s.pendingPrivacy?.hideAnonymous ?? (s.privacyManaged ? privacy.settings.hideAnonymous : s.hideAnonymous || privacy.settings.hideAnonymous),
       usernameDomain:privacy.usernameDomain || s.usernameDomain, username:privacy.username || s.username,
       wallet:latest.accountChain?.length ? {...s.wallet,chain:latest.accountChain} : s.wallet},latest.deleted);});
@@ -539,11 +597,59 @@ export function messageContact(event,scope) {
   });
 }
 
-export function sendMessage(contact, body) {
+const ATTACHMENT_CHUNK_BYTES = 256 * 1024;
+const MAX_ATTACHMENT_BYTES = 20_000_000;
+const uploadedFiles = new WeakMap();
+
+function encodeChunk(bytes) {
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 8192)
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+  return btoa(binary);
+}
+
+export async function uploadAttachment(file) {
+  if (file.size < 1 || file.size > MAX_ATTACHMENT_BYTES) throw new Error('Choose a file within 20 MB.');
+  return navigator.locks.request('yap-web-delivery-v1', async () => {
+    const wallet = await confirmAccount();
+    const saved = uploadedFiles.get(file);
+    if (saved?.device === wallet.deviceSecret) return saved.attachment;
+    const attachment = await rpc({type:'attachmentBegin',name:file.name,size:file.size});
+    for (let start = 0; start < file.size; start += ATTACHMENT_CHUNK_BYTES) {
+      const bytes = new Uint8Array(await file.slice(start, start + ATTACHMENT_CHUNK_BYTES).arrayBuffer());
+      await rpc({type:'attachmentUpload',attachment,part:start / ATTACHMENT_CHUNK_BYTES,bytes:encodeChunk(bytes)});
+    }
+    uploadedFiles.set(file, {device:wallet.deviceSecret,attachment});
+    return attachment;
+  });
+}
+
+export async function downloadAttachment(attachment) {
+  if (attachment.size < 1 || attachment.size > MAX_ATTACHMENT_BYTES) throw new Error('Invalid attachment size.');
+  const parts = await navigator.locks.request('yap-web-delivery-v1', async () => {
+    await confirmAccount();
+    const chunks = [];
+    for (let part = 0; part < Math.ceil(attachment.size / ATTACHMENT_CHUNK_BYTES); part++) {
+      const {bytes} = await rpc({type:'attachmentDownload',attachment,part});
+      chunks.push(Uint8Array.from(atob(bytes), character => character.charCodeAt(0)));
+    }
+    return chunks;
+  });
+  const url = URL.createObjectURL(new Blob(parts, {type:'application/octet-stream'}));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = attachment.name;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
+export function sendMessage(contact, body, attachment) {
   return withMailbox(async () => {
     checkPeer(contact.peer);
     await initializeMessages();
-    await messageStep({kind:'prepare',peer:contact.peer,label:contact.label,name:profile.alias,body:body.trim()});
+    await messageStep({kind:'prepare',peer:contact.peer,label:contact.label,name:profile.alias,body:body.trim(),attachment});
     scheduleDelivery();
   });
 }

@@ -10,7 +10,8 @@ import kotlinx.serialization.json.*
 @Serializable
 data class DirectMessage(
     val id: String, val peer: String, val label: String, val body: String,
-    val outgoing: Boolean, val status: String, val age: Int = 0, val timestamp: Long = 0
+    val outgoing: Boolean, val status: String, val age: Int = 0, val timestamp: Long = 0,
+    val attachment: Attachment? = null,
 )
 @Serializable
 data class MessageContact(val peer: String, val label: String)

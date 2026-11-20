@@ -192,8 +192,52 @@ impl Store {
                 name,
                 profile,
             } => serde_json::to_value(self.set_profile(home, owner, expected, name, profile)?)?,
+            SocialOp::SetProfilePortrait {
+                expected,
+                name,
+                profile,
+                portrait,
+            } => serde_json::to_value(self.set_profile_with_portrait(
+                home,
+                owner,
+                expected,
+                name,
+                profile,
+                Some(portrait),
+            )?)?,
+            SocialOp::ProfilePortrait { event } => {
+                let portrait = if let Some(id) = event {
+                    match self.existing(&id)? {
+                        Some(row)
+                            if row.event.payload.community == community
+                                && crate::usernames::named(&row.event)
+                                && !self.hidden()?.contains(&id)
+                                && !self.unavailable(owner, row.event.owner_id())? =>
+                        {
+                            self.profile_portrait(&row.event.payload.home, row.event.owner_id())?
+                        }
+                        _ => None,
+                    }
+                } else {
+                    self.profile_portrait(home, owner)?
+                };
+                json!({"portrait":portrait})
+            }
+            SocialOp::AttachmentPut {
+                id,
+                size,
+                part,
+                ciphertext,
+            } => {
+                self.put_attachment(owner, &id, size, part, &ciphertext)?;
+                json!({})
+            }
+            SocialOp::AttachmentGet { id, part } => {
+                json!({"ciphertext":self.get_attachment(&id, part)?})
+            }
             SocialOp::Profiles { events } => {
                 ensure!(events.len() <= 100, "too many profile references");
+                let legacy_batch = events.len() > crate::model::PROFILE_LOOKUP_BATCH;
                 let hidden = self.hidden()?;
                 let mut profiles = serde_json::Map::new();
                 for id in events {
@@ -209,8 +253,15 @@ impl Store {
                         && crate::usernames::named(&event)
                         && !self.unavailable(owner, peer)?
                         && !profiles.contains_key(peer)
-                        && let Some(record) = self.current_profile(&event.payload.home, peer)?
+                        && let Some(mut record) = self.current_profile(&event.payload.home, peer)?
                     {
+                        // Older clients request 100 records and cannot render the larger photos.
+                        if legacy_batch
+                            && record.profile.photo.len()
+                                > crate::model::LEGACY_PROFILE_PHOTO_LENGTH
+                        {
+                            record.profile.photo.clear();
+                        }
                         profiles.insert(peer.to_owned(), serde_json::to_value(record)?);
                     }
                 }
@@ -281,8 +332,13 @@ impl Store {
                 );
                 result["pushCapabilities"] = crate::push::capabilities();
                 result["pushCategories"] = self.push_categories(owner, device)?;
+                result["profilePhotoLimit"] = json!(crate::model::MAX_PROFILE_PHOTO_LENGTH);
+                result["profilePortraitLimit"] = json!(crate::model::MAX_PROFILE_PORTRAIT_LENGTH);
                 result["currentProfile"] =
                     serde_json::to_value(self.current_profile(home, owner)?)?;
+                if !result["currentProfile"].is_null() && self.has_profile_portrait(home, owner)? {
+                    result["currentProfile"]["hasPortrait"] = json!(true);
+                }
                 if let Some(domain) = crate::usernames::domain(home) {
                     result["usernameDomain"] = json!(domain);
                     result["username"] = json!(

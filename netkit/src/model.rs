@@ -79,8 +79,16 @@ fn id(value: &str) -> Result<()> {
     Ok(())
 }
 
+pub(crate) const MAX_PROFILE_PHOTO_LENGTH: usize = 24 * 1024;
+pub(crate) const MAX_PROFILE_PORTRAIT_LENGTH: usize = 384 * 1024;
+#[cfg(feature = "server")]
+pub(crate) const LEGACY_PROFILE_PHOTO_LENGTH: usize = 4096;
+// Keep a batch of full profile records, including their text, within MAX_FRAME.
+#[cfg(feature = "server")]
+pub(crate) const PROFILE_LOOKUP_BATCH: usize = 32;
+
 /// Details of a public account profile, resolved separately from signed posts.
-/// Photos are small JPEG thumbnails (base64, at most 4096 ASCII bytes), not URLs.
+/// Photos are bounded base64 JPEGs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CommunityProfile {
@@ -117,7 +125,7 @@ impl CommunityProfile {
             "invalid profile intentions"
         );
         ensure!(
-            self.photo.len() <= 4096
+            self.photo.len() <= MAX_PROFILE_PHOTO_LENGTH
                 && self
                     .photo
                     .bytes()

@@ -26,6 +26,8 @@ const MIGRATIONS: &[&[&str]] = &[
     &[include_str!("../migrations/native/0002_public_feed.sql")],
     &[include_str!("../migrations/native/0003_feed_votes.sql")],
     &[include_str!("../migrations/0005_deleted_accounts.sql")],
+    &[include_str!("../migrations/0006_profile_portraits.sql")],
+    &[include_str!("../migrations/0007_attachments.sql")],
 ];
 
 pub(crate) fn path_for(home: &Path) -> PathBuf {

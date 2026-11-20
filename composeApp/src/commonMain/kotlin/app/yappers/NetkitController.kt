@@ -1234,31 +1234,92 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         }) }
     }
 
-    suspend fun sendMessage(contact: MessageContact, body: String) = withAccount {
+    private suspend fun uploadAttachmentParts(file: SelectedAttachment): Attachment {
+        require(file.size in 1..MAX_ATTACHMENT_BYTES) { "Choose a file within 20 MB." }
+        val active = checkNotNull(handle) { "Reconnect to your home first." }
+        val device = checkNotNull(activeDevice) { "Reopen your account." }
+        file.uploaded?.takeIf { it.first == device }?.let { return it.second }
+        val data = engine.request(active, buildJsonObject {
+            put("type", "attachmentBegin"); put("name", file.name); put("size", file.size)
+        })
+        val attachment = json.decodeFromJsonElement<Attachment>(data)
+        val count = (file.size + ATTACHMENT_CHUNK_BYTES - 1) / ATTACHMENT_CHUNK_BYTES
+        for (part in 0 until count) {
+            val bytes = withContext(Dispatchers.Default) { file.readPart(part) }
+            engine.request(active, buildJsonObject {
+                put("type", "attachmentUpload"); put("attachment", data); put("part", part); put("bytes", bytes)
+            })
+        }
+        file.uploaded = device to attachment
+        return attachment
+    }
+
+    internal suspend fun uploadAttachment(file: SelectedAttachment): Attachment = withAccount { uploadAttachmentParts(file) }
+
+    internal suspend fun downloadAttachment(attachment: Attachment): List<String> = withAccount {
+        require(attachment.size in 1..MAX_ATTACHMENT_BYTES) { "Invalid attachment size." }
+        val active = checkNotNull(handle) { "Reconnect to your home first." }
+        val data = json.encodeToJsonElement(attachment)
+        val count = (attachment.size + ATTACHMENT_CHUNK_BYTES - 1) / ATTACHMENT_CHUNK_BYTES
+        List(count) { part ->
+            val result = engine.request(active, buildJsonObject {
+                put("type", "attachmentDownload"); put("attachment", data); put("part", part)
+            })
+            result.getValue("bytes").jsonPrimitive.content
+        }
+    }
+
+    suspend fun sendMessage(contact: MessageContact, body: String, file: SelectedAttachment? = null) = withAccount {
         check(!state.value.mailboxElsewhere) { OTHER_MESSAGING_DEVICE }
         check(state.value.directAvailable) { "Connect to a home that supports private messages." }
         check(contact.peer !in policy.blockedPeers) { "Unblock this account first." }
+        val attachment = file?.let { uploadAttachmentParts(it) }
         messageStep(buildJsonObject {
             put("kind", "prepare"); put("peer", contact.peer); put("label", contact.label)
             put("name", cache.snapshot.alias); put("body", body.trim())
+            if (attachment != null) put("attachment", json.encodeToJsonElement(attachment))
         })
         savePolicy(policy.copy(revoked = policy.revoked - contact.peer, approved = policy.approved + contact.peer))
     }
 
-    private suspend fun applyProfile(record: JsonObject) {
+    private suspend fun fetchProfilePortrait(event: String?): String? = social("profilePortrait") {
+        put("event", event?.let(::JsonPrimitive) ?: JsonNull)
+    }["portrait"]?.jsonPrimitive?.contentOrNull
+
+    suspend fun profilePortrait(event: String): String? = withAccount { fetchProfilePortrait(event) }
+
+    private suspend fun applyProfile(record: JsonObject, savedPortrait: String? = null) {
+        val revision = record.getValue("revision").jsonPrimitive.long
+        val profile = json.decodeFromJsonElement<CommunityProfile>(record.getValue("profile"))
+        val portrait = savedPortrait ?: if (record["hasPortrait"]?.jsonPrimitive?.booleanOrNull == true) {
+            if (cache.snapshot.profileRevision == revision && cache.snapshot.profile.photo != profile.photo) cache.snapshot.profile.photo
+            else try { fetchProfilePortrait(null) } catch (failure: Exception) {
+                if (failure is CancellationException) throw failure
+                null
+            }
+        } else null
         val snapshot = cache.snapshot.copy(alias = record.getValue("name").jsonPrimitive.content,
-            profile = json.decodeFromJsonElement<CommunityProfile>(record.getValue("profile")),
-            profileRevision = record.getValue("revision").jsonPrimitive.long)
+            profile = profile.copy(photo = portrait ?: profile.photo), profileRevision = revision)
         if (snapshot != cache.snapshot) commit(cache.copy(snapshot = snapshot))
     }
 
     private suspend fun writeProfile(alias: String, profile: CommunityProfile, expected: Long) {
-        val record = social("setProfile") {
+        val cleaned = profile.cleaned()
+        val status = if (cleaned.photo.isEmpty()) null else social("privacyStatus")
+        val photoLimit = status?.get("profilePhotoLimit")?.jsonPrimitive?.intOrNull
+            ?.coerceIn(LEGACY_PROFILE_PHOTO_LENGTH, PROFILE_THUMBNAIL_LENGTH) ?: LEGACY_PROFILE_PHOTO_LENGTH
+        val photo = cleaned.photo.takeIf { it.isNotEmpty() }?.let {
+            withContext(Dispatchers.Default) { fitProfileThumbnail(it, photoLimit) }
+        }.orEmpty()
+        val portraitLimit = status?.get("profilePortraitLimit")?.jsonPrimitive?.intOrNull ?: 0
+        val portrait = cleaned.photo.takeIf { it != photo && it.length <= portraitLimit }
+        val record = social(if (portrait == null) "setProfile" else "setProfilePortrait") {
             put("expected", expected)
             put("name", alias.trim())
-            put("profile", json.encodeToJsonElement(profile.cleaned()))
+            put("profile", json.encodeToJsonElement(cleaned.copy(photo = photo)))
+            if (portrait != null) put("portrait", portrait)
         }
-        applyProfile(record)
+        applyProfile(record, portrait)
     }
 
     private suspend fun adoptOrCreateProfile(alias: String, profile: CommunityProfile) {

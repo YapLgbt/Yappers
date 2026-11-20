@@ -122,6 +122,25 @@ pub enum SocialOp {
         name: String,
         profile: crate::CommunityProfile,
     },
+    SetProfilePortrait {
+        expected: u64,
+        name: String,
+        profile: crate::CommunityProfile,
+        portrait: String,
+    },
+    ProfilePortrait {
+        event: Option<String>,
+    },
+    AttachmentPut {
+        id: String,
+        size: usize,
+        part: usize,
+        ciphertext: String,
+    },
+    AttachmentGet {
+        id: String,
+        part: usize,
+    },
     Profiles {
         events: Vec<String>,
     },

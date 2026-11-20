@@ -4,6 +4,8 @@
   import ActionButton from './ActionButton.svelte';
   import AppIcon from './AppIcon.svelte';
   import Avatar from './Avatar.svelte';
+  import AttachmentPicker from './AttachmentPicker.svelte';
+  import AttachmentDownload from './AttachmentDownload.svelte';
   import { minuteClock } from './minuteClock';
   import ContentMenu from './ContentMenu.svelte';
   import { onDestroy, tick } from 'svelte';
@@ -30,8 +32,9 @@
   let feedback = $derived(currentError || status || (profile.directState?.delivery_paused ? 'Delivery paused. Refresh to retry.' :
     profile.directState?.unreadable ? 'Some messages couldn’t be opened on this device.' : ''));
   let drafts = $state<Record<string,string>>({});
+  let draftFiles = $state<Record<string,File | null>>({});
   export function hasPendingInput() {
-    return !!busyPeer || changingPush || Object.values(sending).some(Boolean) || Object.values(drafts).some(Boolean);
+    return !!busyPeer || changingPush || Object.values(sending).some(Boolean) || Object.values(drafts).some(Boolean) || Object.values(draftFiles).some(Boolean);
   }
   let heading = $state<HTMLHeadingElement>();
   let scrollbox = $state<HTMLDivElement>();
@@ -93,13 +96,16 @@
   }
   async function send(person: Contact) {
     if (busyPeer === person.peer || sending[person.peer]) return;
-    const body = drafts[person.peer]?.trim();
-    if (!body) return;
+    const body = drafts[person.peer]?.trim() || '';
+    const file = draftFiles[person.peer];
+    if (!body && !file) return;
     sending[person.peer] = true;
     delete sendErrors[person.peer];
     try {
-      await client.sendMessage(person, body);
+      const attachment = file ? await client.uploadAttachment(file) : undefined;
+      await client.sendMessage(person, body, attachment);
       drafts[person.peer] = '';
+      draftFiles[person.peer] = null;
       void refresh();
     } catch (reason) {
       const detail = String(reason);
@@ -153,10 +159,13 @@
   <div class="dm-history" data-scroll-history role="log" aria-label="Messages" aria-relevant="additions" bind:this={scrollbox}>
     {#each lines as message (message.id)}
       <div class="dm-line" class:outgoing={message.outgoing}>
-        <div class="message-content"><span class="sr-only">{message.outgoing ? 'You' : selected.label}</span><p>{message.body}</p>
+        <div class="message-content"><span class="sr-only">{message.outgoing ? 'You' : selected.label}</span>
+        <div>{#if message.body}<p>{message.body}</p>{/if}
+          {#if message.attachment}<AttachmentDownload attachment={message.attachment} {client}/>{/if}
+        </div>
         {#if !message.outgoing}
           <ContentMenu label="Message options" items={[
-            { label: 'Report message', run: () => report('message', message.peer, message.body) }
+            { label: 'Report message', run: () => report('message', message.peer, message.body || 'Attachment') }
           ]}/>
         {/if}</div>
         {#if message.outgoing}<small>{message.status === 'sent' ? 'Sent' : message.status === 'queued' ? 'Waiting to send' : 'Couldn’t deliver'}</small>{/if}
@@ -180,7 +189,10 @@
     <textarea placeholder="Write a message…" id="dm-body" rows="2" maxlength="1000" value={drafts[selected.peer] || ''} readonly={busyPeer === selected.peer || sending[selected.peer]}
       onfocus={event => event.currentTarget.scrollIntoView({block: 'nearest'})}
       oninput={event => { if (selected) drafts[selected.peer] = event.currentTarget.value; }}></textarea>
-    <ActionButton variant="filled" disabled={busyPeer === selected.peer || sending[selected.peer] || !profile.directAvailable || !drafts[selected.peer]?.trim()}>{sending[selected.peer] ? 'Sending…' : 'Send'}</ActionButton>
+    <AttachmentPicker bind:file={() => selected ? draftFiles[selected.peer] ?? null : null,
+      (file) => { if (selected) draftFiles[selected.peer] = file; }}
+      disabled={!!sending[selected.peer] || !profile.directAvailable}/>
+    <ActionButton variant="filled" disabled={busyPeer === selected.peer || sending[selected.peer] || !profile.directAvailable || (!drafts[selected.peer]?.trim() && !draftFiles[selected.peer])}>{sending[selected.peer] ? 'Sending…' : 'Send'}</ActionButton>
   </form>
 {:else}
   <Tabs value={tab} onValueChange={({ value }) => setFolder(value)}>
@@ -220,7 +232,7 @@
       {#each mailbox.threads as thread (thread.peer)}
         <button class="dm-thread" onclick={() => show({peer:thread.peer,label:thread.label})}>
           <Avatar label={thread.label} photo={photos.get(thread.peer)}/>
-          <span class="conversation"><span class="thread-meta"><strong>{thread.label}</strong>{#if thread.timestamp}{@render timestamp(thread.timestamp)}{/if}</span>{#if profile.notifications?.messages.some(row=>row.target===thread.peer && row.unread)}<small>Unread</small>{/if}<span>{thread.outgoing ? 'You: ' : ''}{thread.body}</span></span>
+          <span class="conversation"><span class="thread-meta"><strong>{thread.label}</strong>{#if thread.timestamp}{@render timestamp(thread.timestamp)}{/if}</span>{#if profile.notifications?.messages.some(row=>row.target===thread.peer && row.unread)}<small>Unread</small>{/if}<span>{thread.outgoing ? 'You: ' : ''}{thread.body || thread.attachment?.name}</span></span>
           <AppIcon name="arrowRight"/>
         </button>
       {:else}

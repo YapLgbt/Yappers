@@ -92,7 +92,8 @@ internal fun InboxScreen(
     onActivity: (InboxItem) -> Unit, onRead: (InboxItem) -> Unit, onDismissRequest: (String) -> Unit,
     pushBusy: Boolean, onPush: (Set<String>) -> Unit,
     nativePage: InboxPage? = null, openPage: (InboxPage) -> Unit = {},
-    onSend: suspend (MessageContact, String) -> Boolean
+    onDownload: suspend (Attachment) -> List<String>,
+    onSend: suspend (MessageContact, String, SelectedAttachment?) -> Boolean
 ) {
     val inbox = connection.privacy.notifications
     var activity by remember { mutableStateOf(inbox.activity.any { it.unread > 0 } &&
@@ -324,19 +325,31 @@ internal fun InboxScreen(
     }
     val lines = connection.messages.filter { it.peer == contact.peer }
     var draft by remember(contact.peer) { mutableStateOf("") }
+    var file by remember(contact.peer) { mutableStateOf<SelectedAttachment?>(null) }
+    var fileError by remember(contact.peer) { mutableStateOf<String?>(null) }
     var sending by remember(contact.peer) { mutableStateOf(false) }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val bubble = LocalChatBubble.current
     val nativeEditor = LocalInlineEditor.current
     val nativeControl = LocalFeedControl.current
-    fun canSend() = !sending && draft.isNotBlank() && connection.directAvailable
+    val files = LocalAttachmentFiles.current
+    fun canSend() = !sending && (draft.isNotBlank() || file != null) && connection.directAvailable
+    fun pickFile() {
+        if (file != null) { file = null; fileError = null; return }
+        files?.chooseAttachment { selected, error ->
+            fileError = error
+            if (selected != null) file = selected
+        }
+    }
     fun sendMessage() {
         if (!canSend()) return
         val message = draft
         sending = true
         scope.launch {
-            try { if (onSend(contact, message)) draft = "" } finally { sending = false }
+            try {
+                if (onSend(contact, message, file)) { draft = ""; file = null; fileError = null }
+            } finally { sending = false }
         }
     }
     LaunchedEffect(contact.peer, lines.lastOrNull()?.id) { if (lines.isNotEmpty()) list.scrollToItem(lines.lastIndex) }
@@ -368,7 +381,7 @@ internal fun InboxScreen(
                     val startsGroup = index > 0 && lines[index - 1].outgoing != m.outgoing
                     val top = if (bubble != null && startsGroup) 6.dp else 0.dp
                     Column(Modifier.fillMaxWidth().padding(top = top), horizontalAlignment = if (m.outgoing) Alignment.End else Alignment.Start) {
-                        if (bubble != null) {
+                        if (bubble != null && m.body.isNotEmpty()) {
                             val report = onReport?.takeUnless { m.outgoing }?.let { reportMessage ->
                                 { reportMessage(ReportTarget("message", m.peer, m.body)) }
                             }
@@ -376,12 +389,13 @@ internal fun InboxScreen(
                                 bubble(ChatBubble(m.body, if (m.outgoing) "From you" else "From ${contact.label}", m.outgoing, endsGroup, report),
                                     Modifier.widthIn(max = maxWidth * 0.82f))
                             }
-                        } else {
+                        } else if (bubble == null && m.body.isNotEmpty()) {
                             Surface(shape = MaterialTheme.shapes.medium, color = if (m.outgoing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant) {
                                 Text(m.body, Modifier.padding(12.dp))
                             }
                             if (!m.outgoing && onReport != null) TextButton(onClick = { onReport(ReportTarget("message", m.peer, m.body)) }) { Text("Report message") }
                         }
+                        m.attachment?.let { AttachmentDownload(it, onDownload) }
                         if (m.outgoing && (bubble == null || endsGroup || m.status != "sent")) Text(when (m.status) { "queued" -> "Waiting to send"; "sent" -> "Sent"; else -> "Couldn’t deliver" },
                             modifier = if (bubble != null) Modifier.padding(top = 3.dp, end = 6.dp) else Modifier,
                             style = MaterialTheme.typography.labelSmall)
@@ -389,6 +403,16 @@ internal fun InboxScreen(
                 }
             }
             if (connection.mailboxElsewhere) return@Column
+            if (files != null) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    file?.let { Text(it.name, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis) }
+                    val label = if (file == null) "Attach file" else "Remove file"
+                    val enabled = !sending && connection.directAvailable
+                    if (nativeControl != null) nativeControl(FormRow("attach", label, symbol = "paperclip", enabled = enabled, onTap = ::pickFile), Modifier)
+                    else TextButton(enabled = enabled, onClick = ::pickFile) { Text(label) }
+                }
+                fileError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
             if (nativeEditor != null) {
                 nativeEditor(InlineEditorModel(
                     currentBody = { draft }, limit = 1000, isSending = { sending }, sendEnabled = ::canSend,

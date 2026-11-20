@@ -130,6 +130,8 @@ impl ReceiptPolicy {
                 | SocialOp::FeedReplies { .. }
                 | SocialOp::Contact { .. }
                 | SocialOp::Profiles { .. }
+                | SocialOp::ProfilePortrait { .. }
+                | SocialOp::AttachmentGet { .. }
                 | SocialOp::PrivacyStatus
                 | SocialOp::NotificationInbox
                 | SocialOp::NotificationThread { .. }
@@ -141,6 +143,8 @@ impl ReceiptPolicy {
                 | SocialOp::MuteNotifications { .. }
                 | SocialOp::DismissRequest { .. }
                 | SocialOp::SetProfile { .. }
+                | SocialOp::SetProfilePortrait { .. }
+                | SocialOp::AttachmentPut { .. }
                 | SocialOp::ClaimUsername { .. }
                 | SocialOp::SetPrivacy { .. }
                 | SocialOp::Approve { .. }

@@ -55,6 +55,19 @@ pub enum Command {
         state: Option<serde_json::Value>,
         action: crate::dm_client::LocalAction,
     },
+    AttachmentBegin {
+        name: String,
+        size: usize,
+    },
+    AttachmentUpload {
+        attachment: crate::attachments::Attachment,
+        part: usize,
+        bytes: String,
+    },
+    AttachmentDownload {
+        attachment: crate::attachments::Attachment,
+        part: usize,
+    },
     PrivateGroup {
         state: Option<serde_json::Value>,
         action: crate::private_groups::LocalAction,
@@ -493,6 +506,36 @@ impl Client {
                 self.report_request(Request::ReportStatus { receipt }).await
             }
             Command::Direct { state, action } => self.direct(state, action).await,
+            Command::AttachmentBegin { name, size } => Ok(serde_json::to_value(
+                crate::attachments::Attachment::create(name, size)?,
+            )?),
+            Command::AttachmentUpload {
+                attachment,
+                part,
+                bytes,
+            } => {
+                let ciphertext = attachment.seal(part, &bytes)?;
+                self.social_value(crate::messaging::SocialOp::AttachmentPut {
+                    id: attachment.id,
+                    size: attachment.size,
+                    part,
+                    ciphertext,
+                })
+                .await
+            }
+            Command::AttachmentDownload { attachment, part } => {
+                attachment.check()?;
+                let result = self
+                    .social_value(crate::messaging::SocialOp::AttachmentGet {
+                        id: attachment.id.clone(),
+                        part,
+                    })
+                    .await?;
+                let ciphertext = result["ciphertext"]
+                    .as_str()
+                    .context("missing encrypted attachment part")?;
+                Ok(serde_json::json!({"bytes":attachment.open(part, ciphertext)?}))
+            }
             Command::PrivateGroup { state, action } => self.private_group(state, action).await,
             Command::Social { op } => {
                 use crate::messaging::SocialOp::*;
@@ -505,6 +548,8 @@ impl Client {
                             | Unblock { .. }
                             | ClaimUsername { .. }
                             | SetProfile { .. }
+                            | SetProfilePortrait { .. }
+                            | ProfilePortrait { .. }
                             | Profiles { .. }
                             | SetPush { .. }
                             | OpenPush { .. }

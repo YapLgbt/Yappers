@@ -6,11 +6,12 @@
   import AuthorByline from './AuthorByline.svelte';
   import AppIcon from './AppIcon.svelte';
   import { authorLabel, isAnonymous, visible, type Author, type Post, type Profile } from './community';
-  let { post, profile, replica, reply, save, hide, block, message, report, remove, vote, mute,preview=false,detail=false,openThread }: {
+  let { post, profile, replica, reply, save, hide, block, message, report, remove, vote, mute, loadPortrait, preview=false,detail=false,openThread }: {
     detail?:boolean; openThread?:(post:Post,comments:boolean)=>void; preview?:boolean; report?: (kind:"post"|"reply",id:string,text:string)=>void; post: Post; profile: Profile; replica: boolean; reply: (post: Post, trigger: HTMLButtonElement) => void;
     vote:(post:Post,direction:number)=>Promise<void>; mute:(post:Post)=>void;
     save: (post: Post) => void | Promise<void>; hide: (id: string) => void;
     message?: (author: Author) => void; block?: (author: Author) => void; remove: (id: string, label: string,scope?:string) => void;
+    loadPortrait?: (author: Author) => Promise<string | null>;
   } = $props();
   let voting=$state(false);
   async function cast(direction:number){voting=true;try{await vote(post,direction)}finally{voting=false}}
@@ -58,7 +59,8 @@
 
 <article data-post-id={post.id} data-pending={post.pending || undefined} class:thread-post={detail}>
   <div class="post-head">
-    <AuthorByline author={post} message={canMessage ? () => message?.(post) : undefined}/>
+    <AuthorByline author={post} message={canMessage ? () => message?.(post) : undefined}
+      loadPortrait={loadPortrait && !replica && !post.pending ? () => loadPortrait!(post) : undefined}/>
     {#if !post.pending}<ContentMenu label="Post options" items={[
       ...(!preview?[{label:'Report post',run:()=>report?.('post',post.id,[post.headline,post.body].filter(Boolean).join('\n'))}]:[]),
       {label:'Mute conversation',run:()=>mute(post)},
@@ -105,7 +107,8 @@
           ? () => message?.({...item, scope:post.scope}) : undefined}
         <div class="reply" tabindex="-1" id={'reply-'+item.id}>
           <div class="post-head">
-          <AuthorByline author={item} message={replyMessage}/>
+          <AuthorByline author={item} message={replyMessage}
+            loadPortrait={loadPortrait && !replica && !queued ? () => loadPortrait!({...item, scope:post.scope}) : undefined}/>
           {#if !item.mine && !replica && !preview}<ContentMenu label={'Reply options for '+authorLabel(item)} items={[
             {label:'Report reply',run:()=>report?.('reply',item.id,item.body)},{label:'Block account',run:()=>block?.({...item,scope:post.scope})}
           ]}/>{/if}

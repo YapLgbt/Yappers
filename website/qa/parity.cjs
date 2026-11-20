@@ -167,9 +167,11 @@ module.exports = async function (page, ctx, base, engine) {
     () => document.activeElement?.getAttribute('aria-label') === 'Edit profile',
   );
   assert(
-    await state((s) => s.publicProfile.photo.length > 32 && s.publicProfile.photo.length <= 4096),
+    await state((s) => s.publicProfile.photo.length > 32 && s.publicProfile.photo.length <= 384 * 1024),
   );
-  await page.locator('.profile-summary.own .avatar canvas:visible').waitFor();
+  const portrait = page.locator('.profile-summary.own .avatar canvas:visible');
+  await portrait.waitFor();
+  assert(await portrait.evaluate(canvas => canvas.width === 1024 && canvas.height === 1024), 'The profile renders the 1024-pixel crop');
   assert.equal(await page.locator('.profile-summary.own .avatar img').count(), 0);
   assert.deepEqual(await state((s) => s.publicProfile.hereFor), ['Friends']);
   await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'Nearby',exact:true}).click();
@@ -307,7 +309,7 @@ module.exports = async function (page, ctx, base, engine) {
   await named.waitFor({timeout:65000});
   await button('Library neighbor',named).click();
   await dialog.getByText('Book club regular',{exact:true}).waitFor();
-  await dialog.locator('canvas:not([hidden])').waitFor();
+  await dialog.locator('canvas[width="1024"][height="1024"]:not([hidden])').waitFor();
   await page.keyboard.press('Escape');await dialog.waitFor({state:'hidden'});
 
   await button('Save', named).click();
@@ -402,6 +404,25 @@ module.exports = async function (page, ctx, base, engine) {
   await page.getByRole('tab', { name: 'Local' }).focus();
   await page.keyboard.press('ArrowRight');
   await page.getByRole('tab', { name: 'Worldwide', selected: true }).waitFor();
+  await button('Private groups').click();
+  await button('Create private group').click();
+  await page.getByLabel('Group name', { exact: true }).fill('Private QA attachments');
+  await button('Create private group').click();
+  await button('New post').click();
+  const privateGroups = page.locator('.private-groups');
+  await privateGroups.getByLabel('Headline', { exact: true }).fill('File for group');
+  const attachment = Buffer.alloc(300_000, 'Private attachment fixture.');
+  await privateGroups.locator('input[type=file]').setInputFiles({
+    name: 'group-fixture.txt', mimeType: 'text/plain', buffer: attachment,
+  });
+  await button('Post', privateGroups).click();
+  const attachmentButton = button('Download group-fixture.txt');
+  await attachmentButton.waitFor({timeout:65000});
+  const attachmentDownload = page.waitForEvent('download', {timeout:65000});
+  await attachmentButton.click();
+  const downloaded = await attachmentDownload;
+  assert.equal(downloaded.suggestedFilename(), 'group-fixture.txt');
+  assert.deepEqual(await fs.readFile(await downloaded.path()), attachment);
   await page.getByRole('navigation',{name:'Neighborhood'}).getByRole('button',{name:'You',exact:true}).click();
   await button('Preferences').click();
   await page.getByRole('combobox', { name: 'Minimum account age for posts' }).selectOption({ label: '7 days' });
@@ -495,7 +516,7 @@ module.exports = async function (page, ctx, base, engine) {
     await other.close();
   }
   console.log(
-    'PASS profile crop, keyboard focus, towns, radius, group feed isolation, voting, account-age sync, portable backup import, device reset and responsive layouts (' +
+    'PASS profile crop, keyboard focus, towns, radius, group feed isolation, encrypted attachment download, voting, account-age sync, portable backup import, device reset and responsive layouts (' +
       engine +
       ').',
   );

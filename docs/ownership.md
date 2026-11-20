@@ -70,7 +70,7 @@ The encrypted recovery contains the root key. Do not publish its plaintext or gi
 home operator. A portable archive can be decrypted locally without any server. These are
 sensitive recovery files, not public profile-sharing files.
 
-A recovery file supports 16 MiB of plaintext and 256 KiB of local metadata. Network
+A recovery file supports 16 MiB of plaintext and 640 KiB of local metadata, including the profile portrait. Network
 imports and exports carry up to 50 events per page within the 1 MiB transport frame.
 Local ABI buffers have a separate archive size bound. Personal history
 imports commit one complete validated chunk at a time. Repeating an import deduplicates exact

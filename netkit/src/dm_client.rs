@@ -29,6 +29,8 @@ pub enum LocalAction {
         label: String,
         name: String,
         body: String,
+        #[serde(default)]
+        attachment: Option<crate::attachments::Attachment>,
     },
 }
 
@@ -45,6 +47,8 @@ struct Message {
     peer: String,
     label: String,
     body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attachment: Option<crate::attachments::Attachment>,
     outgoing: bool,
     #[serde(default)]
     timestamp: i64,
@@ -71,6 +75,8 @@ struct PrivateState {
 struct Content {
     name: String,
     body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attachment: Option<crate::attachments::Attachment>,
 }
 impl Content {
     fn validate(&self) -> Result<()> {
@@ -79,9 +85,13 @@ impl Content {
             "invalid sender name"
         );
         ensure!(
-            !self.body.trim().is_empty() && self.body.encode_utf16().count() <= 1000,
+            (!self.body.trim().is_empty() || self.attachment.is_some())
+                && self.body.encode_utf16().count() <= 1000,
             "write between 1 and 1000 characters"
         );
+        if let Some(file) = &self.attachment {
+            file.check()?;
+        }
         Ok(())
     }
 }
@@ -149,6 +159,7 @@ impl PrivateState {
             peer: peer.clone(),
             label: content.name,
             body: content.body,
+            attachment: content.attachment,
             outgoing: false,
             timestamp: received,
             age,
@@ -299,9 +310,14 @@ impl Client {
                 label,
                 name,
                 body,
+                attachment,
             } => {
                 valid_peer(&peer, owner)?;
-                let content = Content { name, body };
+                let content = Content {
+                    name,
+                    body,
+                    attachment,
+                };
                 content.validate()?;
                 ensure!(label.encode_utf16().count() <= 80, "contact label too long");
                 if !state.threads.contains_key(&peer) {
@@ -354,6 +370,7 @@ impl Client {
                     peer,
                     label,
                     body: content.body,
+                    attachment: content.attachment,
                     outgoing: true,
                     timestamp: crate::model::now(),
                     age: 0,

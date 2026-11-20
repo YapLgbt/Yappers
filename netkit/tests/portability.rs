@@ -282,7 +282,9 @@ fn archive_encryption_wrong_passphrase_and_tamper_detection() {
     let archive = PersonalArchive::create(
         &account,
         vec![accepted(&account, &home_secret, 1)],
-        serde_json::json!({"bio":"My profile"}),
+        serde_json::json!({"client":{"profile":{
+            "bio":"My profile", "photo":"A".repeat(384 * 1024)
+        }}}),
     )
     .unwrap();
     let bundle = RecoveryBundle {

@@ -200,7 +200,7 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
                 if next.value.isEmpty {
                     imagePreview.image = UIImage(named: "DefaultAvatar")
                 } else {
-                    imagePreview.image = Data(base64Encoded: next.value).flatMap { UIImage(data: $0) }
+                    imagePreview.image = Self.profilePhoto(next.value)
                         ?? UIImage(systemName: "person.crop.circle")
                 }
             }
@@ -268,13 +268,17 @@ final class NativeFormCell: UITableViewCell, UITextFieldDelegate, UITextViewDele
             view.smartDashesType = corrections == .no ? .no : .default
         }
     }
-    private static func inboxPhoto(_ encoded: String) -> UIImage? {
-        guard !encoded.isEmpty, encoded.utf8.count <= 4096, let data = Data(base64Encoded: encoded),
+    private static func profilePhoto(_ encoded: String) -> UIImage? {
+        guard !encoded.isEmpty, encoded.utf8.count <= 384 * 1024, let data = Data(base64Encoded: encoded),
               let source = CGImageSourceCreateWithData(data as CFData, nil),
               let info = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = info[kCGImagePropertyPixelWidth] as? Int, (1...128).contains(width),
-              let height = info[kCGImagePropertyPixelHeight] as? Int, (1...128).contains(height),
-              let image = UIImage(data: data) else { return nil }
+              let width = info[kCGImagePropertyPixelWidth] as? Int, (1...1024).contains(width),
+              let height = info[kCGImagePropertyPixelHeight] as? Int, (1...1024).contains(height) else { return nil }
+        return UIImage(data: data)
+    }
+
+    private static func inboxPhoto(_ encoded: String) -> UIImage? {
+        guard let image = profilePhoto(encoded) else { return nil }
         // Render a square aspect-fill crop even for profile photos from older clients.
         let size = CGSize(width: 44, height: 44)
         let scale = max(size.width / image.size.width, size.height / image.size.height)

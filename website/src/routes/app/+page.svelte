@@ -447,6 +447,7 @@
 <Welcome {client} bind:step create={async (name,invitation) => { if (!client || !await client.start('create',name,invitation)) throw new Error('Couldn’t join your home. Try again.'); readProfile(); }} {enter} recovery={openRecovery} />
 {#snippet feedPost(post: Post, current: Profile, detail: boolean)}
   <FeedPost {detail} {openThread} report={(kind,id,text)=>reportDialog?.open(kind,id,text)} {vote} {mute} {message}
+    loadPortrait={client ? (author) => client!.profilePortrait(author.id, author.scope) : undefined}
     {post} profile={current} replica={view === 'replica'} reply={(item, trigger) => composer?.open(item, trigger)}
     {save} {hide} block={author => block?.open(author)} {remove} />
 {/snippet}

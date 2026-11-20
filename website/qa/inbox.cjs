@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const {spawn} = require('node:child_process');
+const {readFile} = require('node:fs/promises');
 const {createInterface} = require('node:readline');
 const path = require('node:path');
 
@@ -175,9 +176,17 @@ module.exports = async function verifyInbox(page, ctx, fixture, engine) {
     }
     await expectContactPhoto(page.locator('.recipient'));
     await page.getByLabel('Message',{exact:true}).fill(first);
+    const attachment = Buffer.alloc(300_000, 'Encrypted DM fixture.');
+    await page.locator('.dm-compose input[type=file]').setInputFiles({
+      name:'dm-fixture.txt', mimeType:'text/plain', buffer:attachment,
+    });
     await page.getByRole('button',{name:'Send',exact:true}).click();
     await page.getByText('Sent',{exact:true}).waitFor({timeout:65000});
     assert.deepEqual(await native({kind:'sync'}),[first]);
+    const download = page.waitForEvent('download', {timeout:65000});
+    await page.getByRole('button',{name:'Download dm-fixture.txt',exact:true}).click();
+    const downloaded = await download;
+    assert.deepEqual(await readFile(await downloaded.path()), attachment);
     if (engine !== 'webkit') {
       await native({kind:'send',peer:receiver,body:reply});
       await refresh();

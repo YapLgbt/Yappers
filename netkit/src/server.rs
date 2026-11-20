@@ -602,6 +602,7 @@ impl CatalogOp<'_> {
                         | SocialOp::SetPrivacy { .. }
                         | SocialOp::DismissRequest { .. }
                         | SocialOp::SetProfile { .. }
+                        | SocialOp::SetProfilePortrait { .. }
                 ))?;
                 self.store
                     .social(&home, &community, record, &proof.device, *op)
@@ -922,11 +923,17 @@ impl CatalogOp<'_> {
                 let home = self.logical_addr().id.to_string();
                 let owners = store.named_authors(&home, &community)?;
                 let mut records = std::collections::BTreeMap::new();
+                let mut remaining = MAX_FRAME - 1024;
                 for (owner, revision) in known {
                     if owners.contains(&owner)
                         && let Some(record) = store.current_profile(&home, &owner)?
                         && record.revision > revision
                     {
+                        let bytes = serde_json::to_vec(&record)?.len() + owner.len() + 4;
+                        if bytes > remaining {
+                            continue;
+                        }
+                        remaining -= bytes;
                         records.insert(owner, record);
                     }
                 }
@@ -1765,7 +1772,7 @@ impl Server {
                         .collect())
                 })
                 .await?;
-            for batch in owners.chunks(100) {
+            for batch in owners.chunks(PROFILE_LOOKUP_BATCH) {
                 let requested = batch.to_vec();
                 let remote = id.clone();
                 let known = self

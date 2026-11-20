@@ -3,13 +3,14 @@
 //!
 //! Account keys are recovery/administrative keys. Devices have independent signing sequences.
 //! Signed history is immutable; a personal archive never grants public federation admission.
-use crate::model::{Envelope, now, public_key, signing_key, verify};
+use crate::model::{Envelope, MAX_PROFILE_PORTRAIT_LENGTH, now, public_key, signing_key, verify};
 use anyhow::{Context, Result, ensure};
 use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 pub const MAX_ARCHIVE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_ARCHIVE_LOCAL_DATA_BYTES: usize = 256 * 1024 + MAX_PROFILE_PORTRAIT_LENGTH;
 const STATE_DOMAIN: &[u8] = b"yap:account-state:v1\0";
 const ARCHIVE_DOMAIN: &[u8] = b"yap:personal-archive:v1\0";
 const PROOF_DOMAIN: &[u8] = b"yap:account-request:v1\0";
@@ -322,7 +323,7 @@ impl PersonalArchive {
             "archive identity mismatch"
         );
         ensure!(
-            serde_json::to_vec(&p.local_data)?.len() <= 256 * 1024,
+            serde_json::to_vec(&p.local_data)?.len() <= MAX_ARCHIVE_LOCAL_DATA_BYTES,
             "local data too large"
         );
         let mut ids = BTreeSet::new();

@@ -4,11 +4,13 @@ package app.yappers
 
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.foundation.layout.*
@@ -37,16 +39,6 @@ internal fun ProfileAvatar(name: String, profile: CommunityProfile?, size: Dp) {
         if (image != null) Image(image, "Profile photo of $name", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         else if (profile?.photo == "") Image(painterResource(Res.drawable.default_avatar), null, Modifier.fillMaxSize())
         else LineIcon("person", null)
-    }
-}
-
-@Composable
-internal fun ProfileIntentions(values: List<String>) {
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        values.forEach { value -> Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = MaterialTheme.shapes.small) {
-            Text(value, Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
-        } }
     }
 }
 
@@ -250,70 +242,151 @@ private fun ProfileField(label: String, value: String, limit: Int, placeholder: 
         modifier = Modifier.fillMaxWidth(), minLines = lines, maxLines = if (singleLine) 1 else 5, singleLine = singleLine)
 }
 
+internal val LocalAuthorProfilePresenter =
+    staticCompositionLocalOf<(@Composable (onDismiss: () -> Unit, content: @Composable () -> Unit) -> Unit)?> { null }
+
+@Composable
+internal fun ProfileOverview(
+    name: String,
+    username: String?,
+    profile: CommunityProfile?,
+    own: Boolean = false,
+    usernameAction: (@Composable () -> Unit)? = null,
+) {
+    val photo = profile?.photo
+    val portrait = remember(photo) { photo?.takeIf { it.isNotEmpty() }?.let(::decodeProfilePhoto) }
+    val intentions = remember(profile?.hereFor) { profile?.hereFor.orEmpty().distinct() }
+    val colors = MaterialTheme.colorScheme
+    val secondaryText = if (LocalFeedControl.current != null) colors.onSurface.copy(alpha = .75f)
+        else colors.onSurfaceVariant
+    val type = MaterialTheme.typography
+    val nameplate: @Composable () -> Unit = {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(name, Modifier.semantics { heading() }, style = type.headlineLarge, fontWeight = FontWeight.Bold)
+            val pronouns = profile?.pronouns?.takeIf { it.isNotBlank() }
+            if (pronouns != null || username != null) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    pronouns?.let { Text(it, style = type.bodyMedium, color = secondaryText) }
+                    username?.let { Text(it, style = type.bodyMedium, color = colors.primary) }
+                }
+            }
+            usernameAction?.invoke()
+        }
+    }
+    val description: @Composable (Modifier) -> Unit = { modifier ->
+        Column(modifier, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            if (portrait == null && own && profile != null) {
+                if (LocalDensity.current.fontScale >= 1.6f) {
+                    ProfilePortrait(name, profile)
+                    nameplate()
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        ProfilePortrait(name, profile)
+                        Box(Modifier.weight(1f)) { nameplate() }
+                    }
+                }
+            } else nameplate()
+            if (intentions.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Here for", Modifier.semantics { heading() }, style = type.labelLarge, color = secondaryText)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        intentions.forEach { intention ->
+                            Surface(color = colors.secondaryContainer, shape = CircleShape) {
+                                Text(intention, Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    style = type.labelLarge, color = colors.onSecondaryContainer)
+                            }
+                        }
+                    }
+                }
+            }
+            profile?.bio?.takeIf { it.isNotBlank() }?.let { Text(it, style = postBodyStyle) }
+            val identity = profile?.identity.orEmpty()
+            val interests = profile?.interests.orEmpty()
+            if (identity.isNotBlank() || interests.isNotBlank()) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    listOf("Identity" to identity, "Current joys" to interests).forEach { (label, value) ->
+                        if (value.isNotBlank()) Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(label, Modifier.semantics { heading() }, style = type.labelLarge, color = secondaryText)
+                            Text(value, style = type.bodyLarge)
+                        }
+                    }
+                }
+            }
+            if (!own) {
+                val hasDetails = portrait != null || intentions.isNotEmpty() ||
+                    listOf(profile?.pronouns, profile?.bio, identity, interests).any { !it.isNullOrBlank() }
+                Text(if (hasDetails) "Current public profile" else "No further public profile details.",
+                    style = type.bodySmall, color = secondaryText)
+            }
+        }
+    }
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        if (portrait == null) {
+            description(Modifier.fillMaxWidth())
+        } else {
+            val photoContent: @Composable (Modifier) -> Unit = { modifier ->
+                Image(portrait, "Profile photo of $name",
+                    modifier.aspectRatio(1f).clip(MaterialTheme.shapes.large),
+                    contentScale = ContentScale.Crop)
+            }
+            if (maxWidth >= 560.dp && LocalDensity.current.fontScale < 1.6f) {
+                Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                    photoContent(Modifier.weight(5f))
+                    description(Modifier.weight(6f))
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    photoContent(Modifier.widthIn(max = 384.dp).fillMaxWidth())
+                    description(Modifier.fillMaxWidth())
+                }
+            }
+        }
+    }
+}
+
 @Composable
 internal fun AuthorProfileSheet(name: String, username: String?, profile: CommunityProfile?, onDismiss: () -> Unit,
                                 onMessage: (() -> Unit)? = null, onBlock: (() -> Unit)? = null) {
-    val nativeForm = LocalNativeForm.current
-    if (nativeForm != null) {
-        val sections = buildList {
-            add(FormSection(rows = buildList {
-                if (profile != null) add(FormRow("photo", "Profile photo of $name", "photo", value = profile.photo))
-                profile?.pronouns?.takeIf { it.isNotBlank() }?.let { add(FormRow("pronouns", it, "text")) }
-                username?.let { add(FormRow("username", it, "text")) }
-                if (profile != null) add(FormRow("source", "Current public profile", "text"))
-                profile?.bio?.takeIf { it.isNotBlank() }?.let { add(FormRow("bio", it, "text")) }
-            }))
-            if (profile != null) {
-                if (profile.hereFor.isNotEmpty()) add(FormSection("Here for", profile.hereFor.distinct().map { FormRow(it, it, "text") }))
-                val details = buildList {
-                    if (profile.identity.isNotBlank()) add(FormRow("identity", profile.identity, "text"))
-                    if (profile.interests.isNotBlank()) add(FormRow("interests", profile.interests, "text"))
-                }
-                if (details.isNotEmpty()) add(FormSection(rows = details))
-            }
-            val actions = buildList {
-                if (onMessage != null) add(FormRow("message", "Message", symbol = "envelope", onTap = onMessage))
-                if (onBlock != null) add(FormRow("block", "Block account", destructive = true, onTap = onBlock))
-            }
-            if (actions.isNotEmpty()) add(FormSection(rows = actions))
-        }
-        nativeForm(NativeFormModel(name, sections, trailing = FormChoice("Done", action = onDismiss), onDismiss = onDismiss), "sheet", Modifier)
-        return
-    }
-    // Size the sheet itself so even a short profile opens as a full profile surface.
-    // Child-relative height fractions can feed back into the sheet's inset/anchor sizing.
-    ModalBottomSheet(onDismissRequest = onDismiss,
-        modifier = Modifier.fillMaxHeight().statusBarsPadding(),
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        LazyColumn(contentPadding = PaddingValues(start = 22.dp, end = 22.dp, bottom = 34.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(onClick = onDismiss) { Text("Done") } } }
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    ProfileAvatar(name, profile, 72.dp)
-                    Text(name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                    profile?.pronouns?.takeIf { it.isNotBlank() }?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
-                    username?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                    if (profile != null) Text("Current public profile", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-            if (profile != null) {
-                if (profile.bio.isNotBlank()) item { Text(profile.bio, style = MaterialTheme.typography.bodyLarge) }
-                if (profile.hereFor.isNotEmpty()) item {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Here for", style = MaterialTheme.typography.titleMedium)
-                        ProfileIntentions(profile.hereFor.distinct())
+    val presenter = LocalAuthorProfilePresenter.current
+    val content: @Composable () -> Unit = {
+        val nativeControl = LocalFeedControl.current
+        Column(Modifier.widthIn(max = 760.dp).fillMaxWidth()) {
+            LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(start = 22.dp, end = 22.dp, top = 8.dp, bottom = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                item { ProfileOverview(name, username, profile) }
+                if (onBlock != null) item {
+                    if (nativeControl != null) {
+                        nativeControl(FormRow("block", "Block account", destructive = true, onTap = onBlock), Modifier)
+                    } else {
+                        TextButton(onClick = onBlock, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
+                            Text("Block account")
+                        }
                     }
                 }
-                if (profile.identity.isNotBlank()) item { Text(profile.identity, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                if (profile.interests.isNotBlank()) item { Text(profile.interests, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
-            if (onMessage != null || onBlock != null) item {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (onMessage != null) FilledTonalButton(onClick = onMessage) { Text("Message") }
-                    if (onBlock != null) TextButton(onClick = onBlock) { Text("Block account") }
+            if (onMessage != null) {
+                HorizontalDivider()
+                Box(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 10.dp)) {
+                    val button = Modifier.fillMaxWidth()
+                    if (nativeControl != null) {
+                        nativeControl(FormRow("message", "Message", "primary", symbol = "envelope", onTap = onMessage), button)
+                    } else {
+                        YapButton(onClick = onMessage, modifier = button) { Text("Message") }
+                    }
                 }
             }
+        }
+    }
+    if (presenter != null) {
+        presenter(onDismiss, content)
+    } else {
+        ModalBottomSheet(onDismissRequest = onDismiss,
+            modifier = Modifier.fillMaxHeight().statusBarsPadding(),
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.End) {
+                YapCancelButton(onClick = onDismiss, label = "Done")
+            }
+            content()
         }
     }
 }

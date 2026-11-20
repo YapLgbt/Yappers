@@ -124,6 +124,9 @@ pub(crate) fn purge(db: &HomeDb, account: &str) -> Result<()> {
     for sql in [
         "DELETE FROM personal_events WHERE account=?",
         "DELETE FROM public_profiles WHERE owner=?",
+        "DELETE FROM public_profile_portraits WHERE owner=?",
+        "DELETE FROM encrypted_attachment_chunks WHERE id IN (SELECT id FROM encrypted_attachments WHERE owner=?)",
+        "DELETE FROM encrypted_attachments WHERE owner=?",
         "DELETE FROM username_claims WHERE account=?",
         "DELETE FROM dm_mail WHERE sender=?1 OR recipient=?1",
         "DELETE FROM dm_claims WHERE owner=?1 OR peer=?1",
