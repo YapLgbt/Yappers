@@ -30,6 +30,9 @@
   let feedback = $derived(currentError || status || (profile.directState?.delivery_paused ? 'Delivery paused. Refresh to retry.' :
     profile.directState?.unreadable ? 'Some messages couldn’t be opened on this device.' : ''));
   let drafts = $state<Record<string,string>>({});
+  export function hasPendingInput() {
+    return !!busyPeer || changingPush || Object.values(sending).some(Boolean) || Object.values(drafts).some(Boolean);
+  }
   let heading = $state<HTMLHeadingElement>();
   let scrollbox = $state<HTMLDivElement>();
   let marked = '';

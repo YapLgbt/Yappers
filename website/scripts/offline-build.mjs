@@ -49,9 +49,24 @@ const files = [...await tree(join(dist,'app')), ...await tree(join(dist,'_app/im
 const template = await readFile(new URL('../sw-template.js',import.meta.url),'utf8');
 const background=await readFile(new URL('../background-sync.js',import.meta.url),'utf8');
 const hash = createHash('sha256').update(template).update(background);
-for (const path of files) hash.update(path).update(await readFile(join(dist,path)));
+const assets = [];
+for (const path of files) {
+  const bytes = await readFile(join(dist, path));
+  hash.update(path).update(bytes);
+  assets.push({ path: '/' + path, integrity: integrity(bytes) });
+}
+function integrity(bytes) {
+  return 'sha256-' + createHash('sha256').update(bytes).digest('base64');
+}
+const build = hash.digest('hex').slice(0,20);
+for (const asset of assets.filter(asset => asset.path.endsWith('/index.html'))) {
+  const file = join(dist, asset.path);
+  const html = (await readFile(file, 'utf8')).replace('</head>', `<meta name="yap-build" content="${build}"></head>`);
+  await writeFile(file, html);
+  asset.integrity = integrity(html);
+}
 const cached=template
-  .replace('__YAP_BUILD__',hash.digest('hex').slice(0,20))
-  .replace('/* offline files */ []',JSON.stringify(files.map(path => '/' + path)));
+  .replace('__YAP_BUILD__',build)
+  .replace('/* offline assets */ []',JSON.stringify(assets));
 await writeFile(join(dist,'app/sw.js'),cached);
 await writeFile(join(dist,'app/background-sw.js'),background+'\n'+cached);

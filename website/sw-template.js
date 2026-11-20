@@ -1,12 +1,18 @@
-const cacheName = 'yap-web-__YAP_BUILD__';
-const files = /* offline files */ [];
-const urls = files.map(path => new URL(path, self.registration.scope).href);
+const build = '__YAP_BUILD__';
+const cacheName = 'yap-web-' + build;
+const assets = /* offline assets */ [];
+const urls = new Set(assets.map(({path}) => new URL(path, self.registration.scope).href));
 const shell = new URL('index.html', self.registration.scope);
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(cacheName).then(cache =>
-    cache.addAll(urls.map(url => new Request(url, {cache:'reload'})))
-  ));
+  event.waitUntil((async () => {
+    const cache = await caches.open(cacheName);
+    await cache.addAll(assets.map(({path, integrity}) => new Request(path, {cache:'reload', integrity})));
+    await self.skipWaiting();
+  })());
+});
+self.addEventListener('message', event => {
+  if (event.data?.type === 'yap-get-build') event.source?.postMessage({type:'yap-build', build});
 });
 self.addEventListener('activate', event => {
   event.waitUntil((async () => {
@@ -24,7 +30,7 @@ self.addEventListener('fetch', event => {
   const navigation = request.mode === 'navigate' &&
     (url.pathname === shell.pathname || url.pathname === new URL('./', shell).pathname);
   const target=navigation?shell.href:request.mode==='navigate' && url.pathname.endsWith('/')?new URL('index.html',url).href:url.href;
-  if (!urls.includes(target)) return;
+  if (!urls.has(target)) return;
   event.respondWith((async () => {
     const cache = await caches.open(cacheName);
     return (await cache.match(target)) || fetch(request);

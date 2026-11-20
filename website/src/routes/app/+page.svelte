@@ -26,6 +26,7 @@
   import { pageMotion } from '../../lib/pageMotion';
   import { deliveryDisclosure } from '../../lib/deliveryDisclosure';
   import { pullToRefresh } from '../../lib/pull';
+  import { watchPwaUpdates } from '../../lib/pwaUpdates';
   import { trackFeed } from '../../lib/feedMotion.svelte';
   import { loadCommunity, inboxCount, type ActivityItem, visible, authorLabel, errorMessage, type Community, type Profile,
     type Author, type Contact, type BlockedAccount, type Post, type RecoveryMode, type View } from '../../lib/community';
@@ -38,6 +39,7 @@
   let mode = $state<'feed' | 'groups' | 'saved' | 'inbox' | 'you'>('feed'), sort = $state('new'), topic = $state('All');
   let notice = $state(''), connection = $state(''), busy = $state(false);
   let composer = $state<Composer>();
+  let inbox = $state<Inbox>();
   let reportDialog = $state<Report>();
   let preferences = $state<Preferences>();
   let username = $state<Username>();
@@ -409,13 +411,8 @@
     const pushed=(event:MessageEvent)=>{if(event.data?.type==='yap-open-inbox' && /^[a-f0-9]{64}$/.test(event.data.route)) pendingPush=event.data.route;};
     navigator.serviceWorker?.addEventListener('message',pushed);
     void boot();
-    if ('serviceWorker' in navigator && !import.meta.env.DEV) navigator.serviceWorker.register('/app/background-sw.js',{scope:'/app/',type:'module'})
-      .catch(()=>navigator.serviceWorker.register('/app/sw.js',{scope:'/app/'}))
-      .then(async registration=>{
-        const periodic=(registration as ServiceWorkerRegistration & {periodicSync?:{register:(tag:string,options:{minInterval:number})=>Promise<void>}}).periodicSync;
-        if(periodic && (await navigator.permissions.query({name:'periodic-background-sync' as PermissionName})).state==='granted')
-          await periodic.register('yap-refresh',{minInterval:24*60*60*1000});
-      }).catch(()=>{});
+    const stopUpdates = watchPwaUpdates(() => !busy && !groupChanges &&
+      (step === null || step === 'intro') && !inbox?.hasPendingInput());
     const flag = '/app/flag-print.js';
     void import(/* @vite-ignore */ flag).catch(() => {});
     const listeners = new AbortController();
@@ -427,7 +424,7 @@
       if (ready && navigator.onLine && !document.hidden && !document.querySelector('dialog[open]')) void refresh();
     },60000);
     const inboxTimer = setInterval(() => { if (ready && mode === 'inbox' && !document.hidden && navigator.onLine && !busy) void refresh(); },10000);
-    return () => { navigator.serviceWorker?.removeEventListener('message',pushed); listeners.abort(); clearInterval(timer); clearInterval(inboxTimer); client?.updates.removeEventListener('change',readProfile); };
+    return () => { stopUpdates(); navigator.serviceWorker?.removeEventListener('message',pushed); listeners.abort(); clearInterval(timer); clearInterval(inboxTimer); client?.updates.removeEventListener('change',readProfile); };
   });
 </script>
 <AppHead />
@@ -491,7 +488,7 @@
   {#if mode === 'groups' && profile && client}
     <Groups {profile} {client} {openGroup}/>
   {:else if mode === 'inbox' && profile && client}
-    <Inbox bind:tab={inboxFolder} {openActivity} changedContact={changeContact} report={(kind,id,text)=>reportDialog?.open(kind,id,text)} {client} {profile} bind:contact {refresh} browse={() => navigate('feed')} block={blockContact}
+    <Inbox bind:this={inbox} bind:tab={inboxFolder} {openActivity} changedContact={changeContact} report={(kind,id,text)=>reportDialog?.open(kind,id,text)} {client} {profile} bind:contact {refresh} browse={() => navigate('feed')} block={blockContact}
       status={profile.mailboxElsewhere ? client.otherMessagingDevice : view === 'offline' || view === 'replica' ? 'Offline inbox. Queued messages will send when you reconnect.' :
         inboxError || (view === 'primary' && !profile.directAvailable ? 'Messaging is unavailable on this home.' : '')} />
   {:else}

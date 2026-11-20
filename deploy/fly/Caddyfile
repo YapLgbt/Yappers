@@ -1,6 +1,7 @@
 :8080 {
     @app path /app /app/*
     header @app {
+        Cache-Control "no-cache"
         Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self' https: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
         X-Content-Type-Options nosniff
         Referrer-Policy no-referrer
