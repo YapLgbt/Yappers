@@ -1,4 +1,5 @@
 #![cfg(feature = "server")]
+mod support;
 use std::{collections::BTreeMap, path::Path};
 use yappers_netkit::{
     client::{Client, ClientConfig},
@@ -614,11 +615,12 @@ async fn privacy_filters_authors_and_preserves_requests_across_cursor_advances()
         command(b, json!({"type":"feed"})).await.unwrap()["posts"],
         json!([])
     );
-    let db = rusqlite::Connection::open(&path).unwrap();
+    let db = support::primary(&path).await.unwrap();
     db.execute(
         "UPDATE first_seen SET since=since-86401 WHERE owner=?",
         [aid],
     )
+    .await
     .unwrap();
     let feed = command(b, json!({"type":"feed"})).await.unwrap();
     assert_eq!(feed["posts"][0]["visibility"]["age"], 1);
@@ -1034,21 +1036,55 @@ fn recovery_reads_previous_age_release() -> anyhow::Result<()> {
     bundle.validate()
 }
 
-#[test]
-fn existing_registry_accepts_account_1001() -> anyhow::Result<()> {
+#[tokio::test]
+async fn existing_registry_accepts_account_1001() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("home");
     let mut store = Store::open(&path)?;
-    let db = rusqlite::Connection::open(path)?;
+    let db = support::primary(&path).await?;
     db.execute_batch(
         "WITH RECURSIVE seed(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM seed WHERE i<1000)
         INSERT INTO account_states SELECT printf('%064x',i),'[]' FROM seed",
-    )?;
+    )
+    .await?;
     let account = wallet(&key(&new_secret()));
     store.register_account(&account.chain)?;
     assert_eq!(
         store.account_chain(&account.chain[0].payload.account)?,
         account.chain
+    );
+    Ok(())
+}
+
+#[test]
+fn competing_account_updates_accept_one_chain() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("home");
+    let mut first = Store::open(&path)?;
+    let mut second = Store::open(&path)?;
+    let home = key(&new_secret());
+    let original = wallet(&home);
+    first.register_account(&original.chain)?;
+    let a = original.transition(home.clone(), false)?;
+    let b = original.transition(home, false)?;
+    let ready = std::sync::Barrier::new(2);
+    let (left, right) = std::thread::scope(|scope| {
+        let left = scope.spawn(|| {
+            ready.wait();
+            first.register_account(&a.chain)
+        });
+        ready.wait();
+        let right = second.register_account(&b.chain);
+        (left.join().unwrap(), right)
+    });
+    let (accepted, rejected) = match (left, right) {
+        (Ok(record), Err(error)) | (Err(error), Ok(record)) => (record, error),
+        _ => anyhow::bail!("competing branches must have one winner"),
+    };
+    assert!(rejected.to_string().contains("conflicting account history"));
+    assert_eq!(
+        second.account_chain(&accepted.payload.account)?.last(),
+        Some(&accepted)
     );
     Ok(())
 }

@@ -8,15 +8,6 @@ use crate::{
 use anyhow::{Result, ensure};
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
-pub(crate) const SCHEMA:&str="
-CREATE TABLE IF NOT EXISTS push_devices(owner TEXT,device TEXT,provider TEXT NOT NULL,subscription TEXT NOT NULL UNIQUE,
-    categories TEXT NOT NULL,PRIMARY KEY(owner,device));
-CREATE TABLE IF NOT EXISTS push_starts(owner TEXT,device TEXT,category TEXT,baseline INTEGER NOT NULL,
-    PRIMARY KEY(owner,device,category));
-CREATE TABLE IF NOT EXISTS push_routes(token TEXT PRIMARY KEY,owner TEXT,device TEXT,category TEXT,target TEXT,
-    delivered INTEGER NOT NULL DEFAULT 0,leasing INTEGER NOT NULL DEFAULT 0,retry_at INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(owner,device,category,target));
-";
 pub(crate) fn capabilities() -> Value {
     let enabled = std::env::var("YAP_PUSH_PROVIDERS").unwrap_or_default();
     let has = |name: &str| enabled.split(',').any(|s| s == name);

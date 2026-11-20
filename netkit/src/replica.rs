@@ -11,7 +11,7 @@ fn fingerprint(posts: &[RemotePost], count: usize) -> Result<String> {
         .to_string())
 }
 
-impl State {
+impl CatalogOp<'_> {
     pub(super) fn public_projection(
         &self,
         remote: &str,
@@ -23,11 +23,13 @@ impl State {
                 && self.peer(remote)?.communities.contains(community),
             "public projection not authorized"
         );
-        let store = self.store()?;
-        let events = store.events(community)?;
-        let ages = store.ages()?;
-        let mut posts = project(&events, community, "", &store.hidden()?);
-        store.apply_current_bylines(&mut posts, &events)?;
+        let store = &*self.store;
+        let crate::feed_page::FeedPage {
+            mut posts,
+            events,
+            event_count,
+        } = store.feed_page(community, "", None)?;
+        let ages = store.page_ages(&events)?;
         let metadata: HashMap<_, _> = events.iter().map(|e| (e.event.id.as_str(), e)).collect();
         for p in &mut posts {
             p.visibility = metadata
@@ -41,7 +43,7 @@ impl State {
         }
         let mut deleted = store.erased_ids(community)?;
         let more = fit_feed_page(&mut posts, &mut deleted, 0)?;
-        if known == Some(fingerprint(&posts, events.len())?.as_str()) {
+        if known == Some(fingerprint(&posts, event_count)?.as_str()) {
             return Ok(Response::ProjectionUnchanged);
         }
         if self.peering.as_ref().is_some_and(|p| p.external(remote)) {
@@ -56,7 +58,7 @@ impl State {
         Ok(Response::PublicReplicaFeed {
             deleted,
             posts,
-            event_count: events.len(),
+            event_count,
             as_of: now(),
         }
         .with_deletion_pages(more))
@@ -79,7 +81,7 @@ impl State {
 
     pub(super) fn replica_feed(&self, community: &str) -> Result<Response> {
         self.authorize_replica(community)?;
-        let store = self.store()?;
+        let store = &*self.store;
         let (raw, count, verified): (String, usize, i64) = store
             .db
             .query_row(
@@ -89,7 +91,7 @@ impl State {
             )
             .optional()?
             .context("waiting for the first primary projection")?;
-        let mut posts: Vec<RemotePost> = serde_json::from_str(&raw)?;
+        let mut posts = crate::native_projection::decode(store, community, &raw)?;
         let hidden = store.hidden()?;
         posts.retain(|p| !hidden.contains(&p.id));
         for p in &mut posts {
@@ -105,6 +107,82 @@ impl State {
         }
         .with_deletion_pages(more))
     }
+    fn projection_version(&self, community: &str) -> Result<Option<(String, i64)>> {
+        Ok(self
+            .store
+            .db
+            .query_row(
+                "SELECT digest,verified FROM public_projections WHERE community=?",
+                [community],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    fn cache_projection(
+        &mut self,
+        community: &str,
+        requested: &Option<(String, i64)>,
+        response: &Response,
+        timestamp: i64,
+    ) -> Result<()> {
+        self.authorize_replica(community)?;
+        // A cancelled refresh can still have a worker in flight. A later refresh
+        // may already have committed a different answer while this RPC was out.
+        if &self.projection_version(community)? != requested {
+            return Ok(());
+        }
+        let store = &*self.store;
+        match response {
+            Response::ProjectionUnchanged => {
+                ensure!(requested.is_some(), "missing prior primary projection");
+                store.db.execute(
+                    "UPDATE public_projections SET verified=? WHERE community=?",
+                    params![timestamp, community],
+                )?;
+            }
+            Response::PublicReplicaFeed {
+                posts, event_count, ..
+            } => {
+                // The projection can arrive ahead of its signed creation or after a
+                // deletion. Only cache content backed by a locally verified live event.
+                // A committed detached header identifies a live body until a deletion
+                // proof is attached. Check only events in this bounded projection.
+                let mut lookup = store.db.prepare_cached(
+                    "SELECT EXISTS(SELECT 1 FROM events WHERE id=?1 AND community=?2
+                       AND json_extract(envelope,'$.deletion') IS NULL
+                       AND json_extract(envelope,'$.event.payload.action.kind')
+                           IN ('post','postV2','reply','erased'))",
+                )?;
+                let mut retained = Vec::with_capacity(posts.len());
+                for post in posts {
+                    if !lookup.query_row([&post.id, community], |r| r.get::<_, bool>(0))? {
+                        continue;
+                    }
+                    let mut post = post.clone();
+                    let mut replies = Vec::with_capacity(post.replies.len());
+                    for reply in post.replies {
+                        if lookup.query_row([&reply.id, community], |r| r.get::<_, bool>(0))? {
+                            replies.push(reply);
+                        }
+                    }
+                    post.replies = replies;
+                    retained.push(post);
+                }
+                let posts = retained;
+                let digest = fingerprint(&posts, *event_count)?;
+                // Replacing a moderated projection may withdraw a previously visible
+                // post, reply, or byline. Expire replies built from the previous page.
+                self.disclosure
+                    .restrict_if(requested.as_ref().is_some_and(|(old, _)| old != &digest))?;
+                store.db.execute("INSERT INTO public_projections(community,digest,posts,event_count,verified) VALUES(?,?,?,?,?)
+                   ON CONFLICT(community) DO UPDATE SET digest=excluded.digest, posts=excluded.posts, event_count=excluded.event_count, verified=excluded.verified",
+                   params![community,digest,crate::native_projection::encode(store,community,&posts)?,event_count,timestamp])?;
+            }
+            _ => anyhow::bail!("invalid primary projection"),
+        }
+        Ok(())
+    }
 }
 
 impl Server {
@@ -115,16 +193,11 @@ impl Server {
         {
             return Ok(());
         }
+        let scope = community.clone();
         let cached = self
             .state
-            .store()?
-            .db
-            .query_row(
-                "SELECT digest,verified FROM public_projections WHERE community=?",
-                [&community],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-            )
-            .optional()?;
+            .blocking(move |state| state.projection_version(&scope))
+            .await?;
         let timestamp = now();
         if cached
             .as_ref()
@@ -141,35 +214,10 @@ impl Server {
             },
         )
         .await?;
-        let store = self.state.store()?;
-        match response {
-            Response::ProjectionUnchanged => {
-                ensure!(cached.is_some(), "missing prior primary projection");
-                store.db.execute(
-                    "UPDATE public_projections SET verified=? WHERE community=?",
-                    params![timestamp, community],
-                )?;
-            }
-            Response::PublicReplicaFeed {
-                mut posts,
-                event_count,
-                ..
-            } => {
-                // The projection can arrive ahead of its signed creation or after a
-                // deletion. Only cache content backed by a locally verified live event.
-                let live = store.db.prepare("SELECT id FROM events WHERE community=? AND json_extract(envelope,'$.event.payload.action.kind') IN ('post','postV2','reply')")?
-                    .query_map([&community],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<BTreeSet<_>>>()?;
-                posts.retain(|p| live.contains(&p.id));
-                for post in &mut posts {
-                    post.replies.retain(|r| live.contains(&r.id));
-                }
-                let digest = fingerprint(&posts, event_count)?;
-                store.db.execute("INSERT INTO public_projections(community,digest,posts,event_count,verified) VALUES(?,?,?,?,?)
-                   ON CONFLICT(community) DO UPDATE SET digest=excluded.digest, posts=excluded.posts, event_count=excluded.event_count, verified=excluded.verified",
-                   params![community,digest,serde_json::to_string(&posts)?,event_count,timestamp])?;
-            }
-            _ => anyhow::bail!("invalid primary projection"),
-        }
-        Ok(())
+        self.state
+            .blocking(move |state| {
+                state.cache_projection(&community, &cached, &response, timestamp)
+            })
+            .await
     }
 }

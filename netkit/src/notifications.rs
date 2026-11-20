@@ -3,54 +3,13 @@
 //! Views join the current moderated events, so federation replay, erasure and
 //! out-of-order arrival do not create a second notification history.
 use crate::{model::now, store::Store};
-use anyhow::{Result, ensure};
-use rusqlite::{Connection, params};
+use anyhow::{Context, Result, ensure};
+use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
-
-pub(crate) fn install(db: &Connection) -> Result<()> {
-    db.execute_batch(crate::push::SCHEMA)?;
-    db.execute_batch("
-        CREATE TABLE IF NOT EXISTS inbox_reads(
-            owner TEXT, kind TEXT, target TEXT, through INTEGER NOT NULL,
-            PRIMARY KEY(owner,kind,target));
-        CREATE TABLE IF NOT EXISTS inbox_mutes(
-            owner TEXT, target TEXT, PRIMARY KEY(owner,target));
-        CREATE TABLE IF NOT EXISTS inbox_arrivals(event TEXT PRIMARY KEY, received INTEGER NOT NULL);
-        CREATE TRIGGER IF NOT EXISTS inbox_event_arrived AFTER INSERT ON events
-        WHEN json_extract(NEW.envelope,'$.event.payload.action.kind') IN ('post','postV2','reply')
-        BEGIN INSERT OR IGNORE INTO inbox_arrivals VALUES(NEW.id,unixepoch()); END;
-        CREATE INDEX IF NOT EXISTS events_reply_parent
-            ON events(json_extract(envelope,'$.event.payload.action.parent'));
-        CREATE INDEX IF NOT EXISTS events_account_owner
-            ON events(COALESCE(json_extract(envelope,'$.event.payload.account.payload.account'),author));
-        CREATE VIEW IF NOT EXISTS inbox_replies AS
-        SELECT p.id AS target, p.community AS scope, r.id AS reply, r.cursor AS seq,
-            COALESCE(json_extract(p.envelope,'$.event.payload.account.payload.account'),p.author) AS owner,
-            COALESCE(json_extract(r.envelope,'$.event.payload.account.payload.account'),r.author) AS actor,
-            json_extract(r.envelope,'$.event.payload.action.displayName')='Anonymous neighbor' AS anonymous,
-            COALESCE(json_extract(p.envelope,'$.event.payload.action.headline'),
-                     substr(json_extract(p.envelope,'$.event.payload.action.body'),1,80)) AS title,
-            json_extract(r.envelope,'$.acceptedAt') AS created
-        FROM events p JOIN events r ON json_extract(r.envelope,'$.event.payload.action.parent')=p.id
-            AND r.community=p.community
-        WHERE json_extract(p.envelope,'$.event.payload.action.kind') IN ('post','postV2')
-            AND json_extract(r.envelope,'$.event.payload.action.kind')='reply'
-            AND owner<>actor AND NOT EXISTS(SELECT 1 FROM hidden WHERE id IN (r.id,p.id));
-        CREATE VIEW IF NOT EXISTS inbox_visible AS
-        SELECT n.* FROM inbox_replies n
-        LEFT JOIN privacy_settings prefs ON prefs.owner=n.owner
-        LEFT JOIN first_seen age ON age.owner=n.actor
-        WHERE NOT EXISTS(SELECT 1 FROM user_blocks b WHERE
-            (b.owner=n.owner AND b.peer=n.actor) OR (b.peer=n.owner AND b.owner=n.actor))
-        AND NOT EXISTS(SELECT 1 FROM inbox_mutes m WHERE m.owner=n.owner AND m.target=n.target)
-        AND (NOT n.anonymous OR NOT COALESCE(json_extract(prefs.settings,'$.hideAnonymous'),0))
-        AND (unixepoch()-COALESCE(age.since,unixepoch()))/86400 >= COALESCE(json_extract(prefs.settings,'$.feedDays'),0);
-    ")?;
-    Ok(())
-}
+use std::collections::{HashMap, HashSet, VecDeque};
 
 impl Store {
-    pub(crate) fn notification_inbox(&self, owner: &str, device: &str) -> Result<Value> {
+    fn sqlite_activity(&self, owner: &str) -> Result<Vec<Value>> {
         let mut stmt = self.db.prepare("WITH rows AS (
             SELECT n.*,seq>COALESCE(r.through,0) AS unread FROM inbox_visible n
             LEFT JOIN inbox_reads r ON r.owner=n.owner AND r.kind='reply' AND r.target=n.target
@@ -79,6 +38,15 @@ impl Store {
             "anonymous":r.get::<_,bool>(8)?, "byline":r.get::<_,String>(9)?,
             "preview":r.get::<_,String>(10)?, "photo":photo, "last":r.get::<_,String>(12)?
         }))})?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(activity)
+    }
+
+    pub(crate) fn notification_inbox(&self, owner: &str, device: &str) -> Result<Value> {
+        let activity = if self.db.native().is_some() {
+            self.native_activity(owner)?
+        } else {
+            self.sqlite_activity(owner)?
+        };
         let mailbox = self.db.query_row(
             "SELECT EXISTS(SELECT 1 FROM dm_devices WHERE owner=? AND device=?)",
             [owner, device],
@@ -122,6 +90,14 @@ impl Store {
             "invalid inbox read position"
         );
         let valid: bool = match kind {
+            "reply" if self.db.native().is_some() => {
+                let mut visible = false;
+                self.native_replies(owner, Some(target), Some(through), false, |_| {
+                    visible = true;
+                    Ok(())
+                })?;
+                visible
+            }
             "reply" => self.db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM inbox_visible WHERE owner=? AND target=? AND seq=?)",
                 params![owner, target, through],
@@ -166,44 +142,49 @@ impl Store {
                 ),
             "This conversation is no longer available."
         );
-        let mut query = self.db.prepare(
-            "SELECT e.cursor,e.envelope FROM events e
+        let (events, allowed, cursor) = if self.db.native().is_some() {
+            self.native_thread_rows(owner, target, anchor, &parent)?
+        } else {
+            let mut query = self.db.prepare(
+                "SELECT e.cursor,e.envelope FROM events e
             WHERE e.community=?1 AND (json_extract(e.envelope,'$.event.payload.action.parent')=?2
             OR json_extract(e.envelope,'$.event.payload.action.target')=?2) ORDER BY e.cursor",
-        )?;
-        let mut visible = self
-            .db
-            .prepare("SELECT reply FROM inbox_visible WHERE owner=? AND target=?")?;
-        let allowed = visible
-            .query_map([owner, target], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
-        let mut events = vec![parent.clone()];
-        let mut replies = Vec::new();
-        let mut cursor = std::collections::HashMap::new();
-        for row in query.query_map([scope, target], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-        })? {
-            let (seq, raw) = row?;
-            let event: crate::model::Envelope = serde_json::from_str(&raw)?;
-            match &event.event.payload.action {
-                Action::Reply { .. }
-                    if allowed.contains(&event.event.id)
-                        || (event.event.owner_id() == owner
-                            && !hidden.contains(&event.event.id)) =>
-                {
-                    cursor.insert(event.event.id.clone(), seq);
-                    replies.push(event);
+            )?;
+            let mut visible = self
+                .db
+                .prepare("SELECT reply FROM inbox_visible WHERE owner=? AND target=?")?;
+            let allowed = visible
+                .query_map([owner, target], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+            let mut events = vec![parent.clone()];
+            let mut replies = Vec::new();
+            let mut cursor = std::collections::HashMap::new();
+            for row in query.query_map([scope, target], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })? {
+                let (seq, raw) = row?;
+                let event: crate::model::Envelope = serde_json::from_str(&raw)?;
+                match &event.event.payload.action {
+                    Action::Reply { .. }
+                        if allowed.contains(&event.event.id)
+                            || (event.event.owner_id() == owner
+                                && !hidden.contains(&event.event.id)) =>
+                    {
+                        cursor.insert(event.event.id.clone(), seq);
+                        replies.push(event);
+                    }
+                    Action::Vote { .. } => events.push(event),
+                    _ => {}
                 }
-                Action::Vote { .. } => events.push(event),
-                _ => {}
             }
-        }
-        let index = replies
-            .iter()
-            .position(|r| r.event.id == anchor)
-            .ok_or_else(missing)?;
-        let start = index.saturating_sub(10);
-        events.extend(replies.into_iter().skip(start).take(80));
+            let index = replies
+                .iter()
+                .position(|r| r.event.id == anchor)
+                .ok_or_else(missing)?;
+            let start = index.saturating_sub(10);
+            events.extend(replies.into_iter().skip(start).take(80));
+            (events, allowed, cursor)
+        };
         let mut posts = project(&events, scope, owner, &hidden);
         self.apply_current_bylines(&mut posts, &events)?;
         let post = posts.first_mut().ok_or_else(missing)?;
@@ -237,5 +218,308 @@ impl Store {
             .max()
             .unwrap_or(anchor_seq);
         Ok(json!({"post":post,"scope":scope,"through":through}))
+    }
+}
+
+struct ReplyRoute {
+    id: String,
+    target: String,
+    cursor: i64,
+    received: i64,
+    through: i64,
+    visible_in_inbox: bool,
+}
+
+type ThreadRows = (Vec<crate::Envelope>, HashSet<String>, HashMap<String, i64>);
+
+impl Store {
+    /// A reply's parent and anonymity belong to its erasable action. Scan
+    /// authenticated routing capsules for the owner's communities, or one
+    /// cursor for an acknowledgement. No plaintext routing index survives a
+    /// deletion. Stream the scan so memory depends on the requested result.
+    fn native_replies(
+        &self,
+        owner: &str,
+        target: Option<&str>,
+        cursor: Option<i64>,
+        include_own: bool,
+        mut visit: impl FnMut(ReplyRoute) -> Result<()>,
+    ) -> Result<()> {
+        let prefs = crate::privacy::settings(&self.db, owner)?;
+        let time = now();
+        let cursor_filter = if cursor.is_some() {
+            "e.cursor=?3"
+        } else {
+            "?3 IS NULL"
+        };
+        let parent_filter = if target.is_some() {
+            "p.id=?2"
+        } else {
+            "?2 IS NULL"
+        };
+        let mut candidates = self.db.prepare(&format!(
+            "SELECT e.envelope,e.cursor,o.routing,ar.received
+             FROM events e LEFT JOIN home_openings o ON o.target=e.id AND o.private=0
+             LEFT JOIN inbox_arrivals ar ON ar.event=e.id
+             WHERE {cursor_filter}
+               AND e.community IN (SELECT p.community FROM events p
+                 WHERE COALESCE(json_extract(p.envelope,'$.event.payload.account.payload.account'),p.author)=?1
+                   AND {parent_filter}
+                   AND json_extract(p.envelope,'$.event.payload.action.reply')=0
+                   AND json_extract(p.envelope,'$.deletion') IS NULL)
+               AND json_extract(e.envelope,'$.event.payload.action.reply')=1
+               AND json_extract(e.envelope,'$.deletion') IS NULL
+               AND NOT EXISTS(SELECT 1 FROM hidden WHERE id=e.id)
+             ORDER BY e.cursor"
+        ))?;
+        let mut parent_query = self.db.prepare(
+            "SELECT COALESCE(a.received,0),COALESCE(r.through,0),
+                    EXISTS(SELECT 1 FROM inbox_mutes m WHERE m.owner=?1 AND m.target=p.id)
+             FROM events p LEFT JOIN inbox_arrivals a ON a.event=p.id
+             LEFT JOIN inbox_reads r ON r.owner=?1 AND r.kind='reply' AND r.target=p.id
+             WHERE p.id=?2 AND p.community=?3
+               AND COALESCE(json_extract(p.envelope,'$.event.payload.account.payload.account'),p.author)=?1
+               AND json_extract(p.envelope,'$.event.payload.action.reply')=0
+               AND json_extract(p.envelope,'$.deletion') IS NULL
+               AND NOT EXISTS(SELECT 1 FROM hidden WHERE id=p.id)",
+        )?;
+        let mut actor = self.db.prepare(
+            "SELECT NOT EXISTS(SELECT 1 FROM user_blocks WHERE
+                 (owner=?1 AND peer=?2) OR (owner=?2 AND peer=?1))
+             AND (?3-COALESCE((SELECT since FROM first_seen WHERE owner=?2),?3))/86400>=?4",
+        )?;
+        let mut rows = candidates.query(params![owner, target, cursor])?;
+        while let Some(row) = rows.next()? {
+            let header: crate::Envelope = serde_json::from_str(&row.get::<_, String>(0)?)?;
+            let own = header.event.owner_id() == owner;
+            if own && !include_own {
+                continue;
+            }
+            let (parent, anonymous) =
+                crate::native_content::reply_route(&self.db, &header, &row.get::<_, Vec<u8>>(2)?)?;
+            if target.is_some_and(|id| parent != id) {
+                continue;
+            }
+            let Some((arrived, through, muted)) = parent_query
+                .query_row(
+                    params![owner, parent, header.event.payload.community],
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, bool>(2)?,
+                        ))
+                    },
+                )
+                .optional()?
+            else {
+                continue;
+            };
+            if !own
+                && (muted
+                    || (anonymous && prefs.hide_anonymous)
+                    || !actor.query_row(
+                        params![owner, header.event.owner_id(), time, prefs.feed_days],
+                        |r| r.get::<_, bool>(0),
+                    )?)
+            {
+                continue;
+            }
+            visit(ReplyRoute {
+                id: header.event.id,
+                target: parent,
+                cursor: row.get(1)?,
+                received: arrived.max(row.get::<_, Option<i64>>(3)?.unwrap_or(header.accepted_at)),
+                through,
+                visible_in_inbox: !own,
+            })?;
+        }
+        Ok(())
+    }
+
+    fn native_activity(&self, owner: &str) -> Result<Vec<Value>> {
+        struct Group {
+            latest: ReplyRoute,
+            first: Option<(String, i64)>,
+            unread: usize,
+        }
+        let mut groups = HashMap::<String, Group>::new();
+        self.native_replies(owner, None, None, false, |reply| {
+            let unread = reply.cursor > reply.through;
+            let first = unread.then(|| (reply.id.clone(), reply.cursor));
+            match groups.entry(reply.target.clone()) {
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(Group {
+                        latest: reply,
+                        first,
+                        unread: usize::from(unread),
+                    });
+                }
+                std::collections::hash_map::Entry::Occupied(mut o) => {
+                    let group = o.get_mut();
+                    group.latest = reply;
+                    group.unread += usize::from(unread);
+                    if group.first.is_none() {
+                        group.first = first;
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        let mut groups: Vec<_> = groups.into_values().collect();
+        groups.sort_unstable_by_key(|g| std::cmp::Reverse(g.latest.cursor));
+        let mut photo_bytes = 0;
+        groups.into_iter().map(|g| {
+            let last = g.latest;
+            let parent = self.existing(&last.target)?.context("missing inbox post")?;
+            let reply = self.existing(&last.id)?.context("missing inbox reply")?;
+            let title = match parent.event.payload.action {
+                crate::Action::Post { body, .. } => body.chars().take(80).collect(),
+                crate::Action::PostV2 { headline, .. } => headline,
+                _ => anyhow::bail!("invalid inbox parent"),
+            };
+            let crate::Action::Reply { body, display_name, .. } = &reply.event.payload.action
+                else { anyhow::bail!("invalid inbox reply") };
+            let anonymous = display_name == "Anonymous neighbor";
+            let profile = if anonymous { None } else {
+                self.current_profile(&reply.event.payload.home, reply.event.owner_id())?
+            };
+            let byline = profile.as_ref().map_or(display_name, |p| &p.name);
+            let photo = profile.as_ref().map(|p| &p.profile.photo).filter(|s| {
+                if photo_bytes + s.len() > 128 * 1024 { return false }
+                photo_bytes += s.len();
+                true
+            });
+            let first = g.first.unwrap_or_else(|| (last.id.clone(),last.cursor));
+            Ok(json!({
+                "target":last.target, "scope":parent.event.payload.community, "title":title,
+                "through":last.cursor, "created":last.received, "unread":g.unread,
+                "first":first.0, "firstThrough":first.1, "anonymous":anonymous, "byline":byline,
+                "preview":body.chars().take(160).collect::<String>(), "photo":photo, "last":last.id
+            }))
+        }).collect()
+    }
+
+    fn native_thread_rows(
+        &self,
+        owner: &str,
+        target: &str,
+        anchor: &str,
+        parent: &crate::Envelope,
+    ) -> Result<ThreadRows> {
+        let mut window = VecDeque::<ReplyRoute>::new();
+        let mut found = false;
+        self.native_replies(owner, Some(target), None, true, |reply| {
+            if !found && reply.id == anchor {
+                found = true;
+            }
+            if !found && window.len() == 10 {
+                window.pop_front();
+            }
+            if window.len() < 80 {
+                window.push_back(reply);
+            }
+            Ok(())
+        })?;
+        ensure!(found, "This conversation is no longer available.");
+        let mut events = vec![parent.clone()];
+        let mut votes = self.db.prepare(
+            "SELECT envelope FROM events WHERE community=? AND json_extract(envelope,'$.event.payload.action.target')=?
+               AND json_extract(envelope,'$.event.payload.action.kind')='vote' ORDER BY cursor"
+        )?;
+        for raw in votes.query_map(params![parent.event.payload.community, target], |r| {
+            r.get::<_, String>(0)
+        })? {
+            events.push(serde_json::from_str(&raw?)?);
+        }
+        let mut visible = HashSet::new();
+        let mut cursors = HashMap::new();
+        for reply in window {
+            events.push(self.existing(&reply.id)?.context("missing thread reply")?);
+            if reply.visible_in_inbox {
+                visible.insert(reply.id.clone());
+            }
+            cursors.insert(reply.id, reply.cursor);
+        }
+        Ok((events, visible, cursors))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Action, Envelope, SignedEvent, new_secret, signing_key};
+
+    #[test]
+    fn late_parent_and_private_routing_keep_inbox_and_thread_in_sync() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut store = Store::open(&dir.path().join("home"))?;
+        let home = signing_key(&new_secret())?;
+        let home_id = hex::encode(home.verifying_key().as_bytes());
+        let author = signing_key(&new_secret())?;
+        let reader = hex::encode(author.verifying_key().as_bytes());
+        let neighbor = signing_key(&new_secret())?;
+        let make = |key: &ed25519_dalek::SigningKey, seq, action| {
+            Envelope::accept(
+                SignedEvent::create(key, home_id.clone(), "scope".into(), seq, action)?,
+                &home,
+            )
+        };
+        let post = make(
+            &author,
+            1,
+            Action::Post {
+                body: "Thread title".into(),
+                topic: "Plans".into(),
+                anonymous: false,
+                display_name: "Owner".into(),
+            },
+        )?;
+        let reply = make(
+            &neighbor,
+            1,
+            Action::Reply {
+                parent: post.event.id.clone(),
+                body: "Visible reply".into(),
+                display_name: "Neighbor".into(),
+            },
+        )?;
+        let own = make(
+            &author,
+            2,
+            Action::Reply {
+                parent: post.event.id.clone(),
+                body: "My response".into(),
+                display_name: "Owner".into(),
+            },
+        )?;
+        store.accept(&reply)?;
+        assert_eq!(
+            store.notification_inbox(&reader, "device")?["activity"],
+            json!([])
+        );
+        store.accept(&post)?;
+        store.accept(&own)?;
+        let inbox = store.notification_inbox(&reader, "device")?;
+        assert_eq!(inbox["activity"][0]["title"], "Thread title");
+        assert_eq!(inbox["activity"][0]["last"], reply.event.id);
+        let thread = store.activity_thread(&reader, &post.event.id, &reply.event.id)?;
+        assert_eq!(thread["post"]["replies"].as_array().unwrap().len(), 2);
+        assert_eq!(thread["through"], inbox["activity"][0]["through"]);
+        store.moderate(&reply.event.id, true)?;
+        assert_eq!(
+            store.notification_inbox(&reader, "device")?["activity"],
+            json!([])
+        );
+        assert!(
+            store
+                .activity_thread(&reader, &post.event.id, &reply.event.id)
+                .is_err()
+        );
+        assert_eq!(
+            store.activity_thread(&reader, &post.event.id, &own.event.id)?["post"]["replies"][0]["id"],
+            own.event.id
+        );
+        Ok(())
     }
 }

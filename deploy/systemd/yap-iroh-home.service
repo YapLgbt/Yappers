@@ -1,13 +1,16 @@
 [Unit]
-Description=Yap primary public home over Iroh
+Description=Yap public home over Iroh
 Wants=network-online.target
 After=network-online.target
 
 [Service]
+Environment=YAP_PEERING_POLICY=/etc/yap/peering.json
+Environment=YAP_SOURCE_BASE_URL=https://yap.lgbt/source
+EnvironmentFile=-/var/lib/yap-iroh-replica/v6/push/environment
 User=yap-iroh-replica
 Group=yap-iroh-replica
-ExecStartPre=/usr/bin/test -s /var/lib/yap-iroh-replica/public-home.json
-ExecStart=/usr/local/lib/yap-iroh-replica/yappers-server public-home --directory /var/lib/yap-iroh-replica --manifest /var/lib/yap-iroh-replica/enrollment.json
+ExecStartPre=/usr/bin/test -s /var/lib/yap-iroh-replica/standalone/public-home.json
+ExecStart=/usr/local/lib/yap-iroh-replica/yappers-server-v6 public-home --directory /var/lib/yap-iroh-replica/standalone --manifest /var/lib/yap-iroh-replica/standalone/enrollment.json
 WorkingDirectory=/var/lib/yap-iroh-replica
 StateDirectory=yap-iroh-replica
 StateDirectoryMode=0700

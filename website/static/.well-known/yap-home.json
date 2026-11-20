@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "join": {
+    "accessToken": "3006eeba0aec27cb0fdac707a92733dc2160ed190467e2f2b29a5dd7bb2b6052",
+    "community": "114f92b50e66dd84a14e0ff9b857b0c254565609b00b0cb9ef85f29e864efe5b/public",
+    "networkMode": "n0",
+    "protocolVersion": 6,
+    "serverAddr": {
+      "addrs": [
+        {
+          "Relay": "https://use1-1.relay.n0.iroh.link./"
+        }
+      ],
+      "id": "114f92b50e66dd84a14e0ff9b857b0c254565609b00b0cb9ef85f29e864efe5b"
+    }
+  }
+}

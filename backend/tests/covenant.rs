@@ -198,59 +198,47 @@ async fn scoped_admission_suspension_and_tamper_rejection() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "read-only check of production admissions and exact source on all three physical routes"]
+#[ignore = "read-only check of production admissions and exact source on the dedicated Home"]
 async fn deployed_covenant() -> Result<()> {
     let m: Value = serde_json::from_slice(&fs::read(std::env::var("YAP_SMOKE_ENROLLMENT")?)?)?;
     let join: JoinConfig = serde_json::from_value(m["join"].clone())?;
     let revision = std::env::var("YAP_EXPECTED_SOURCE")?;
     let observer = transport::bind(join.network_mode, None, false).await?;
-    for (role, addr) in [
-        ("home", join.server_addr),
-        (
-            "standby",
-            serde_json::from_value(m["fullHomeStandby"]["standby"].clone())?,
-        ),
-        (
-            "replica",
-            serde_json::from_value(m["publicFeedReplica"].clone())?,
-        ),
+    let addr = join.server_addr;
+    let Response::ServerSource {
+        source_url,
+        revision: running,
+    } = transport::rpc(&observer, addr.clone(), &Request::ServerSource).await?
+    else {
+        anyhow::bail!("missing source offer")
+    };
+    ensure!(
+        running == revision && source_url == format!("https://yap.lgbt/source/{revision}.tar.gz"),
+        "source mismatch on the dedicated Home"
+    );
+    for request in [
+        Request::Pull {
+            after: 0,
+            limit: 1,
+            generation: None,
+        },
+        Request::EnrollHost {
+            group: join.community.clone(),
+        },
     ] {
-        let Response::ServerSource {
-            source_url,
-            revision: running,
-        } = transport::rpc(&observer, addr.clone(), &Request::ServerSource).await?
-        else {
-            anyhow::bail!("missing source offer")
-        };
+        let denied = transport::rpc(&observer, addr.clone(), &request)
+            .await
+            .err()
+            .context("unapproved peer gained access")?;
+        let msg = denied.to_string();
         ensure!(
-            running == revision
-                && source_url == format!("https://yap.lgbt/source/{revision}.tar.gz"),
-            "source mismatch on {role}"
+            msg.contains("untrusted federation endpoint")
+                || msg.contains("covenant")
+                || msg.contains("host enrollment disabled or blocked"),
+            "unexpected error from the dedicated Home: {msg}"
         );
-        for request in [
-            Request::Pull {
-                after: 0,
-                limit: 1,
-                generation: None,
-            },
-            Request::EnrollHost {
-                group: join.community.clone(),
-            },
-        ] {
-            let denied = transport::rpc(&observer, addr.clone(), &request)
-                .await
-                .err()
-                .context("unapproved peer gained access")?;
-            let msg = denied.to_string();
-            ensure!(
-                msg.contains("untrusted federation endpoint")
-                    || msg.contains("covenant")
-                    || msg.contains("host enrollment disabled or blocked"),
-                "unexpected error from {role}: {msg}"
-            );
-        }
-        println!("{role} verified source and refused external federation and enrollment");
     }
+    println!("Home verified source and refused external federation and enrollment");
     observer.close().await;
     Ok(())
 }

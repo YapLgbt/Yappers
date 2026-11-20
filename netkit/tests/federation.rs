@@ -1,4 +1,5 @@
 #![cfg(feature = "server")]
+mod support;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
@@ -227,14 +228,15 @@ async fn real_iroh_two_home_federation_roundtrip_restart_and_authority() {
             .unwrap();
         record.validate().unwrap();
         assert!(record.deletion.is_some());
-        let raw = std::fs::read(&path).unwrap();
-        for needle in [
-            "A real Iroh federation test",
-            "Boston, MA",
-            &created.payload.nonce,
-        ] {
-            assert!(!raw.windows(needle.len()).any(|w| w == needle.as_bytes()));
-        }
+        support::assert_no_plaintext(
+            &path,
+            &[
+                "A real Iroh federation test",
+                "Boston, MA",
+                &created.payload.nonce,
+            ],
+        )
+        .unwrap();
     }
 }
 #[test]
@@ -640,20 +642,18 @@ async fn replica_pages_deleted_ids_and_reports_freshness() -> anyhow::Result<()>
     let replica = Server::start(cfg).await?;
     let probe = replica.health_probe();
     assert!(probe().is_err());
-    let db = rusqlite::Connection::open(&path)?;
+    let db = support::primary(&path).await?;
     db.execute(
         "INSERT INTO public_projections VALUES(?,'fixture','[]',0,?)",
-        rusqlite::params![scope, now()],
-    )?;
+        (&*scope, now()),
+    )
+    .await?;
     assert!(probe()?.ready);
-    db.execute("UPDATE public_projections SET verified=?", [now() - 300])?;
+    db.execute("UPDATE public_projections SET verified=?", [now() - 300])
+        .await?;
     assert!(!probe()?.ready);
-    db.execute(
-        "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<16000)
-        INSERT INTO events(id,community,author,author_seq,envelope)
-        SELECT printf('%064x',i),?,'fixture',i,'{\"deletion\":true}' FROM n",
-        [&scope],
-    )?;
+    support::seed_range(&db, "INSERT INTO events(id,community,author,author_seq,envelope)
+         SELECT printf('%064x',value),?1,'fixture',value,'{\"deletion\":true}' FROM generate_series(?2,?3)", &scope, 16_000).await?;
     let client = client(&replica, &scope, new_secret(), 1).await;
     let response = transport::rpc(
         &client.endpoint,

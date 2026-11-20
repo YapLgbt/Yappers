@@ -11,24 +11,25 @@ use rand::{RngCore, rngs::OsRng};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use std::{io::Write, os::unix::fs::OpenOptionsExt, path::Path};
 
-const HEADER: &[u8] = b"YAP-HOME-BACKUP-1\0";
+pub(crate) const HEADER: &[u8] = b"YAP-HOME-BACKUP-1\0";
 
 /// Restored paths may alias the same live guard. Only one of them may serve.
 pub(crate) fn lock_authority(path: &Path) -> Result<std::fs::File> {
     let guard = path.with_added_extension("deletion-guard").canonicalize()?;
-    lock_guard(&guard)
+    serving_lock(&guard).context("another home is already serving with this deletion guard")
 }
-fn lock_guard(guard: &Path) -> Result<std::fs::File> {
-    let lock = guard.with_added_extension("serve-lock");
+pub(crate) fn serving_lock(path: &Path) -> Result<std::fs::File> {
+    let lock = path.with_added_extension("serve-lock");
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(lock)?;
-    file.try_lock()
-        .context("another home is already serving with this deletion guard")?;
+    ensure!(file.metadata()?.is_file(), "expected a regular serve lock");
+    file.try_lock()?;
     Ok(file)
 }
 
@@ -55,11 +56,7 @@ pub(crate) fn attach(db: &mut Connection, path: &Path) -> Result<()> {
     )?;
     db.execute_batch("PRAGMA guard.journal_mode=DELETE; PRAGMA guard.secure_delete=ON; PRAGMA guard.synchronous=EXTRA;")?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    tx.execute_batch("CREATE TABLE IF NOT EXISTS guard.state(singleton INTEGER PRIMARY KEY CHECK(singleton=1), id TEXT NOT NULL, epoch INTEGER NOT NULL, key BLOB NOT NULL)")?;
-    tx.execute_batch("CREATE TABLE IF NOT EXISTS guard.known_deliveries(peer TEXT,community TEXT,target TEXT,PRIMARY KEY(peer,community,target));
-        CREATE TABLE IF NOT EXISTS guard.current_accounts(account TEXT PRIMARY KEY,chain TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS guard.opening_keys(target TEXT,owner TEXT,community TEXT,private INTEGER,key BLOB,PRIMARY KEY(target,owner,community,private));
-        CREATE TABLE IF NOT EXISTS guard.known_deletions(target TEXT,owner TEXT,community TEXT,private INTEGER,proof TEXT,PRIMARY KEY(target,owner,community,private));")?;
+    crate::store::migrations::apply_guard(&tx)?;
     if !initialized {
         let id = new_secret();
         tx.execute(
@@ -131,7 +128,7 @@ pub(crate) fn remember(
 fn cipher(key: &[u8]) -> Result<XChaCha20Poly1305> {
     XChaCha20Poly1305::new_from_slice(key).map_err(|_| anyhow::anyhow!("invalid backup key"))
 }
-fn seal(bytes: &[u8], key: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn seal(bytes: &[u8], key: &[u8]) -> Result<Vec<u8>> {
     let mut nonce = [0; 24];
     OsRng.fill_bytes(&mut nonce);
     let encrypted = cipher(key)?
@@ -139,7 +136,7 @@ fn seal(bytes: &[u8], key: &[u8]) -> Result<Vec<u8>> {
         .map_err(|_| anyhow::anyhow!("cannot encrypt backup"))?;
     Ok([nonce.as_slice(), &encrypted].concat())
 }
-fn unseal(bytes: &[u8], key: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn unseal(bytes: &[u8], key: &[u8]) -> Result<Vec<u8>> {
     let (nonce, data) = bytes
         .split_at_checked(24)
         .context("invalid protected backup")?;
@@ -154,6 +151,7 @@ const TABLES: [(&str, &str, bool); 2] = [
     ("events", "id", false),
     ("personal_events", "event_id", true),
 ];
+
 fn contents(db: &Connection, table: &str) -> Result<Vec<Envelope>> {
     let mut stmt = db.prepare(&format!("SELECT envelope FROM {table}"))?;
     stmt.query_map([], |r| r.get::<_, String>(0))?
@@ -162,18 +160,20 @@ fn contents(db: &Connection, table: &str) -> Result<Vec<Envelope>> {
 }
 
 pub(crate) fn seal_snapshot(db: &Connection, image: &[u8], key: &[u8]) -> Result<Vec<u8>> {
-    let mut copy = Store {
-        db: Connection::open_in_memory()?,
-    };
+    let mut copy = Store::from_sqlite(Connection::open_in_memory()?);
     copy.restore_snapshot(image)?;
     copy.db.execute_batch("DELETE FROM public_projections;
         CREATE TABLE backup_openings(target TEXT,private INTEGER, ciphertext BLOB,PRIMARY KEY(target,private));")?;
     for (table, id_column, private) in TABLES {
-        for mut e in contents(&copy.db, table)? {
+        for mut e in contents(copy.db.sqlite().context("expected SQLite staging")?, table)? {
             ensure!(
                 e.event.payload.version == 4,
                 "unsupported historical event in backup"
             );
+            if matches!(e.event.payload.action, Action::Erased { .. }) {
+                e.validate()
+                    .context("missing or invalid deletion proof in snapshot")?;
+            }
             if !matches!(
                 e.event.payload.action,
                 Action::Post { .. } | Action::PostV2 { .. } | Action::Reply { .. }
@@ -221,9 +221,9 @@ pub(crate) fn seal_snapshot(db: &Connection, image: &[u8], key: &[u8]) -> Result
     Ok([HEADER, &seal(&copy.snapshot()?, key)?].concat())
 }
 
-fn recover_openings(copy: &mut Store, guard: &Connection) -> Result<()> {
+pub(crate) fn recover_openings(copy: &mut Store, guard: &Connection) -> Result<()> {
     for (table, id_column, private) in TABLES {
-        for mut e in contents(&copy.db, table)? {
+        for mut e in contents(copy.db.sqlite().context("expected SQLite staging")?, table)? {
             if e.deletion.is_some() || !matches!(e.event.payload.action, Action::Erased { .. }) {
                 e.validate()?;
                 continue;
@@ -263,7 +263,12 @@ fn recover_openings(copy: &mut Store, guard: &Connection) -> Result<()> {
         }
     }
     copy.db.execute_batch("DROP TABLE backup_openings")?;
-    copy_deliveries(guard, &copy.db, "known_deliveries", "peer_deliveries")?;
+    copy_deliveries(
+        guard,
+        copy.db.sqlite().context("expected SQLite staging")?,
+        "known_deliveries",
+        "peer_deliveries",
+    )?;
     let mut accounts = guard.prepare("SELECT chain FROM current_accounts")?;
     for raw in accounts.query_map([], |r| r.get::<_, String>(0))? {
         let chain: Vec<crate::portability::AccountRecord> = serde_json::from_str(&raw?)?;
@@ -341,18 +346,18 @@ impl Store {
             !source.with_added_extension("ha-managed").try_exists()?,
             "use ha-export for an HA home"
         );
+        if crate::native_admin::backup_existing(source, output)? {
+            return Ok(());
+        }
         let db = Connection::open_with_flags(source, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
             .context("open existing backup source")?;
-        let version: i64 = db
-            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
-            .context("unrecognized standalone backup source")?;
+        Self::check_backup_version(&db).context("unrecognized standalone backup source")?;
         ensure!(
-            version == 1
-                && !db.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='head')",
-                    [],
-                    |r| r.get::<_, bool>(0)
-                )?,
+            !db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM main.sqlite_schema WHERE name='head')",
+                [],
+                |r| r.get::<_, bool>(0)
+            )?,
             "unsupported standalone backup source"
         );
         let guard = source
@@ -363,13 +368,22 @@ impl Store {
             "ATTACH DATABASE ? AS guard",
             [guard.to_str().context("invalid guard path")?],
         )?;
-        db.execute_batch("PRAGMA guard.secure_delete=ON; PRAGMA guard.synchronous=EXTRA")?;
-        Self { db }.backup(output)
+        db.execute_batch("PRAGMA temp_store=MEMORY; PRAGMA guard.secure_delete=ON; PRAGMA guard.synchronous=EXTRA")?;
+        Self::from_sqlite(db).backup(output)
     }
 
     /// A coherent offline backup encrypted under this home's current deletion epoch.
     pub fn backup(&self, output: &Path) -> Result<()> {
-        let tx = self.db.unchecked_transaction()?;
+        if self.is_native() {
+            return crate::native_transfer::backup(self, output);
+        }
+
+        let tx = self
+            .db
+            .sqlite()
+            .context("expected SQLite staging")?
+            .unchecked_transaction()?;
+        crate::store::migrations::guard_version(&tx, "guard")?;
         let key: Vec<u8> = tx.query_row(
             "SELECT key FROM guard.state JOIN deletion_epoch USING(id,epoch)",
             [],
@@ -381,63 +395,7 @@ impl Store {
     }
 }
 
-/// Restore to a fresh home DB sharing the live guard. The source guard must be the
-/// current authority, held quiescent during a transfer of operational ownership.
+/// Restore surviving records with the current guard into a fresh native Home.
 pub fn restore(guard: &Path, input: &Path, output: &Path) -> Result<()> {
-    let guard = guard.canonicalize()?;
-    let _exclusive = lock_guard(&guard)?;
-    let db = Connection::open_with_flags(&guard, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let tx = db.unchecked_transaction()?;
-    let key: Vec<u8> = tx
-        .query_row("SELECT key FROM state WHERE singleton=1", [], |r| r.get(0))
-        .optional()?
-        .context("missing live backup key")?;
-    let bytes = std::fs::read(input)?;
-    let image = unseal(
-        bytes
-            .strip_prefix(HEADER)
-            .context("invalid protected backup")?,
-        &key,
-    )?;
-    ensure!(
-        !output.exists() && !output.with_added_extension("deletion-guard").exists(),
-        "restore requires a fresh destination"
-    );
-    // The restore is for an operator moving a stopped home. Produce a bound file
-    // before publication; opening copied bytes alone must fail closed.
-    let parent = output
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let tmp = parent.join(format!(".yap-restore-{}", new_secret()));
-    let guard_link = output.with_added_extension("deletion-guard");
-    let result = (|| {
-        let mut memory = Store {
-            db: Connection::open_in_memory()?,
-        };
-        memory.restore_snapshot(&image)?;
-        recover_openings(&mut memory, &tx)?;
-        let (id, epoch): (String, i64) = tx.query_row("SELECT id,epoch FROM state", [], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })?;
-        memory.db.execute_batch("CREATE TABLE IF NOT EXISTS deletion_epoch(singleton INTEGER PRIMARY KEY, id TEXT NOT NULL, epoch INTEGER NOT NULL); DELETE FROM deletion_epoch;")?;
-        memory.db.execute(
-            "INSERT INTO deletion_epoch VALUES(1,?,?)",
-            rusqlite::params![id, epoch],
-        )?;
-        publish(&memory.snapshot()?, &tmp)?;
-        std::os::unix::fs::symlink(&guard, &guard_link)?;
-        if let Err(err) = std::fs::hard_link(&tmp, output) {
-            std::fs::remove_file(&guard_link)?;
-            return Err(err.into());
-        }
-        std::fs::File::open(parent)?.sync_all()?;
-        anyhow::Ok(())
-    })();
-    if tmp.exists() {
-        std::fs::remove_file(tmp)?;
-    }
-    result?;
-    tx.commit()?;
-    Ok(())
+    crate::native_transfer::restore(guard, input, output)
 }

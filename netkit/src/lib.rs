@@ -2,7 +2,7 @@
 //! Shared Yap networking and user-owned portability foundation.
 //!
 //! Mobile builds use client/signing/transport plus the owned C ABI in [`ffi`].
-//! The optional `server` feature adds SQLite and scoped federation; those dependencies
+//! The optional `server` feature adds Turso, SQLite and scoped federation; those dependencies
 //! never enter the iOS client archive. Application wire rules live in [`model`].
 //! See `docs/netkit/` for architecture, canonical signing bytes, and operating limits.
 
@@ -16,13 +16,33 @@ pub mod client;
 #[cfg(feature = "server")]
 pub mod directory;
 mod dm_client;
+#[cfg(feature = "server")]
+mod feed_page;
+#[cfg(feature = "server")]
+mod feed_replies;
+#[cfg(feature = "server")]
+mod feed_votes;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ffi;
 pub mod groups;
 #[cfg(feature = "server")]
+mod home_sql;
+#[cfg(feature = "server")]
 mod mailbox;
 pub mod messaging;
 pub mod model;
+#[cfg(feature = "server")]
+mod native_admin;
+#[cfg(feature = "server")]
+mod native_content;
+#[cfg(feature = "server")]
+mod native_guard;
+#[cfg(feature = "server")]
+mod native_primary;
+#[cfg(feature = "server")]
+mod native_projection;
+#[cfg(feature = "server")]
+mod native_transfer;
 #[cfg(feature = "server")]
 mod notifications;
 #[cfg(feature = "server")]
@@ -56,6 +76,8 @@ pub use model::*;
 pub const IROH_VERSION: &str = "1.4.1";
 /// Changing incompatible application wire rules requires a new ALPN.
 pub const ALPN: &[u8] = b"yappers/netkit/6";
+/// The same JSON wire protocol with independent concurrent RPC streams.
+pub const MULTIPLEX_ALPN: &[u8] = b"yappers/netkit/7";
 /// Maximum encoded JSON request or response, including signatures and framing data.
 pub const MAX_FRAME: usize = 1024 * 1024;
 /// Deadline for an entire request/response exchange.

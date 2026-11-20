@@ -11,9 +11,11 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 
 [features]
 default = []
-server = ["dep:rusqlite", "dep:subtle", "dep:chacha20poly1305", "dep:url"]
+server = ["dep:rusqlite", "dep:turso", "dep:futures-lite", "dep:subtle", "dep:chacha20poly1305", "dep:url"]
 
 [dependencies]
+futures-lite = { version = "2", optional = true }
+turso = { version = "=0.8.4", default-features = false, optional = true }
 url = { version = "2", optional = true }
 chacha20poly1305 = { version = "=0.10.1", optional = true }
 # Recovery uses the age v1 scrypt format. This release omits the unused TAG/HPKE recipient stack.
@@ -26,7 +28,7 @@ ed25519-dalek.workspace = true
 rand.workspace = true
 hex.workspace = true
 blake3.workspace = true
-rusqlite = { version = "0.41", features = ["bundled", "serialize", "backup", "fallible_uint"], optional = true }
+rusqlite = { version = "0.41", features = ["bundled", "serialize", "backup", "fallible_uint", "functions"], optional = true }
 subtle = { version = "2", optional = true }
 vodozemac = { version = "=0.11.2", default-features = false }
 
@@ -38,6 +40,7 @@ libc.workspace = true
 mio.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { version = "1", features = ["sync"] }
 wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4.80"
 getrandom = { version = "0.2", features = ["js"] }

@@ -59,7 +59,7 @@
       </section>
       <section>
         <h2 id="who-else-can-hold-a-copy">Who else can hold a copy</h2>
-    <p>We use hosting infrastructure, including Fly.io, and network relays to serve the website, connect devices and keep the home available. An authorized standby can hold home records, including account state, blocks and encrypted mail. A peer that only replicates a public feed receives feed records. We may also disclose information we hold when legally required.</p>
+    <p>Fly.io hosts the website, installable web app and public Home connection information. The dedicated Home server processes account records, posts, blocks and encrypted mail. Devices connect to the Home over Iroh, which can use network relays. We may also disclose information we hold when legally required.</p>
     <p>Independent homes can be in other countries and have their own operators, policies and retention practices. Their users can receive your posts even if you never visit their home. This policy covers Yap’s handling of data, including records we receive from those homes.</p>
       </section>
       <section>

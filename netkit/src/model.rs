@@ -897,6 +897,8 @@ pub struct RemotePost {
     pub accepted_at: i64,
 }
 
+pub(crate) const FEED_POST_LIMIT: usize = 200;
+
 /// Projection is a deterministic function of the event set, independent of import order.
 pub fn project(
     envelopes: &[Envelope],
@@ -1061,7 +1063,7 @@ pub fn project_nearby(
         }
     }
     posts.sort_by(|a, b| (b.accepted_at, &b.id).cmp(&(a.accepted_at, &a.id)));
-    posts.truncate(200);
+    posts.truncate(FEED_POST_LIMIT);
     posts
 }
 

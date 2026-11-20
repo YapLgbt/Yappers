@@ -5,22 +5,8 @@
         X-Content-Type-Options nosniff
         Referrer-Policy no-referrer
     }
-    handle /.well-known/yap-home.json {
-        root * {$YAP_SERVICE_STATE:/data}/enrollment
-        rewrite * /home.json
-        header Cache-Control "no-store"
-        header Content-Type application/json
-        file_server
-    }
-    @sourceArchive path_regexp ^/source/[0-9a-f]+\.tar\.gz$
-    handle @sourceArchive {
-        uri strip_prefix /source
-        root * {$YAP_SERVICE_STATE:/data}/source-releases
-        file_server
-    }
-    handle {
-        root * /srv/yap-site
-        encode zstd gzip
-        file_server
-    }
+    header /.well-known/yap-home.json Cache-Control "no-store"
+    root * /srv/yap-site
+    encode zstd gzip
+    file_server
 }

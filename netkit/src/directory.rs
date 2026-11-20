@@ -7,12 +7,6 @@ use rusqlite::{OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 
-pub(crate) const SCHEMA: &str = "
- CREATE TABLE IF NOT EXISTS public_groups(id TEXT PRIMARY KEY, record TEXT NOT NULL);
- CREATE TABLE IF NOT EXISTS group_permits(group_id TEXT NOT NULL, host TEXT NOT NULL, record TEXT NOT NULL, PRIMARY KEY(group_id,host));
- CREATE TABLE IF NOT EXISTS group_hosts(group_id TEXT NOT NULL, host TEXT NOT NULL, issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, record TEXT NOT NULL, PRIMARY KEY(group_id,host));
- CREATE TABLE IF NOT EXISTS hosted_groups(group_id TEXT PRIMARY KEY);
-";
 fn decode<T: DeserializeOwned>(text: String) -> Result<T> {
     Ok(serde_json::from_str(&text)?)
 }
@@ -59,7 +53,7 @@ impl Store {
     }
     /// Records are private-table data, but only these public signed fields are exported.
     pub fn directory(&self) -> Result<DirectorySnapshot> {
-        fn records<T: DeserializeOwned>(db: &rusqlite::Connection, sql: &str) -> Result<Vec<T>> {
+        fn records<T: DeserializeOwned>(db: &crate::home_sql::HomeDb, sql: &str) -> Result<Vec<T>> {
             let mut query = db.prepare(sql)?;
             query
                 .query_map([], |r| r.get::<_, String>(0))?

@@ -4,19 +4,6 @@ use crate::{portability::digest, private_groups::*, store::Store};
 use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, params};
 
-pub(crate) const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS private_groups(id TEXT PRIMARY KEY, owner TEXT NOT NULL, room TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS private_group_rosters(group_id TEXT NOT NULL, revision INTEGER NOT NULL,
-    roster TEXT NOT NULL, PRIMARY KEY(group_id, revision));
-CREATE TABLE IF NOT EXISTS private_group_sessions(group_id TEXT NOT NULL, id TEXT NOT NULL,
-    packet TEXT NOT NULL, PRIMARY KEY(group_id, id));
-CREATE TABLE IF NOT EXISTS private_group_events(cursor INTEGER PRIMARY KEY AUTOINCREMENT,
-    group_id TEXT NOT NULL, id TEXT NOT NULL UNIQUE, revision INTEGER NOT NULL,
-    session TEXT NOT NULL, ratchet_index INTEGER NOT NULL, parent TEXT, event TEXT NOT NULL,
-    UNIQUE(group_id, session, ratchet_index));
-CREATE INDEX IF NOT EXISTS private_group_event_page ON private_group_events(group_id, cursor);
-";
-
 const PAGE_SIZE: usize = 24;
 
 impl Store {

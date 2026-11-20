@@ -5,25 +5,44 @@
 //! membership, origin trust, community scope, and page ordering before it calls imports.
 //! A conflicting envelope or reused author sequence must roll back the whole page.
 
+use crate::home_sql::HomeDb;
 use crate::{MAX_PAGE_ENTRIES, model::*};
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeSet;
+#[path = "native_home.rs"]
+mod native_home;
+pub(crate) use native_home::NativeHome;
 
-/// SQLite store with secure deletion and atomic rollback journals. Callers serialize access.
+#[path = "migrations.rs"]
+pub(crate) mod migrations;
+
+/// A Home SQL connection. Standalone connections share a native database and independent guard.
 pub struct Store {
-    pub(crate) db: Connection,
+    pub(crate) db: HomeDb,
 }
 impl Store {
-    /// Open/create a private database. Unsupported schemas fail; no implicit migration occurs.
+    /// Check an initialized Home's schema marker before backup attaches its guard.
+    /// This also works on a connection opened with SQLITE_OPEN_READ_ONLY.
+    pub(crate) fn check_backup_version(db: &Connection) -> Result<()> {
+        migrations::version(db).map(|_| ())
+    }
+
+    /// Open/create a private database. Apply pending migrations before opening the deletion guard.
     pub fn open(path: &std::path::Path) -> Result<Self> {
         ensure!(
             !path.with_added_extension("ha-managed").try_exists()?,
             "this database is HA staging; export committed state from the authority"
         );
-        Self::open_staging(path)
+        NativeHome::open(path)
     }
     pub(crate) fn open_staging(path: &std::path::Path) -> Result<Self> {
+        NativeHome::open(path)
+    }
+    pub(crate) fn from_sqlite(db: Connection) -> Self {
+        Self { db: db.into() }
+    }
+    pub(crate) fn open_legacy(path: &std::path::Path) -> Result<Self> {
         let mut options = std::fs::OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
         #[cfg(unix)]
@@ -40,43 +59,14 @@ impl Store {
         drop(file);
         let mut db = Connection::open(path)?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
-        db.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA secure_delete=ON; PRAGMA synchronous=EXTRA; PRAGMA temp_store=MEMORY;
-            CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);
-            INSERT INTO schema_version SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM schema_version);
-            CREATE TABLE IF NOT EXISTS events(cursor INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
-                community TEXT NOT NULL, author TEXT NOT NULL, author_seq INTEGER NOT NULL, envelope TEXT NOT NULL,
-                UNIQUE(author, author_seq));
-            CREATE INDEX IF NOT EXISTS events_community ON events(community, cursor);
-            CREATE TABLE IF NOT EXISTS peers(id TEXT PRIMARY KEY, generation TEXT NOT NULL, cursor INTEGER NOT NULL);
-            CREATE TABLE IF NOT EXISTS account_states(account TEXT PRIMARY KEY, chain TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS personal_events(account TEXT NOT NULL, event_id TEXT NOT NULL, envelope TEXT NOT NULL, PRIMARY KEY(account,event_id));
-            CREATE TABLE IF NOT EXISTS hidden(id TEXT PRIMARY KEY);
-            CREATE TABLE IF NOT EXISTS public_projections(community TEXT PRIMARY KEY, digest TEXT NOT NULL, posts TEXT NOT NULL, event_count INTEGER NOT NULL, verified INTEGER NOT NULL);")?;
-        let version: i64 = db.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?;
-        ensure!(version == 1, "unsupported database schema");
-        let has_scope: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('peers') WHERE name='scope')",
-            [],
-            |r| r.get(0),
+        db.execute_batch(
+            "PRAGMA secure_delete=ON; PRAGMA synchronous=EXTRA; PRAGMA temp_store=MEMORY;",
         )?;
-        if !has_scope {
-            db.execute(
-                "ALTER TABLE peers ADD COLUMN scope TEXT NOT NULL DEFAULT ''",
-                [],
-            )?;
-        }
-        db.execute_batch(crate::redaction::SCHEMA)?;
-        ensure!(!db.query_row("SELECT EXISTS(SELECT 1 FROM events WHERE json_extract(envelope,'$.event.payload.version')<>4 UNION ALL SELECT 1 FROM personal_events WHERE json_extract(envelope,'$.event.payload.version')<>4)",[],|r|r.get::<_,bool>(0))?, "legacy content present; use a fresh v5 store");
-        db.execute_batch(crate::directory::SCHEMA)?;
-        db.execute_batch(crate::mailbox::SCHEMA)?;
-        db.execute_batch(crate::private_group_store::SCHEMA)?;
-        db.execute_batch(crate::profiles::SCHEMA)?;
-        db.execute_batch(crate::usernames::SCHEMA)?;
-        crate::privacy::install(&db)?;
-        crate::notifications::install(&db)?;
+        migrations::apply(&mut db)?;
+        db.execute_batch("PRAGMA journal_mode=DELETE")?;
         crate::backup::attach(&mut db, path)?;
         crate::backup::watch_deletes(&db)?;
-        Ok(Self { db })
+        Ok(Self::from_sqlite(db))
     }
     /// Read the full home attestation so a duplicate can be checked for equivocation.
     pub fn existing(&self, id: &str) -> Result<Option<Envelope>> {
@@ -86,9 +76,10 @@ impl Store {
                 r.get(0)
             })
             .optional()?;
-        text.map(|s| Ok(serde_json::from_str(&s)?)).transpose()
+        text.map(|s| crate::native_content::hydrate(&self.db, &s, false))
+            .transpose()
     }
-    pub(crate) fn insert(db: &Connection, envelope: &Envelope) -> Result<()> {
+    pub(crate) fn insert(db: &HomeDb, envelope: &Envelope) -> Result<()> {
         let envelope = &Self::reconcile(db, envelope, false)?;
         crate::privacy::observe(db, envelope.event.owner_id())?;
         let existing: Option<String> = db
@@ -112,9 +103,17 @@ impl Store {
                 envelope.event.payload.community,
                 envelope.event.payload.author,
                 envelope.event.payload.sequence as i64,
-                serde_json::to_string(envelope)?
+                crate::native_content::encode(db, envelope, false)?
             ],
         )?;
+        if db.native().is_some()
+            && crate::native_content::is_content(&envelope.event.payload.action)
+        {
+            db.execute(
+                "INSERT OR IGNORE INTO inbox_arrivals(event,received) VALUES(?,?)",
+                params![envelope.event.id, now()],
+            )?;
+        }
         Ok(())
     }
     /// Durably accept one validated envelope; exact duplicates are idempotent.
@@ -141,7 +140,8 @@ impl Store {
             .db
             .prepare("SELECT envelope FROM events WHERE community=?1 ORDER BY cursor")?;
         let rows = statement.query_map([community], |r| r.get::<_, String>(0))?;
-        rows.map(|s| Ok(serde_json::from_str(&s?)?)).collect()
+        rows.map(|s| crate::native_content::hydrate(&self.db, &s?, false))
+            .collect()
     }
     /// Read instance-local moderation decisions, never replicated peer policy.
     pub fn hidden(&self) -> Result<BTreeSet<String>> {
@@ -205,16 +205,26 @@ impl Store {
         entries: &[LogEntry],
         scope: &str,
     ) -> Result<()> {
-        let (old_generation, old_cursor) = self.scoped_cursor(peer, scope)?;
-        ensure!(
-            next <= i64::MAX as u64
-                && (old_generation.as_deref() != Some(generation) || next >= old_cursor),
-            "invalid sync cursor"
-        );
+        ensure!(next <= i64::MAX as u64, "invalid sync cursor");
         for entry in entries {
             entry.envelope.validate()?;
         }
-        let tx = self.db.transaction()?;
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        // Direct callers can hold different connections. Compare against the
+        // committed checkpoint after acquiring the same lock used to advance it.
+        let prior: Option<i64> = tx
+            .query_row(
+                "SELECT cursor FROM peers WHERE id=? AND scope=? AND generation=?",
+                [peer, scope, generation],
+                |row| row.get(0),
+            )
+            .optional()?;
+        ensure!(
+            prior.is_none_or(|cursor| next as i64 >= cursor),
+            "invalid sync cursor"
+        );
         for entry in entries {
             Self::insert(&tx, &entry.envelope)?;
             if let Some(receipt) = &entry.username {
@@ -251,7 +261,10 @@ impl Store {
                 "INSERT OR IGNORE INTO peer_deliveries(peer,community,target) VALUES(?,?,?)",
             )?;
             for (community, target) in deliveries {
-                insert.execute(params![peer, community, target])?;
+                let changed = insert.execute(params![peer, community, target])?;
+                if changed != 0 && tx.native().is_some() {
+                    crate::native_guard::stage_delivery(&tx, peer, community, target)?;
+                }
             }
         }
         tx.commit()?;
@@ -293,6 +306,15 @@ impl Store {
                         entries.push(LogEntry {cursor,envelope,username:None});
                     }
                 } else {
+                    // Filter scope and suspension against the catalog before fetching a body.
+                    let envelope = if envelope.deletion.is_none()
+                        && matches!(envelope.event.payload.action, Action::Erased { .. })
+                    {
+                        self.existing(&envelope.event.id)?
+                            .ok_or_else(|| anyhow::anyhow!("missing catalog event"))?
+                    } else {
+                        envelope
+                    };
                     entries.push(self.log_entry(cursor, envelope)?);
                 }
             }
@@ -314,8 +336,13 @@ impl Store {
 impl Store {
     /// SQLite's backup API includes every committed WAL page in one consistent image.
     pub(crate) fn snapshot(&self) -> Result<Vec<u8>> {
+        if self.is_native() {
+            return crate::native_transfer::snapshot(self);
+        }
+        let db = self.db.sqlite().context("expected SQLite staging")?;
         let mut memory = Connection::open_in_memory()?;
-        rusqlite::backup::Backup::new(&self.db, &mut memory)?.run_to_completion(
+        memory.execute_batch("PRAGMA temp_store=MEMORY")?;
+        rusqlite::backup::Backup::new(db, &mut memory)?.run_to_completion(
             256,
             std::time::Duration::ZERO,
             None,
@@ -337,24 +364,22 @@ impl Store {
             image.len() >= 100 && &image[..16] == b"SQLite format 3\0",
             "invalid SQLite snapshot"
         );
-        self.db
-            .execute_batch("PRAGMA secure_delete=ON; PRAGMA temp_store=MEMORY;")?;
+        let db = self.db.sqlite_mut().context("expected SQLite staging")?;
+        db.execute_batch("PRAGMA secure_delete=ON; PRAGMA temp_store=MEMORY;")?;
         ensure!(
-            self.db.path().is_none_or(|path| path.is_empty()),
+            db.path().is_none_or(|path| path.is_empty()),
             "raw snapshots may only enter volatile staging"
         );
         let mut source = Connection::open_in_memory()?;
-        source.deserialize_read_exact(rusqlite::MAIN_DB, image, image.len(), true)?;
-        rusqlite::backup::Backup::new(&source, &mut self.db)?.run_to_completion(
+        source.deserialize_read_exact(rusqlite::MAIN_DB, image, image.len(), false)?;
+        // Validate and upgrade the incoming image before replacing live staging.
+        migrations::apply(&mut source)?;
+        rusqlite::backup::Backup::new(&source, db)?.run_to_completion(
             256,
             std::time::Duration::ZERO,
             None,
         )?;
 
-        self.db.execute_batch(crate::redaction::SCHEMA)?;
-        self.db.execute_batch(crate::usernames::SCHEMA)?;
-        self.db.execute_batch(crate::profiles::SCHEMA)?;
-        crate::notifications::install(&self.db)?;
         Ok(())
     }
 }

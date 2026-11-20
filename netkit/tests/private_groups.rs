@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #![cfg(feature = "server")]
+mod support;
 
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -99,15 +100,17 @@ async fn private_groups_enforce_membership_history_and_rotate_pending_posts() {
 
     // Historical ciphertext predating the current roster counts toward the old
     // 2,000-event limit. It is outside every current member's visible history.
-    rusqlite::Connection::open(&path)
-        .unwrap()
-        .execute(
-            "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<2000)
-         INSERT INTO private_group_events(group_id,id,revision,session,ratchet_index,event)
-         SELECT ?,printf('%064x',i),0,'historical',i,'{}' FROM n",
-            [group.as_str().unwrap()],
-        )
-        .unwrap();
+    let db = support::primary(&path).await.unwrap();
+    support::seed_range(
+        &db,
+        "INSERT INTO private_group_events(group_id,id,revision,session,ratchet_index,event)
+         SELECT ?1,printf('%064x',value),0,'historical',value,'{}' FROM generate_series(?2,?3)",
+        group.as_str().unwrap(),
+        2_000,
+    )
+    .await
+    .unwrap();
+    drop(db);
 
     owner
         .prepare(&group, "pre-join confidential sample", None)
@@ -206,22 +209,23 @@ async fn private_groups_enforce_membership_history_and_rotate_pending_posts() {
         posts.iter().map(|p| p["id"].clone()).collect::<Vec<_>>(),
         vec![last, accepted, reply, second, first]
     );
-    let database = std::fs::read(&path).unwrap();
-    let contents = String::from_utf8_lossy(&database);
-    for plaintext in [
-        "pre-join confidential sample",
-        "confidential reply sample",
-        "Private headline",
-        "post-removal confidential sample",
-    ] {
-        assert!(!contents.contains(plaintext));
-    }
-    let db = rusqlite::Connection::open(&path).unwrap();
-    let latest: String = db.query_row("SELECT packet FROM private_group_sessions WHERE json_extract(packet,'$.value.roster') = (SELECT json_extract(event,'$.value.header.roster') FROM private_group_events ORDER BY cursor DESC LIMIT 1)", [], |row| row.get(0)).unwrap();
+    let db = support::primary(&path).await.unwrap();
+    let latest: String = db.query("SELECT packet FROM private_group_sessions WHERE json_extract(packet,'$.value.roster') = (SELECT json_extract(event,'$.value.header.roster') FROM private_group_events ORDER BY cursor DESC LIMIT 1)", ()).await.unwrap().next().await.unwrap().unwrap().get(0).unwrap();
+    drop(db);
     let packet: Value = serde_json::from_str(&latest).unwrap();
     assert!(packet["value"]["keys"].get(removed).is_none());
     owner.client.close().await;
     member.client.close().await;
     outsider.client.close().await;
     home.close().await;
+    support::assert_no_plaintext(
+        &path,
+        &[
+            "pre-join confidential sample",
+            "confidential reply sample",
+            "Private headline",
+            "post-removal confidential sample",
+        ],
+    )
+    .unwrap();
 }

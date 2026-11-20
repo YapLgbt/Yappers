@@ -1,42 +1,51 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Durable account state and private authored-history storage. Never a federation trust grant.
+use crate::home_sql::HomeDb;
 use crate::store::Store;
 use crate::{
     model::Envelope,
     portability::{AccountRecord, validate_chain},
 };
 use anyhow::{Context, Result, ensure};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use std::collections::BTreeMap;
+
+fn account_chain(db: &HomeDb, account: &str) -> Result<Vec<AccountRecord>> {
+    let value: Option<String> = db
+        .query_row(
+            "SELECT chain FROM account_states WHERE account=?1",
+            [account],
+            |r| r.get(0),
+        )
+        .optional()?;
+    value
+        .map(|v| Ok(serde_json::from_str(&v)?))
+        .transpose()
+        .map(|v| v.unwrap_or_default())
+}
 
 impl Store {
     pub fn account_chain(&self, account: &str) -> Result<Vec<AccountRecord>> {
-        let value: Option<String> = self
-            .db
-            .query_row(
-                "SELECT chain FROM account_states WHERE account=?1",
-                [account],
-                |r| r.get(0),
-            )
-            .optional()?;
-        value
-            .map(|v| Ok(serde_json::from_str(&v)?))
-            .transpose()
-            .map(|v| v.unwrap_or_default())
+        account_chain(&self.db, account)
     }
     /// Prefix replays are idempotent; forks at any previously seen revision fail closed.
     pub fn register_account(&mut self, chain: &[AccountRecord]) -> Result<AccountRecord> {
         let latest = validate_chain(chain)?;
-        let known = self.account_chain(&latest.payload.account)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let known = account_chain(&tx, &latest.payload.account)?;
         for (old, incoming) in known.iter().zip(chain) {
             ensure!(old == incoming, "conflicting account history");
         }
         if known.len() >= chain.len() {
             return Ok(known.last().context("missing account state")?.clone());
         }
-        let tx = self.db.transaction()?;
         crate::privacy::observe(&tx, &latest.payload.account)?;
         tx.execute("INSERT INTO account_states(account,chain) VALUES(?1,?2) ON CONFLICT(account) DO UPDATE SET chain=excluded.chain", params![latest.payload.account, serde_json::to_string(chain)?])?;
+        if tx.native().is_some() {
+            crate::native_guard::stage_account(&tx, chain)?;
+        }
         tx.commit()?;
         Ok(latest.clone())
     }
@@ -57,7 +66,7 @@ impl Store {
             WHERE COALESCE(json_extract(envelope,'$.event.payload.account.payload.account'),author)=? AND id>?
             ORDER BY id LIMIT ?")?;
         for value in shared.query_map(params![account, after, limit], |r| r.get::<_, String>(0))? {
-            let event: Envelope = serde_json::from_str(&value?)?;
+            let event = crate::native_content::hydrate(&self.db, &value?, false)?;
             ensure!(event.event.owner_id() == account, "invalid owned event");
             events.insert(event.event.id.clone(), event);
         }
@@ -68,7 +77,7 @@ impl Store {
         for value in
             statement.query_map(params![account, after, limit], |r| r.get::<_, String>(0))?
         {
-            let envelope: Envelope = serde_json::from_str(&value?)?;
+            let envelope = crate::native_content::hydrate(&self.db, &value?, true)?;
             if let Some(existing) = events.get(&envelope.event.id) {
                 ensure!(
                     existing.same_acceptance(&envelope)?,
@@ -126,7 +135,11 @@ impl Store {
             } else {
                 tx.execute(
                     "INSERT INTO personal_events(account,event_id,envelope) VALUES(?1,?2,?3)",
-                    params![account, envelope.event.id, serde_json::to_string(envelope)?],
+                    params![
+                        account,
+                        envelope.event.id,
+                        crate::native_content::encode(&tx, envelope, true)?
+                    ],
                 )?;
             }
         }

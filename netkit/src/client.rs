@@ -27,6 +27,7 @@ pub struct Client {
     standby_until: AtomicU64,
     #[cfg(test)]
     probe_address: Option<iroh::EndpointAddr>,
+    pool: transport::RpcPool,
     pub endpoint: Endpoint,
     pub join: JoinConfig,
     pub(crate) author: SigningKey,
@@ -123,6 +124,7 @@ impl Client {
         }
         let endpoint = transport::bind(config.join.network_mode, None, false).await?;
         Ok(Self {
+            pool: transport::RpcPool::new(endpoint.clone()),
             endpoint,
             standby: config.full_home_standby,
             standby_until: AtomicU64::new(0),
@@ -141,26 +143,25 @@ impl Client {
             .map_err(|_| anyhow::anyhow!("account state unavailable"))
     }
     fn refresh_account_chain(&self, known: &[crate::portability::AccountRecord]) -> Result<()> {
-        let local = self.account_chain()?;
-        if local.is_empty() || known.is_empty() {
+        let mut local = self
+            .account_chain
+            .write()
+            .map_err(|_| anyhow::anyhow!("account state unavailable"))?;
+        // A delayed registration or feed may carry any already verified prefix.
+        if local.is_empty() || local.starts_with(known) {
             return Ok(());
         }
-        let latest = crate::portability::validate_chain(known)?;
         ensure!(
-            known.starts_with(&local) || local.starts_with(known),
+            known.starts_with(&local),
             "conflicting account history from home"
         );
-        if known.len() > local.len() {
-            ensure!(
-                latest.payload.home == self.join.server_addr.id.to_string()
-                    && latest.payload.devices.contains(&self.author_id()),
-                "account moved or device revoked"
-            );
-            *self
-                .account_chain
-                .write()
-                .map_err(|_| anyhow::anyhow!("account state unavailable"))? = known.to_vec();
-        }
+        let latest = crate::portability::validate_chain(known)?;
+        ensure!(
+            latest.payload.home == self.join.server_addr.id.to_string()
+                && latest.payload.devices.contains(&self.author_id()),
+            "account moved or device revoked"
+        );
+        *local = known.to_vec();
         Ok(())
     }
     pub fn author_id(&self) -> String {
@@ -244,10 +245,10 @@ impl Client {
     pub(crate) async fn home_rpc(&self, request: &Request) -> Result<Response> {
         #[cfg(test)]
         if let Some(physical) = &self.probe_address {
-            return transport::rpc(&self.endpoint, physical.clone(), request).await;
+            return self.pool.rpc(physical.clone(), request).await;
         }
         let Some(grant) = &self.standby else {
-            return transport::rpc(&self.endpoint, self.join.server_addr.clone(), request).await;
+            return self.pool.rpc(self.join.server_addr.clone(), request).await;
         };
         let operation = Request::HomeOperation {
             request_id: new_secret(),
@@ -263,7 +264,7 @@ impl Client {
         };
         let first_try = n0_future::time::timeout(
             std::time::Duration::from_secs(5),
-            transport::rpc(&self.endpoint, first.clone(), &operation),
+            self.pool.rpc(first.clone(), &operation),
         )
         .await;
         match first_try {
@@ -271,7 +272,9 @@ impl Client {
             Ok(Err(error)) if !error.is::<transport::Unavailable>() => return Err(error),
             _ => {}
         }
-        let response = transport::rpc(&self.endpoint, second.clone(), &operation).await?;
+        // The shared HA ledger deduplicates by client endpoint and request ID.
+        // Keep both when the first home may have committed before disconnecting.
+        let response = self.pool.rpc(second.clone(), &operation).await?;
         self.standby_until
             .store(if prefer_standby { 0 } else { now + 20 }, Ordering::Relaxed);
         Ok(response)
@@ -299,14 +302,15 @@ impl Client {
             Ok(Err(error)) if !error.is::<transport::Unavailable>() => return Err(error),
             _ => {}
         }
-        let response = transport::rpc(
-            &self.endpoint,
-            replica,
-            &Request::PublicReplicaFeed {
-                community: self.join.community.clone(),
-            },
-        )
-        .await?;
+        let response = self
+            .pool
+            .rpc(
+                replica,
+                &Request::PublicReplicaFeed {
+                    community: self.join.community.clone(),
+                },
+            )
+            .await?;
         ensure!(
             matches!(&response, Response::PublicReplicaFeed { .. }),
             "invalid replica feed"
@@ -447,12 +451,9 @@ impl Client {
             Command::ReportDraft => {
                 ensure!(
                     matches!(
-                        transport::rpc(
-                            &self.endpoint,
-                            self.join.server_addr.clone(),
-                            &Request::ReportAvailability
-                        )
-                        .await?,
+                        self.pool
+                            .rpc(self.join.server_addr.clone(), &Request::ReportAvailability)
+                            .await?,
                         Response::ReportAvailable
                     ),
                     "home report inbox unavailable"
@@ -576,7 +577,11 @@ impl Client {
         }
     }
     async fn report_request(&self, request: Request) -> Result<serde_json::Value> {
-        match transport::rpc(&self.endpoint, self.join.server_addr.clone(), &request).await? {
+        match self
+            .pool
+            .rpc(self.join.server_addr.clone(), &request)
+            .await?
+        {
             Response::ReportResult { result } => Ok(result),
             _ => anyhow::bail!("unexpected report response"),
         }
@@ -765,7 +770,7 @@ impl Client {
         let response = if address.id == self.join.server_addr.id {
             self.home_rpc(&request).await?
         } else {
-            transport::rpc(&self.endpoint, address, &request).await?
+            self.pool.rpc(address, &request).await?
         };
         let Response::AccountState { chain: known, .. } = response else {
             anyhow::bail!("invalid account notification response")
@@ -775,6 +780,150 @@ impl Client {
                 && known.starts_with(chain),
             "account notification fork/rollback"
         );
+        Ok(())
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use crate::portability::AccountWallet;
+    use std::sync::Barrier;
+
+    #[tokio::test]
+    async fn failover_keeps_registration_id_and_reads_feed_after_its_receipt() -> Result<()> {
+        let owner = signing_key(&new_secret())?;
+        let primary = transport::bind(
+            NetworkMode::Local,
+            Some(iroh::SecretKey::from_bytes(&owner.to_bytes())),
+            true,
+        )
+        .await?;
+        let standby = transport::bind(NetworkMode::Local, None, true).await?;
+        let wallet = AccountWallet::create(new_secret(), primary.id().to_string())?;
+        let client = Client::open(ClientConfig {
+            full_home_standby: Some(crate::takeover::FullHomeStandby::issue(
+                &owner,
+                standby.addr(),
+            )?),
+            join: JoinConfig {
+                protocol_version: crate::PROTOCOL_VERSION,
+                server_addr: primary.addr(),
+                community: "failover".into(),
+                access_token: "failover-test-token-with-at-least-32-bytes".into(),
+                network_mode: NetworkMode::Local,
+            },
+            author_secret: wallet.device_secret.clone(),
+            next_sequence: 1,
+            account_chain: wallet.chain.clone(),
+        })
+        .await?;
+        let peers = async {
+            let first = primary
+                .accept()
+                .await
+                .context("missing primary dial")?
+                .await?;
+            let (_send, mut recv) = first.accept_bi().await?;
+            let registration = recv.read_to_end(crate::MAX_FRAME).await?;
+            let Request::HomeOperation { request_id, call } =
+                serde_json::from_slice(&registration)?
+            else {
+                anyhow::bail!("missing HA operation ID")
+            };
+            ensure!(
+                matches!(*call, Request::AccountRegister { .. }),
+                "expected registration before feed"
+            );
+            // Losing the response after receipt leaves the primary's commit ambiguous.
+            first.close(0u32.into(), b"lost registration response");
+            let second = standby
+                .accept()
+                .await
+                .context("missing standby dial")?
+                .await?;
+            ensure!(
+                second.remote_id() == first.remote_id() && second.alpn() == crate::MULTIPLEX_ALPN
+            );
+            let (mut send, mut recv) = second.accept_bi().await?;
+            assert_eq!(recv.read_to_end(crate::MAX_FRAME).await?, registration);
+            send.write_all(&serde_json::to_vec(&Response::AccountState {
+                chain: wallet.chain.clone(),
+                privacy: false,
+                social: false,
+            })?)
+            .await?;
+            send.finish()?;
+            let (mut send, mut recv) = second.accept_bi().await?;
+            let Request::HomeOperation {
+                request_id: feed_id,
+                call,
+            } = serde_json::from_slice(&recv.read_to_end(crate::MAX_FRAME).await?)?
+            else {
+                anyhow::bail!("missing HA feed ID")
+            };
+            ensure!(feed_id != request_id && matches!(*call, Request::Feed { .. }));
+            send.write_all(br#"{"type":"feed","posts":[],"eventCount":0}"#)
+                .await?;
+            send.finish()?;
+            second.closed().await;
+            anyhow::Ok(())
+        };
+        let read = async {
+            ensure!(matches!(client.feed().await?, Response::Feed { .. }));
+            client.close().await;
+            anyhow::Ok(())
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::try_join!(peers, read)
+        })
+        .await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_account_responses_accept_one_branch_and_ignore_stale_prefixes() -> Result<()>
+    {
+        let home = hex::encode(signing_key(&new_secret())?.verifying_key().as_bytes());
+        let wallet = AccountWallet::create(new_secret(), home.clone())?;
+        let client = Client::open(ClientConfig {
+            full_home_standby: None,
+            join: JoinConfig {
+                protocol_version: crate::PROTOCOL_VERSION,
+                server_addr: iroh::EndpointAddr::new(home.parse()?),
+                community: "account-test".into(),
+                access_token: "account-test-token-with-at-least-32-bytes".into(),
+                network_mode: NetworkMode::Local,
+            },
+            author_secret: wallet.device_secret.clone(),
+            next_sequence: 1,
+            account_chain: wallet.chain.clone(),
+        })
+        .await?;
+        let left = wallet.transition(home.clone(), true)?;
+        let right = wallet.transition(home.clone(), true)?;
+        let start = Barrier::new(2);
+        let refresh = |wallet: &AccountWallet| {
+            start.wait();
+            client.refresh_account_chain(&wallet.chain).is_ok()
+        };
+        let (accepted_left, accepted_right) = std::thread::scope(|threads| {
+            let job = threads.spawn(|| refresh(&left));
+            let right_result = refresh(&right);
+            (job.join().unwrap(), right_result)
+        });
+        assert_ne!(accepted_left, accepted_right);
+        let winner = if accepted_left { left } else { right };
+        assert_eq!(client.account_chain()?, winner.chain);
+        let latest = winner.transition(home.clone(), true)?;
+        client.refresh_account_chain(&latest.chain)?;
+        client.refresh_account_chain(&winner.chain)?;
+        client.refresh_account_chain(&wallet.chain)?;
+        assert_eq!(client.account_chain()?, latest.chain);
+        let revoked = latest.transition(home, false)?;
+        assert!(client.refresh_account_chain(&revoked.chain).is_err());
+        assert_eq!(client.account_chain()?, latest.chain);
+        client.close().await;
         Ok(())
     }
 }

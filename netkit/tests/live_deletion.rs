@@ -1,16 +1,14 @@
-//! Opt-in release check. All three roles are addressed by their physical Iroh IDs.
+//! Opt-in release check. Targets the dedicated Home advertised by HTTPS discovery.
 use anyhow::{Context, Result, ensure};
 use iroh::{Endpoint, EndpointAddr};
 use serde::Deserialize;
 use std::{path::PathBuf, time::Duration};
-use yappers_netkit::{model::*, portability::AccountWallet, takeover::FullHomeStandby, transport};
+use yappers_netkit::{model::*, portability::AccountWallet, transport};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Enrollment {
     join: JoinConfig,
-    public_feed_replica: EndpointAddr,
-    full_home_standby: FullHomeStandby,
 }
 
 async fn submit(
@@ -47,42 +45,6 @@ async fn submit(
     Ok(*receipt)
 }
 
-async fn replica_sees(
-    endpoint: &Endpoint,
-    m: &Enrollment,
-    post: &SignedEvent,
-    reply: &SignedEvent,
-    deleted: bool,
-) -> Result<()> {
-    let request = Request::PublicReplicaFeed {
-        community: m.join.community.clone(),
-    };
-    tokio::time::timeout(Duration::from_secs(120), async {
-        loop {
-            if let Ok(Response::PublicReplicaFeed {
-                posts,
-                deleted: ids,
-                ..
-            }) = transport::rpc(endpoint, m.public_feed_replica.clone(), &request).await
-            {
-                let entry = posts.iter().find(|p| p.id == post.id);
-                let ready = if deleted {
-                    entry.is_none() && ids.contains(&post.id) && ids.contains(&reply.id)
-                } else {
-                    entry.is_some_and(|p| p.replies.iter().any(|r| r.id == reply.id))
-                };
-                if ready {
-                    break;
-                }
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-    })
-    .await
-    .context("public federation peer did not converge")?;
-    Ok(())
-}
-
 #[tokio::test]
 #[ignore = "publishes and deletes a disposable public post and reply on YAP_SMOKE_ENROLLMENT"]
 async fn deployed_deletion_end_to_end() -> Result<()> {
@@ -90,11 +52,8 @@ async fn deployed_deletion_end_to_end() -> Result<()> {
         serde_json::from_reader(std::fs::File::open(std::env::var("YAP_SMOKE_ENROLLMENT")?)?)?;
     m.join.validate()?;
     let home = m.join.server_addr.id.to_string();
-    m.full_home_standby.validate(&home)?;
-    ensure!(m.join.protocol_version == 5 && m.join.community == format!("{home}/public"));
+    ensure!(m.join.community == format!("{home}/public"));
     let primary = &m.join.server_addr;
-    let standby = &m.full_home_standby.standby;
-    ensure!(m.public_feed_replica.id != primary.id && m.public_feed_replica.id != standby.id);
     let endpoint = transport::bind(m.join.network_mode, None, false).await?;
     let wallet = AccountWallet::create(new_secret(), home.clone())?;
     let make = |seq, action| {
@@ -139,10 +98,9 @@ async fn deployed_deletion_end_to_end() -> Result<()> {
     )?;
     let live_post = submit(&endpoint, primary, &m.join, &wallet, &post).await?;
     let live_check = async {
-        let live_reply = submit(&endpoint, standby, &m.join, &wallet, &reply).await?;
-        replica_sees(&endpoint, &m, &post, &reply, false).await?;
+        let live_reply = submit(&endpoint, primary, &m.join, &wallet, &reply).await?;
         println!(
-            "Live creation and replication verified. Post {} reply {}",
+            "Home accepted post and reply. Post {} reply {}",
             post.id, reply.id
         );
         if let Some(path) = std::env::var_os("YAP_SMOKE_CHECKPOINT") {
@@ -163,46 +121,41 @@ async fn deployed_deletion_end_to_end() -> Result<()> {
     }
     .await;
     // Always attempt both removals, even if verification or backup capture failed.
-    let r = submit(&endpoint, standby, &m.join, &wallet, &remove_reply).await;
+    let r = submit(&endpoint, primary, &m.join, &wallet, &remove_reply).await;
     let p = submit(&endpoint, primary, &m.join, &wallet, &remove_post).await;
     let live_reply = live_check?;
     let deletes = [p?, r?];
-    for route in [primary, standby] {
-        for ((event, live), proof) in [(&post, &live_post), (&reply, &live_reply)]
-            .into_iter()
-            .zip(&deletes)
-        {
-            let retained = submit(&endpoint, route, &m.join, &wallet, event).await?;
-            ensure!(retained.same_acceptance(live)? && retained.deletion.as_deref() == Some(proof));
-            ensure!(
-                retained.event.payload.nonce.is_empty()
-                    && matches!(retained.event.payload.action, Action::Erased { .. })
-            );
-        }
-        let feed = transport::rpc(
-            &endpoint,
-            route.clone(),
-            &Request::Feed {
-                token: m.join.access_token.clone(),
-                community: m.join.community.clone(),
-                author: String::new(),
-                nearby: None,
-            },
-        )
-        .await?;
-        let Response::Feed { posts, deleted, .. } = feed else {
-            anyhow::bail!("unexpected home feed")
-        };
+    for ((event, live), proof) in [(&post, &live_post), (&reply, &live_reply)]
+        .into_iter()
+        .zip(&deletes)
+    {
+        let retained = submit(&endpoint, primary, &m.join, &wallet, event).await?;
+        ensure!(retained.same_acceptance(live)? && retained.deletion.as_deref() == Some(proof));
         ensure!(
-            posts.iter().all(|p| p.id != post.id)
-                && deleted.contains(&post.id)
-                && deleted.contains(&reply.id)
+            retained.event.payload.nonce.is_empty()
+                && matches!(retained.event.payload.action, Action::Erased { .. })
         );
     }
-    replica_sees(&endpoint, &m, &post, &reply, true).await?;
-    println!(
-        "Both physical home routes verified the original signatures and deletion proofs after stale replay. The public replica confirmed both deletions."
+    let feed = transport::rpc(
+        &endpoint,
+        primary.clone(),
+        &Request::Feed {
+            token: m.join.access_token.clone(),
+            community: m.join.community.clone(),
+            author: String::new(),
+            nearby: None,
+        },
+    )
+    .await?;
+    let Response::Feed { posts, deleted, .. } = feed else {
+        anyhow::bail!("unexpected home feed")
+    };
+    ensure!(
+        posts.iter().all(|p| p.id != post.id)
+            && deleted.contains(&post.id)
+            && deleted.contains(&reply.id)
     );
+    println!("Verified deletion proofs and feed after stale replay.");
     endpoint.close().await;
     Ok(())
 }

@@ -3,14 +3,10 @@
 use crate::{model::*, store::Store};
 use anyhow::{Context, Result, ensure};
 use ed25519_dalek::{Signer, SigningKey};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{OptionalExtension, params};
+use std::collections::{HashMap, HashSet};
 
 const YAP_HOME: &str = "114f92b50e66dd84a14e0ff9b857b0c254565609b00b0cb9ef85f29e864efe5b";
-pub(crate) const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS username_claims(home TEXT NOT NULL, account TEXT NOT NULL, name TEXT NOT NULL,
-    PRIMARY KEY(home,account), UNIQUE(home,name));
-CREATE TABLE IF NOT EXISTS username_receipts(event_id TEXT PRIMARY KEY, receipt TEXT NOT NULL);";
-
 pub(crate) fn domain(home: &str) -> Option<String> {
     if home == YAP_HOME {
         return Some("yap.lgbt".into());
@@ -72,6 +68,61 @@ impl UsernameReceipt {
         )
     }
 }
+// A receipt links a named author to one public event. Its ciphertext shares
+// that event's retirement boundary, with a separate encryption domain.
+fn receipt_header(id: &str, raw: &str) -> Result<Envelope> {
+    let header: Envelope = serde_json::from_str(raw)?;
+    ensure!(
+        header.event.id == id
+            && header.deletion.is_none()
+            && matches!(header.event.payload.action, Action::Erased { .. }),
+        "invalid receipt header"
+    );
+    Ok(header)
+}
+
+fn receipt_key(opening: &[u8; 32]) -> [u8; 32] {
+    blake3::derive_key("yap native username receipt v1", opening)
+}
+
+fn native_receipt_key(db: &crate::home_sql::HomeDb, id: &str) -> Result<[u8; 32]> {
+    let raw: String = db.query_row("SELECT envelope FROM events WHERE id=?", [id], |r| r.get(0))?;
+    let header = receipt_header(id, &raw)?;
+    Ok(receipt_key(&crate::native_guard::opening_key(
+        db, &header, false, false,
+    )?))
+}
+
+fn stored_receipt(db: &crate::home_sql::HomeDb, id: &str) -> Result<Option<UsernameReceipt>> {
+    if db.native().is_none() {
+        let stored: Option<String> = db
+            .query_row(
+                "SELECT receipt FROM username_receipts WHERE event_id=?",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        return stored
+            .map(|raw| Ok(serde_json::from_str(&raw)?))
+            .transpose();
+    }
+    let stored: Option<Vec<u8>> = db
+        .query_row(
+            "SELECT receipt FROM username_receipts WHERE event_id=?",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    stored
+        .map(|sealed| {
+            Ok(serde_json::from_slice(&crate::backup::unseal(
+                &sealed,
+                &native_receipt_key(db, id)?,
+            )?)?)
+        })
+        .transpose()
+}
+
 impl Store {
     pub(crate) fn username(&self, home: &str, account: &str) -> Result<Option<String>> {
         Ok(self
@@ -122,36 +173,78 @@ impl Store {
         Ok(Some(UsernameReceipt { name, signature }))
     }
     pub(crate) fn record_username(
-        db: &Connection,
+        db: &crate::home_sql::HomeDb,
         event: &SignedEvent,
         receipt: &UsernameReceipt,
     ) -> Result<()> {
         receipt.validate(event)?;
         if db.query_row("SELECT EXISTS(SELECT 1 FROM events WHERE id=? AND json_extract(envelope,'$.deletion') IS NOT NULL)", [&event.id], |r|r.get::<_,bool>(0))? {return Ok(())}
+        if let Some(known) = stored_receipt(db, &event.id)? {
+            ensure!(known == *receipt, "conflicting signed username");
+            return Ok(());
+        }
         let raw = serde_json::to_string(receipt)?;
+        let value = if db.native().is_some() {
+            rusqlite::types::Value::Blob(crate::backup::seal(
+                raw.as_bytes(),
+                &native_receipt_key(db, &event.id)?,
+            )?)
+        } else {
+            rusqlite::types::Value::Text(raw)
+        };
         db.execute(
-            "INSERT OR IGNORE INTO username_receipts(event_id,receipt) VALUES(?,?)",
-            params![event.id, raw],
+            "INSERT INTO username_receipts VALUES(?,?)",
+            params![event.id, value],
         )?;
-        let stored: String = db.query_row(
-            "SELECT receipt FROM username_receipts WHERE event_id=?",
-            [&event.id],
-            |r| r.get(0),
-        )?;
-        ensure!(stored == raw, "conflicting signed username");
         Ok(())
     }
     pub(crate) fn username_receipt(&self, id: &str) -> Result<Option<UsernameReceipt>> {
-        let raw: Option<String> = self
-            .db
-            .query_row(
-                "SELECT receipt FROM username_receipts WHERE event_id=?",
-                [id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        raw.map(|value| Ok(serde_json::from_str(&value)?))
-            .transpose()
+        stored_receipt(&self.db, id)
+    }
+
+    fn page_usernames(&self, ids: &[&str]) -> Result<HashMap<String, String>> {
+        let mut names = HashMap::new();
+        for chunk in ids.chunks(crate::MAX_PAGE_ENTRIES as usize) {
+            let ids = [serde_json::to_string(chunk)?];
+            if !self.is_native() {
+                let mut stmt = self.db.prepare_cached(
+                    "SELECT r.event_id, r.receipt FROM json_each(?) k CROSS JOIN username_receipts r
+                     WHERE r.event_id=CAST(k.value AS TEXT)",
+                )?;
+                let mut rows = stmt.query(ids)?;
+                while let Some(row) = rows.next()? {
+                    let receipt: UsernameReceipt = serde_json::from_str(&row.get::<_, String>(1)?)?;
+                    names.insert(row.get(0)?, receipt.name);
+                }
+                continue;
+            }
+            let mut stmt = self.db.prepare_cached(
+                "SELECT r.event_id, r.receipt, e.envelope FROM json_each(?) k CROSS JOIN username_receipts r
+                 LEFT JOIN events e ON e.id=r.event_id
+                 WHERE r.event_id=CAST(k.value AS TEXT)",
+            )?;
+            let mut rows = stmt.query(ids)?;
+            let mut receipts = Vec::new();
+            while let Some(row) = rows.next()? {
+                let header = receipt_header(&row.get::<_, String>(0)?, &row.get::<_, String>(2)?)?;
+                receipts.push((header, row.get::<_, Vec<u8>>(1)?));
+            }
+            if !receipts.is_empty() {
+                let headers = receipts
+                    .iter()
+                    .map(|(header, _)| header)
+                    .collect::<Vec<_>>();
+                crate::native_guard::with_public_opening_keys(&self.db, &headers, |keys| {
+                    for ((header, sealed), key) in receipts.iter().zip(keys) {
+                        let raw = crate::backup::unseal(sealed, &receipt_key(key))?;
+                        let receipt: UsernameReceipt = serde_json::from_slice(&raw)?;
+                        names.insert(header.event.id.clone(), receipt.name);
+                    }
+                    Ok(())
+                })?;
+            }
+        }
+        Ok(names)
     }
     pub(crate) fn log_entry(&self, cursor: u64, envelope: Envelope) -> Result<LogEntry> {
         Ok(LogEntry {
@@ -165,43 +258,50 @@ impl Store {
         posts: &mut [RemotePost],
         events: &[Envelope],
     ) -> Result<()> {
-        let by_id: std::collections::HashMap<_, _> = events
+        let visible: HashSet<_> = posts
             .iter()
-            .map(|e| (e.event.id.as_str(), &e.event))
+            .flat_map(|post| {
+                std::iter::once(post.id.as_str())
+                    .chain(post.replies.iter().map(|reply| reply.id.as_str()))
+            })
             .collect();
-        let mut profiles =
-            std::collections::HashMap::<_, Option<crate::profiles::ProfileRecord>>::new();
-        let mut byline =
-            |id: &str| -> Result<(Option<String>, Option<crate::profiles::ProfileRecord>)> {
-                let Some(event) = by_id.get(id).filter(|event| named(event)) else {
-                    return Ok((None, None));
-                };
-                let key = (event.payload.home.as_str(), event.owner_id());
-                let profile = match profiles.entry(key) {
-                    std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
-                    std::collections::hash_map::Entry::Vacant(entry) => {
-                        entry.insert(self.current_profile(key.0, key.1)?).clone()
-                    }
-                };
-                let username = self.username_receipt(id)?.and_then(|receipt| {
-                    domain(&event.payload.home).map(|domain| format!("{}@{}", receipt.name, domain))
-                });
-                Ok((username, profile))
+        let named_events: HashMap<_, _> = events
+            .iter()
+            .map(|e| &e.event)
+            .filter(|event| visible.contains(event.id.as_str()) && named(event))
+            .map(|event| {
+                (
+                    event.id.as_str(),
+                    (event.payload.home.as_str(), event.owner_id()),
+                )
+            })
+            .collect();
+        let ids: Vec<_> = named_events.keys().copied().collect();
+        let owners: HashSet<_> = named_events.values().copied().collect();
+        let profiles = self.current_profiles(&owners.into_iter().collect::<Vec<_>>())?;
+        let names = self.page_usernames(&ids)?;
+        let byline = |id: &str| {
+            let Some(key) = named_events.get(id) else {
+                return (None, None);
             };
+            let username = names
+                .get(id)
+                .and_then(|local| domain(key.0).map(|domain| format!("{local}@{domain}")));
+            (username, profiles.get(key))
+        };
         for post in posts {
-            let (username, record) = byline(&post.id)?;
+            let (username, record) = byline(&post.id);
             post.username = username;
-            post.profile = None;
+            post.profile = record.map(|p| p.profile.clone());
             if let Some(record) = record {
-                post.author = record.name;
-                post.profile = Some(record.profile);
+                post.author.clone_from(&record.name);
             }
             for reply in &mut post.replies {
-                let (username, record) = byline(&reply.id)?;
+                let (username, record) = byline(&reply.id);
                 reply.username = username;
                 if let Some(record) = record {
-                    reply.author = record.name;
-                    reply.profile = Some(record.profile);
+                    reply.author.clone_from(&record.name);
+                    reply.profile = Some(record.profile.clone());
                 }
             }
         }
@@ -213,6 +313,7 @@ impl Store {
 mod tests {
     use super::*;
     use crate::portability::AccountWallet;
+    use rusqlite::Connection;
     use std::collections::BTreeSet;
 
     #[test]
@@ -250,6 +351,115 @@ mod tests {
                 .as_deref(),
             Some("hazel")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn unopened_restore_keeps_body_and_receipt_bound_to_current_guard() -> Result<()> {
+        let home = signing_key(&new_secret())?;
+        let home_id = hex::encode(home.verifying_key().as_bytes());
+        let wallet = AccountWallet::create(new_secret(), home_id.clone())?;
+        let device = signing_key(&wallet.device_secret)?;
+        let accepted = |sequence, action| {
+            Envelope::accept(
+                SignedEvent::create_for_account(
+                    &device,
+                    home_id.clone(),
+                    "public".into(),
+                    sequence,
+                    action,
+                    wallet.chain[0].clone(),
+                )?,
+                &home,
+            )
+        };
+        let body = "unopened-restore-sensitive-body";
+        let post = accepted(
+            1,
+            Action::Post {
+                body: body.into(),
+                display_name: "Neighbor".into(),
+                anonymous: false,
+                topic: "Plans".into(),
+            },
+        )?;
+        let id = &post.event.id;
+        let name = "unopened_receipt";
+        let receipt = UsernameReceipt {
+            name: name.into(),
+            signature: hex::encode(
+                home.sign(&UsernameReceipt::bytes(&post.event, name)?)
+                    .to_bytes(),
+            ),
+        };
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("origin");
+        let mut origin = Store::open(&source)?;
+        origin.accept_with_username(&post, Some(&receipt))?;
+        origin.accept_with_username(&post, Some(&receipt))?;
+        origin.import_personal_events(post.event.owner_id(), std::slice::from_ref(&post))?;
+
+        let mut ha = Store {
+            db: Connection::open_in_memory()?.into(),
+        };
+        ha.restore_snapshot(&origin.snapshot()?)?;
+        assert_eq!(ha.username_receipt(id)?.as_ref(), Some(&receipt));
+        let archive = dir.path().join("archive");
+        origin.backup(&archive)?;
+        let guard = source.with_added_extension("deletion-guard");
+        let stale = dir.path().join("unopened");
+        crate::backup::restore(&guard, &archive, &stale)?;
+        // Inspect the physical restored row without opening it as a Home.
+        let primary_path = crate::native_primary::path_for(&stale);
+        let sealed = futures_lite::future::block_on(async {
+            let db = turso::Builder::new_local(primary_path.to_str().unwrap())
+                .build()
+                .await?;
+            let conn = db.connect()?;
+            let mut rows = conn
+                .query(
+                    "SELECT receipt FROM username_receipts WHERE event_id=?",
+                    [id.as_str()],
+                )
+                .await?;
+            anyhow::Ok(
+                rows.next()
+                    .await?
+                    .context("missing sealed receipt")?
+                    .get::<Vec<u8>>(0)?,
+            )
+        })?;
+        assert!(!sealed.is_empty());
+        let again = dir.path().join("again");
+        Store::backup_existing(&stale, &again)?;
+        let reopened = dir.path().join("reopened");
+        crate::backup::restore(&guard, &again, &reopened)?;
+        assert_eq!(
+            Store::open(&reopened)?.username_receipt(id)?.as_ref(),
+            Some(&receipt)
+        );
+
+        origin.accept(&accepted(2, Action::Delete { target: id.clone() })?)?;
+        assert!(origin.username_receipt(id)?.is_none());
+        assert!(Store::open(&stale).is_err());
+        let raw = Connection::open_with_flags(&guard, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        assert_eq!(
+            raw.query_row(
+                "SELECT count(*) FROM opening_keys WHERE target=?",
+                [id],
+                |r| r.get::<_, i64>(0)
+            )?,
+            0
+        );
+        for entry in std::fs::read_dir(dir.path())? {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().starts_with("unopened") {
+                let bytes = std::fs::read(entry.path())?;
+                for marker in [body, name, &receipt.signature, &post.event.payload.nonce] {
+                    assert!(!bytes.windows(marker.len()).any(|w| w == marker.as_bytes()));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -311,6 +521,64 @@ mod tests {
         peer.import_page("a", "a", 2, &entries)?;
         assert_eq!(peer.username_receipt(&named.event.id)?, Some(byline));
         assert!(peer.username_receipt(&anonymous.event.id)?.is_none());
+
+        let other = Envelope::accept(event(3, false)?, &home)?;
+        let receipt = UsernameReceipt {
+            name: "second".into(),
+            signature: hex::encode(
+                home.sign(&UsernameReceipt::bytes(&other.event, "second")?)
+                    .to_bytes(),
+            ),
+        };
+        peer.accept_with_username(&other, Some(&receipt))?;
+        let mut ha = Store::from_sqlite(Connection::open_in_memory()?);
+        ha.restore_snapshot(&peer.snapshot()?)?;
+        for store in [&mut peer, &mut ha] {
+            let ids = [
+                other.event.id.as_str(),
+                named.event.id.as_str(),
+                anonymous.event.id.as_str(),
+            ];
+            assert_eq!(
+                store.page_usernames(&ids)?,
+                HashMap::from([
+                    (other.event.id.clone(), "second".into()),
+                    (named.event.id.clone(), "hazel".into()),
+                ])
+            );
+            // Neither an off-page named post nor an on-page anonymous post needs
+            // its receipt. Malformed rows make unintended reads observable.
+            store.db.execute(
+                "UPDATE username_receipts SET receipt='invalid' WHERE event_id=?",
+                [&other.event.id],
+            )?;
+            store.db.execute(
+                "INSERT INTO username_receipts VALUES(?,'invalid')",
+                [&anonymous.event.id],
+            )?;
+            assert!(store.page_usernames(&[&other.event.id]).is_err());
+            let events = store.events("public")?;
+            let mut visible = project(
+                &events,
+                "public",
+                "",
+                &BTreeSet::from([other.event.id.clone()]),
+            );
+            store.set_profile(
+                &home_id,
+                named.event.owner_id(),
+                0,
+                "Current name".into(),
+                Default::default(),
+            )?;
+            store.apply_current_bylines(&mut visible, &events)?;
+            assert_eq!(visible.len(), 2);
+            let named = visible.iter().find(|p| p.id == named.event.id).unwrap();
+            assert_eq!(named.author, "Current name");
+            assert!(named.profile.is_some());
+            let anonymous = visible.iter().find(|p| p.id == anonymous.event.id).unwrap();
+            assert!(anonymous.profile.is_none() && anonymous.username.is_none());
+        }
         Ok(())
     }
 }

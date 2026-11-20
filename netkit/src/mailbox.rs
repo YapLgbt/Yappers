@@ -11,18 +11,6 @@ use rusqlite::{OptionalExtension, params};
 use serde_json::json;
 use std::collections::HashSet;
 
-pub(crate) const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS user_blocks(owner TEXT NOT NULL, peer TEXT NOT NULL, handle TEXT UNIQUE NOT NULL, label TEXT NOT NULL, PRIMARY KEY(owner,peer));
-CREATE TABLE IF NOT EXISTS dm_devices(owner TEXT PRIMARY KEY, device TEXT NOT NULL, identity TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS dm_prekeys(owner TEXT NOT NULL, once_key TEXT NOT NULL, bundle TEXT, PRIMARY KEY(owner,once_key));
-CREATE TABLE IF NOT EXISTS dm_mail(seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, sender TEXT NOT NULL, recipient TEXT NOT NULL, packet TEXT, created INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS dm_claims(owner TEXT NOT NULL, peer TEXT NOT NULL, created INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS dm_claim_owner ON dm_claims(owner,created);
-CREATE INDEX IF NOT EXISTS dm_claim_age ON dm_claims(created);
-CREATE INDEX IF NOT EXISTS dm_mail_age ON dm_mail(created);
-CREATE INDEX IF NOT EXISTS dm_recipient ON dm_mail(recipient,seq);
-";
-
 impl Store {
     fn block_peers(&self, owner: &str) -> Result<HashSet<String>> {
         Ok(self
@@ -102,31 +90,43 @@ impl Store {
                     n.validate()?;
                 }
                 let blocked = self.block_peers(owner)?;
-                let mut events = self.events(community)?;
                 let policy = crate::privacy::settings(&self.db, owner)?;
-                let ages = self.ages()?;
-                let visibility = |e: &Envelope| crate::privacy::visibility(e, &ages);
-                events.retain(|e| {
-                    let author = e.event.owner_id();
-                    if blocked.contains(author) {
-                        return false;
-                    }
-                    if author == owner {
-                        return true;
-                    }
-                    if matches!(
-                        e.event.payload.action,
-                        Action::Post { .. } | Action::PostV2 { .. } | Action::Reply { .. }
-                    ) {
-                        let meta = visibility(e);
-                        return !(policy.hide_anonymous && meta.anonymous)
-                            && meta.age >= policy.feed_days;
-                    }
-                    true
-                });
-                let mut posts =
-                    project_nearby(&events, community, owner, &self.hidden()?, nearby.as_ref());
-                self.apply_current_bylines(&mut posts, &events)?;
+                let (page, ages) = if blocked.is_empty()
+                    && !policy.hide_anonymous
+                    && policy.feed_days == 0
+                {
+                    let page = self.feed_page(community, owner, nearby.as_ref())?;
+                    let ages = if enhanced {
+                        self.page_ages(&page.events)?
+                    } else {
+                        Default::default()
+                    };
+                    (page, ages)
+                } else {
+                    let ages = self.ages()?;
+                    let page =
+                        self.filtered_feed_page(community, owner, nearby.as_ref(), |event| {
+                            let author = event.event.owner_id();
+                            if blocked.contains(author) {
+                                return false;
+                            }
+                            if author == owner
+                                || !crate::native_content::is_content(&event.event.payload.action)
+                            {
+                                return true;
+                            }
+                            let meta = crate::privacy::visibility(event, &ages);
+                            !(policy.hide_anonymous && meta.anonymous)
+                                && meta.age >= policy.feed_days
+                        })?;
+                    (page, ages)
+                };
+                let crate::feed_page::FeedPage {
+                    mut posts,
+                    events,
+                    event_count,
+                } = page;
+                let visibility = |event: &Envelope| crate::privacy::visibility(event, &ages);
                 let by_id: std::collections::HashMap<_, _> =
                     events.iter().map(|e| (e.event.id.as_str(), e)).collect();
                 for post in &mut posts {
@@ -150,7 +150,7 @@ impl Store {
                 return Ok(Response::Feed {
                     deleted,
                     posts,
-                    event_count: events.len(),
+                    event_count,
                     account_chain: chain,
                     direct: true,
                     privacy: enhanced,

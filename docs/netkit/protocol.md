@@ -2,7 +2,11 @@
 
 ## Current transport
 
-Yap clients and homes negotiate `yappers/netkit/6` over Iroh. New posts, replies, votes and deletions use event version 4. A home verifies the device signature, checks the account grant when present, and signs an acceptance receipt. After deletion, a receiver can verify the retained header and deletion proof without the original plaintext or salt. [Event format, signing domains and deletion proofs](deletion.md#what-a-peer-verifies)
+App clients offer `yappers/netkit/7` and `yappers/netkit/6` over Iroh. With version 7, a client reuses its authenticated connection to a Home and opens one bidirectional stream per RPC. Independent requests can overlap. Each request and response still ends at stream EOF, and Home checks each request’s permissions. Account registration finishes before the dependent signed-in feed request. Version 6 serves one request per connection and remains available to older clients and Homes.
+
+A Home admits up to 256 established multiplexed connections and up to eight simultaneous streams per connection. Handshakes and active requests share a 64-slot work limit. Requests have individual 20-second deadlines. After 20 seconds without active streams the Home releases the connection, and the client reconnects on demand. The invitation’s JSON protocol version stays at 6.
+
+New posts, replies, votes and deletions use event version 4. A home verifies the device signature, checks the account grant when present, and signs an acceptance receipt. After deletion, a receiver can verify the retained header and deletion proof without the original plaintext or salt. [Event format, signing domains and deletion proofs](deletion.md#what-a-peer-verifies)
 
 The [Rust wire types](../../netkit/src/model.rs) define the request and response fields. [Group records](groups.md#canonical-signed-records) and [portable account records](../ownership.md) have separate signatures and version numbers.
 

@@ -5,10 +5,19 @@
 //! explicitly opts into the public preset. Relays transport packets, not community data
 //! storage or federation policy; the application always pins the home/peer endpoint ID.
 
+pub use crate::MULTIPLEX_ALPN;
 use crate::{ALPN, MAX_FRAME, RPC_TIMEOUT_SECS, model::*};
 use anyhow::{Context, Result, ensure};
-use iroh::{Endpoint, EndpointAddr, SecretKey, endpoint::presets};
-use std::time::Duration;
+use iroh::{
+    Endpoint, EndpointAddr, EndpointId, SecretKey,
+    endpoint::{ConnectError, ConnectOptions, Connection, presets},
+};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::sync::OnceCell;
 
 // Rust's DNS resolver accepts a trailing root dot. WebKit validates the WebSocket
 // certificate against the literal hostname, so use the ordinary DNS spelling for TLS.
@@ -56,7 +65,7 @@ pub async fn bind(mode: NetworkMode, secret: Option<SecretKey>, server: bool) ->
         builder
     };
     let builder = if server {
-        builder.alpns(vec![ALPN.to_vec()])
+        builder.alpns(vec![MULTIPLEX_ALPN.to_vec(), ALPN.to_vec()])
     } else {
         builder
     };
@@ -79,13 +88,128 @@ impl std::fmt::Display for Unavailable {
     }
 }
 
-/// A bounded EOF-delimited JSON message on one bidirectional stream per connection.
+enum Negotiated {
+    Multiplex(Connection),
+    // Exactly one waiter may use the stream on the negotiated v6 connection.
+    Legacy(Mutex<Option<Connection>>),
+}
+
+type Dial = OnceCell<Result<Negotiated, Arc<ConnectError>>>;
+const MAX_POOLED_PEERS: usize = 32;
+
+/// One client's authenticated connections, keyed by remote endpoint identity.
+/// Concurrent requests share the handshake and open independent QUIC streams.
+pub struct RpcPool {
+    endpoint: Endpoint,
+    peers: Mutex<HashMap<EndpointId, Arc<Dial>>>,
+}
+
+impl RpcPool {
+    pub fn new(endpoint: Endpoint) -> Self {
+        Self {
+            endpoint,
+            peers: Mutex::default(),
+        }
+    }
+
+    pub async fn rpc(&self, address: EndpointAddr, request: &Request) -> Result<Response> {
+        rpc_with(Route::Pool(self), address, request).await
+    }
+
+    fn dial(&self, id: EndpointId) -> Arc<Dial> {
+        let mut peers = self.peers.lock().expect("RPC peers mutex poisoned");
+        let reusable = |cell: &Arc<Dial>| match cell.get() {
+            None => Arc::strong_count(cell) > 1,
+            Some(Ok(Negotiated::Multiplex(c))) => c.close_reason().is_none(),
+            _ => false,
+        };
+        if let Some(cell) = peers.get(&id).filter(|cell| reusable(cell)) {
+            return cell.clone();
+        }
+        // Drop closed or cancelled dials when inserting a peer. Existing
+        // waiters still hold their own handle to their shared result.
+        peers.retain(|_, cell| reusable(cell));
+        if peers.len() >= MAX_POOLED_PEERS {
+            // Negotiate both ALPNs for overflow too, but retain no pool-owned
+            // handle. Existing handshakes and active streams keep their slots.
+            return Arc::default();
+        }
+        peers.entry(id).or_default().clone()
+    }
+
+    async fn connect(&self, address: &EndpointAddr) -> Result<Connection> {
+        let dial = self.dial(address.id);
+        let result = dial
+            .get_or_init(|| async {
+                let options = ConnectOptions::new().with_additional_alpns(vec![ALPN.to_vec()]);
+                let connecting = self
+                    .endpoint
+                    .connect_with_opts(address.clone(), MULTIPLEX_ALPN, options)
+                    .await
+                    .map_err(ConnectError::from)?;
+                let connection = connecting.await.map_err(ConnectError::from)?;
+                Ok(if connection.alpn() == MULTIPLEX_ALPN {
+                    Negotiated::Multiplex(connection)
+                } else {
+                    Negotiated::Legacy(Mutex::new(Some(connection)))
+                })
+            })
+            .await;
+        match result {
+            Ok(Negotiated::Multiplex(c)) => Ok(c.clone()),
+            Ok(Negotiated::Legacy(first)) => {
+                if let Some(c) = first.lock().expect("legacy RPC mutex poisoned").take() {
+                    return Ok(c);
+                }
+                // We shared a handshake to a single-stream Home. Other waiters
+                // must each establish a dedicated connection before writing.
+                self.endpoint
+                    .connect(address.clone(), ALPN)
+                    .await
+                    .context(Unavailable)
+            }
+            Err(e) => Err(anyhow::Error::new(e.clone()).context(Unavailable)),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Route<'a> {
+    OneShot(&'a Endpoint),
+    Pool(&'a RpcPool),
+}
+
+impl Route<'_> {
+    async fn connect(self, address: &EndpointAddr) -> Result<Connection> {
+        match self {
+            Self::OneShot(endpoint) => endpoint
+                .connect(address.clone(), ALPN)
+                .await
+                .context(Unavailable),
+            Self::Pool(pool) => pool.connect(address).await,
+        }
+    }
+}
+
+/// A one-shot v6 RPC, including any deletion continuations.
 pub async fn rpc(
     endpoint: &Endpoint,
     address: EndpointAddr,
     request: &Request,
 ) -> Result<Response> {
-    let response = rpc_once(endpoint, address.clone(), request).await?;
+    rpc_with(Route::OneShot(endpoint), address, request).await
+}
+
+async fn rpc_with(route: Route<'_>, address: EndpointAddr, request: &Request) -> Result<Response> {
+    #[cfg(target_arch = "wasm32")]
+    let address = {
+        let mut target = EndpointAddr::new(address.id);
+        for relay in address.relay_urls() {
+            target = target.with_relay_url(browser_relay(relay)?);
+        }
+        target
+    };
+    let response = rpc_once(route, &address, request).await?;
     let Response::FeedWithMoreDeletions { mut feed } = response else {
         return Ok(response);
     };
@@ -116,9 +240,7 @@ pub async fn rpc(
             token: token.clone(),
             after: cursor.clone(),
         };
-        let Response::DeletionPage { ids, more } =
-            rpc_once(endpoint, address.clone(), &query).await?
-        else {
+        let Response::DeletionPage { ids, more } = rpc_once(route, &address, &query).await? else {
             anyhow::bail!("invalid deletion response");
         };
         ensure!(
@@ -138,25 +260,24 @@ pub async fn rpc(
     }
 }
 
-async fn rpc_once(
-    endpoint: &Endpoint,
-    address: EndpointAddr,
-    request: &Request,
-) -> Result<Response> {
-    #[cfg(target_arch = "wasm32")]
-    let address = {
-        let mut target = EndpointAddr::new(address.id);
-        for relay in address.relay_urls() {
-            target = target.with_relay_url(browser_relay(relay)?);
-        }
-        target
-    };
+async fn rpc_once(route: Route<'_>, address: &EndpointAddr, request: &Request) -> Result<Response> {
     let bytes = serde_json::to_vec(request)?;
     ensure!(bytes.len() <= MAX_FRAME, "request too large");
     n0_future::time::timeout(Duration::from_secs(RPC_TIMEOUT_SECS), async {
-        let connection = endpoint.connect(address, ALPN).await.context(Unavailable)?;
+        let mut connection = route.connect(address).await?;
+        let (mut send, mut recv) = match connection.open_bi().await {
+            Ok(streams) => streams,
+            Err(_)
+                if connection.alpn() == MULTIPLEX_ALPN && connection.close_reason().is_some() =>
+            {
+                // An idle connection can close between checkout and open_bi.
+                // No request bytes exist on the wire at this point.
+                connection = route.connect(address).await?;
+                connection.open_bi().await.context(Unavailable)?
+            }
+            Err(e) => return Err(anyhow::Error::new(e).context(Unavailable)),
+        };
         let result = async {
-            let (mut send, mut recv) = connection.open_bi().await.context(Unavailable)?;
             send.write_all(&bytes).await.context(Unavailable)?;
             send.finish().context(Unavailable)?;
             let response = recv
@@ -175,7 +296,9 @@ async fn rpc_once(
             require_response(response)
         }
         .await;
-        connection.close(0u32.into(), b"request complete");
+        if connection.alpn() == ALPN {
+            connection.close(0u32.into(), b"request complete");
+        }
         result
     })
     .await
@@ -247,4 +370,96 @@ fn decode_response(bytes: &[u8]) -> Result<Response> {
         }
     }
     Ok(response)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod pool_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn pending_peers_share_one_slot_and_overflow_stays_uncached() -> Result<()> {
+        let endpoint = bind(NetworkMode::Local, None, false).await?;
+        let pool = RpcPool::new(endpoint.clone());
+        let mut held = Vec::new();
+        for _ in 0..MAX_POOLED_PEERS {
+            let id = SecretKey::generate().public();
+            held.push((id, pool.dial(id)));
+        }
+
+        let extra = SecretKey::generate().public();
+        let overflow = pool.dial(extra);
+        assert_eq!(pool.peers.lock().unwrap().len(), MAX_POOLED_PEERS);
+        assert!(!pool.peers.lock().unwrap().contains_key(&extra));
+        for (id, slot) in &held {
+            assert!(Arc::ptr_eq(slot, &pool.dial(*id)));
+        }
+
+        // Dropping the last caller of a cancelled handshake frees its slot
+        // on the next checkout. The overflow caller keeps its own handle.
+        held.pop();
+        let retained = pool.dial(extra);
+        assert!(!Arc::ptr_eq(&overflow, &retained));
+        assert!(Arc::ptr_eq(&retained, &pool.dial(extra)));
+        assert_eq!(pool.peers.lock().unwrap().len(), MAX_POOLED_PEERS);
+        endpoint.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pooled_feed_rejects_a_nonadvancing_deletion_page() -> Result<()> {
+        let server = bind(NetworkMode::Local, None, true).await?;
+        let endpoint = bind(NetworkMode::Local, None, false).await?;
+        let pool = RpcPool::new(endpoint.clone());
+        let cursor = "1".repeat(64);
+        let peer = async {
+            let conn = server.accept().await.context("endpoint closed")?.await?;
+            ensure!(conn.alpn() == MULTIPLEX_ALPN);
+            let (mut send, mut recv) = conn.accept_bi().await?;
+            let call: Request = serde_json::from_slice(&recv.read_to_end(MAX_FRAME).await?)?;
+            ensure!(matches!(call, Request::PublicReplicaFeed { .. }));
+            let response = Response::FeedWithMoreDeletions {
+                feed: Box::new(Response::PublicReplicaFeed {
+                    posts: vec![],
+                    deleted: vec![cursor.clone()],
+                    event_count: 1,
+                    as_of: 1,
+                }),
+            };
+            send.write_all(&serde_json::to_vec(&response)?).await?;
+            send.finish()?;
+            let (mut send, mut recv) = conn.accept_bi().await?;
+            let call: Request = serde_json::from_slice(&recv.read_to_end(MAX_FRAME).await?)?;
+            ensure!(
+                matches!(call, Request::DeletionsAfter { ref community, token: None, ref after } if community == "public" && after == &cursor)
+            );
+            send.write_all(&serde_json::to_vec(&Response::DeletionPage {
+                ids: vec![cursor],
+                more: false,
+            })?)
+            .await?;
+            send.finish()?;
+            conn.closed().await;
+            anyhow::Ok(())
+        };
+        let client = async {
+            let err = pool
+                .rpc(
+                    server.addr(),
+                    &Request::PublicReplicaFeed {
+                        community: "public".into(),
+                    },
+                )
+                .await
+                .unwrap_err();
+            ensure!(err.to_string() == "invalid deletion page" && !err.is::<Unavailable>());
+            endpoint.close().await;
+            anyhow::Ok(())
+        };
+        tokio::time::timeout(Duration::from_secs(8), async {
+            tokio::try_join!(peer, client)
+        })
+        .await??;
+        server.close().await;
+        Ok(())
+    }
 }

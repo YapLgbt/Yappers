@@ -1,35 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Home-local observations, inbox permissions and private message requests.
+use crate::home_sql::HomeDb as Connection;
 use crate::model::{Action, AuthorVisibility, Envelope};
 use crate::{messaging::PrivacySettings, model::now, store::Store};
 use anyhow::{Result, ensure};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-
-pub(crate) fn install(db: &Connection) -> Result<()> {
-    db.execute_batch("
-        CREATE TABLE IF NOT EXISTS first_seen(owner TEXT PRIMARY KEY, since INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS privacy_settings(owner TEXT PRIMARY KEY, settings TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS dm_approved(owner TEXT NOT NULL, peer TEXT NOT NULL, PRIMARY KEY(owner,peer));
-    ")?;
-    let migrated: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('dm_mail') WHERE name='held')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !migrated {
-        let tx = db.unchecked_transaction()?;
-        tx.execute_batch("
-            ALTER TABLE dm_mail ADD COLUMN held INTEGER NOT NULL DEFAULT 0;
-            INSERT OR IGNORE INTO first_seen SELECT account, unixepoch() FROM account_states;
-            INSERT OR IGNORE INTO first_seen SELECT COALESCE(json_extract(envelope,'$.event.payload.account.payload.account'),author),unixepoch() FROM events;
-            INSERT OR IGNORE INTO dm_approved SELECT DISTINCT sender, recipient FROM dm_mail;
-        ")?;
-        tx.commit()?;
-    }
-    Ok(())
-}
 
 pub(crate) fn observe(db: &Connection, owner: &str) -> Result<()> {
     db.execute(
@@ -128,6 +105,18 @@ impl Store {
             .db
             .prepare("SELECT owner,since FROM first_seen")?
             .query_map([], |r| Ok((r.get(0)?, age(r.get(1)?))))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+    pub(crate) fn page_ages(&self, events: &[Envelope]) -> Result<HashMap<String, u8>> {
+        let owners: std::collections::BTreeSet<_> =
+            events.iter().map(|e| e.event.owner_id()).collect();
+        let mut stmt = self.db.prepare(
+            "SELECT owner,since FROM first_seen WHERE owner IN (SELECT CAST(value AS TEXT) FROM json_each(?))",
+        )?;
+        Ok(stmt
+            .query_map([serde_json::to_string(&owners)?], |r| {
+                Ok((r.get(0)?, age(r.get(1)?)))
+            })?
             .collect::<rusqlite::Result<_>>()?)
     }
     pub(crate) fn update_privacy(&mut self, owner: &str, p: &PrivacySettings) -> Result<()> {

@@ -1,4 +1,5 @@
 #![cfg(feature = "server")]
+mod support;
 use std::{collections::BTreeMap, path::Path};
 use yappers_netkit::{
     client::{Client, ClientConfig},
@@ -340,17 +341,19 @@ async fn home_can_create_and_browse_more_than_64_public_groups() -> anyhow::Resu
     let dir = tempfile::tempdir()?;
     let cfg = config(&dir.path().join("home"));
     let store = Store::open(&cfg.database_path)?;
-    let db = rusqlite::Connection::open(&cfg.database_path)?;
+    let db = support::primary(cfg.database_path.as_ref()).await?;
     let key = signing_key(&cfg.private_key)?;
     // Seed existing, genuinely signed descriptors. Only the final group needs a live announcement.
     for index in 0..64 {
         let group = SignedGroup::create(&key, details(&format!("Group {index}"), false))?;
         db.execute(
             "INSERT INTO public_groups VALUES(?,?)",
-            rusqlite::params![group.id, serde_json::to_string(&group)?],
-        )?;
+            (&*group.id, serde_json::to_string(&group)?),
+        )
+        .await?;
         store.host_group(&group.id)?;
     }
+    drop(db);
     drop(store);
     let server = Server::start(cfg).await?;
     server.create_group(details("Group 65", false))?;

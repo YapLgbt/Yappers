@@ -5,10 +5,11 @@
 //! the connecting endpoint and independently trusts each event's original home.
 //! Do not infer origin trust from the peer that forwarded an envelope.
 
-use crate::{MAX_FRAME, MAX_PAGE_ENTRIES, RPC_TIMEOUT_SECS, model::*, store::Store, transport};
+use crate::{MAX_FRAME, MAX_PAGE_ENTRIES, model::*, store::Store, transport};
 use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::SigningKey;
 use iroh::{Endpoint, EndpointAddr};
+use n0_future::{BufferedStreamExt, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -26,7 +27,7 @@ use std::sync::atomic::AtomicUsize;
 
 const MAX_COMMUNITIES: usize = 32;
 const MAX_PEERS: usize = 16;
-const MAX_CONNECTIONS: usize = 64;
+const SYNC_CONCURRENCY: usize = 4;
 const MAX_SYNC_PAGES: usize = 20;
 const AUTHOR_EVENTS_PER_MINUTE: usize = 120;
 const RATE_WINDOW_SECS: i64 = 60;
@@ -60,13 +61,22 @@ pub struct Server {
     pub endpoint: Endpoint,
     state: Arc<State>,
     accept_task: JoinHandle<()>,
+    sync_slots: Semaphore,
+    peer_syncs: Mutex<BTreeMap<iroh::EndpointId, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+    sync_round: tokio::sync::Mutex<()>,
 }
 #[path = "ha.rs"]
 mod ha;
 #[path = "replica.rs"]
 mod replica;
+#[path = "server_streams.rs"]
+mod server_streams;
+#[path = "store_read.rs"]
+mod store_read;
 use crate::peering::{Access, Policy};
 pub use ha::{HaOptions, HaRole, export_ha, moderate_ha};
+pub(crate) use store_read::DisclosureFence;
+use store_read::{CatalogOp, Disclosure, NeedsExclusive, StoreWorkers};
 
 /// Reserve space for the response fields and send only complete conversations.
 /// Deletion IDs are fixed-width lowercase hex plus JSON quotes and a comma.
@@ -125,15 +135,79 @@ struct State {
     replication_round: AtomicUsize,
     generation: String,
     key: SigningKey,
-    store: Mutex<Store>,
+    workers: StoreWorkers,
+    disclosure: Arc<DisclosureFence>,
     communities: BTreeMap<String, String>,
     peers: RwLock<Vec<PeerConfig>>,
 }
 impl State {
-    fn store(&self) -> Result<MutexGuard<'_, Store>> {
-        self.store
-            .lock()
-            .map_err(|_| anyhow::anyhow!("store unavailable"))
+    fn stamped_operation<T>(
+        &self,
+        mut work: impl FnMut(&mut CatalogOp<'_>) -> Result<T>,
+    ) -> Result<(T, u64)> {
+        self.workers.checkout(|store| {
+            let mut perform = |exclusive: bool| {
+                let peers = self
+                    .peers
+                    .read()
+                    .map_err(|_| anyhow::anyhow!("peer policy unavailable"))?;
+                store.operation(|store| {
+                    work(&mut CatalogOp {
+                        state: self,
+                        store,
+                        peers: &peers,
+                        disclosure: if exclusive {
+                            Disclosure::Exclusive
+                        } else {
+                            Disclosure::Shared
+                        },
+                    })
+                })
+            };
+            let result = self.disclosure.shared(|| perform(self.ha.is_some()));
+            if !matches!(&result, Err(e) if e.is::<NeedsExclusive>()) {
+                return result;
+            }
+            // The shared attempt rolled back. Recheck authorization from a fresh
+            // snapshot after outstanding authorized operations finish committing.
+            self.disclosure.exclusive(|| perform(true))
+        })
+    }
+
+    fn operation<T>(&self, work: impl FnMut(&mut CatalogOp<'_>) -> Result<T>) -> Result<T> {
+        self.stamped_operation(work).map(|(value, _)| value)
+    }
+
+    async fn spawn_job<T: Send + 'static>(
+        self: &Arc<Self>,
+        work: impl FnOnce(&State) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let permit = self.workers.slots.clone().acquire_owned().await?;
+        let state = self.clone();
+        let staging = ha::STAGING.try_with(Arc::clone).ok();
+        tokio::task::spawn_blocking(move || {
+            let (_permit, state, _staging) = (permit, state, staging);
+            work(&state)
+        })
+        .await?
+    }
+
+    async fn blocking<T: Send + 'static>(
+        self: &Arc<Self>,
+        work: impl FnMut(&mut CatalogOp<'_>) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.spawn_job(move |state| state.operation(work)).await
+    }
+
+    async fn ha_blocking<T: Send + 'static>(
+        self: &Arc<Self>,
+        work: impl FnOnce(&mut Store) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.spawn_job(move |state| {
+            ensure!(state.ha.is_some(), "HA staging required");
+            state.workers.checkout(work)
+        })
+        .await
     }
 
     fn access(&self, id: &str, community: &str) -> Option<Access> {
@@ -144,6 +218,129 @@ impl State {
             _ => Some(Access::Active),
         }
     }
+    fn logical_addr(&self) -> EndpointAddr {
+        let logical = iroh::SecretKey::from_bytes(&self.key.to_bytes()).public();
+        if logical == self.endpoint.id() {
+            self.endpoint.addr()
+        } else {
+            EndpointAddr::new(logical)
+        }
+    }
+    async fn dispatch(self: &Arc<Self>, remote: &str, call: Request) -> Result<Response> {
+        self.dispatch_stamped(remote, call)
+            .await
+            .map(|(response, _)| response)
+    }
+
+    async fn dispatch_stamped(
+        self: &Arc<Self>,
+        remote: &str,
+        call: Request,
+    ) -> Result<(Response, u64)> {
+        match call {
+            Request::JoinGroup {
+                token,
+                community,
+                group,
+            } => {
+                self.blocking(move |op| op.member(&community, &token))
+                    .await?;
+                self.join_group(&group).await?;
+                self.spawn_job(move |state| {
+                    state.stamped_operation(|op| {
+                        op.local_directory()?;
+                        Ok(Response::GroupJoined {
+                            join: op.public_join(&group)?,
+                            group: Box::new(op.group_summary(&group)?),
+                        })
+                    })
+                })
+                .await
+            }
+            Request::SubmitReport {
+                token,
+                community,
+                receipt,
+                evidence,
+            } => {
+                self.blocking(move |op| op.member(&community, &token))
+                    .await?;
+                self.spawn_job(move |state| {
+                    let stamp = *state.disclosure.epoch.read().unwrap();
+                    let result = state.report_inbox()?.submit(
+                        &state.endpoint.id().to_string(),
+                        &receipt,
+                        &evidence,
+                        now(),
+                    )?;
+                    Ok((Response::ReportResult { result }, stamp))
+                })
+                .await
+            }
+            call => {
+                let remote = remote.to_owned();
+                self.spawn_job(move |state| {
+                    state.stamped_operation(|op| op.handle(&remote, call.clone()))
+                })
+                .await
+            }
+        }
+    }
+    async fn send_response(
+        &self,
+        send: &mut iroh::endpoint::SendStream,
+        bytes: &[u8],
+        stamp: Option<u64>,
+    ) -> Result<()> {
+        use std::{
+            future::{Future, poll_fn},
+            task::Poll,
+        };
+        let mut started = false;
+        let expired = {
+            let write = async {
+                send.write_all(bytes).await?;
+                send.finish()?;
+                anyhow::Ok(false)
+            };
+            tokio::pin!(write);
+            poll_fn(|cx| {
+                // Linearize each nonblocking write (including FIN) with revocation.
+                // A Pending poll releases the guard before waiting on the transport.
+                let current = self.disclosure.epoch.read().unwrap();
+                if stamp.is_some_and(|epoch| epoch != *current) {
+                    return Poll::Ready(Ok(true));
+                }
+                started = true;
+                write.as_mut().poll(cx)
+            })
+            .await?
+        };
+        if expired {
+            if started {
+                send.reset(0u32.into())?;
+            } else {
+                let error = Response::Error {
+                    code: "expired".into(),
+                    message: "Content changed; refresh".into(),
+                };
+                send.write_all(&serde_json::to_vec(&error)?).await?;
+                send.finish()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn report_inbox(&self) -> Result<MutexGuard<'_, crate::report_inbox::Inbox>> {
+        self.reports
+            .as_ref()
+            .context("this home has no staffed report inbox")?
+            .lock()
+            .map_err(|_| anyhow::anyhow!("report inbox unavailable"))
+    }
+}
+
+impl CatalogOp<'_> {
     fn peer(&self, id: &str) -> Result<PeerConfig> {
         let mut peer = self.peer_for_pull(id)?;
         peer.communities
@@ -158,8 +355,6 @@ impl State {
         );
         let explicit = self
             .peers
-            .read()
-            .map_err(|_| anyhow::anyhow!("peer policy unavailable"))?
             .iter()
             .find(|p| p.address.id.to_string() == id)
             .cloned();
@@ -182,13 +377,19 @@ impl State {
     }
 
     fn member(&self, community: &str, token: &str) -> Result<()> {
+        self.check_membership(community, token, || self.store.hosts_group(community))
+    }
+
+    fn check_membership(
+        &self,
+        community: &str,
+        token: &str,
+        hosts_group: impl FnOnce() -> Result<bool>,
+    ) -> Result<()> {
         let expected = match self.communities.get(community) {
             Some(token) => token.clone(),
             None => {
-                ensure!(
-                    self.auto.enabled && self.store()?.hosts_group(community)?,
-                    "unknown community"
-                );
+                ensure!(self.auto.enabled && hosts_group()?, "unknown community");
                 self.group_token(community)
             }
         };
@@ -225,8 +426,8 @@ impl State {
                 ) => {}
             _ => bail!("origin lacks covenant approval for this content"),
         }
-        if self.auto.enabled && self.store()?.hosts_group(community)? {
-            let store = self.store()?;
+        if self.auto.enabled && self.store.hosts_group(community)? {
+            let store = &*self.store;
             let descriptor = store
                 .group(community)?
                 .context("missing group descriptor")?;
@@ -249,40 +450,109 @@ impl State {
         }
         Ok(())
     }
-    fn logical_addr(&self) -> EndpointAddr {
-        let logical = iroh::SecretKey::from_bytes(&self.key.to_bytes()).public();
-        if logical == self.endpoint.id() {
-            self.endpoint.addr()
-        } else {
-            EndpointAddr::new(logical)
+    fn sync_peers(&mut self) -> Result<Vec<PeerConfig>> {
+        let mut peers = self.peers.to_vec();
+        for automatic in self.select_auto_peers()? {
+            if let Some(existing) = peers
+                .iter_mut()
+                .find(|p| p.address.id == automatic.address.id)
+            {
+                existing.communities.extend(automatic.communities);
+            } else {
+                peers.push(automatic);
+            }
         }
+        peers.retain(|peer| {
+            peer.communities
+                .iter()
+                .any(|scope| self.access(&peer.address.id.to_string(), scope).is_some())
+        });
+        Ok(peers)
     }
-    async fn dispatch(&self, remote: &str, call: Request) -> Result<Response> {
+    fn register_account(
+        store: &mut Store,
+        chain: &[crate::portability::AccountRecord],
+        disclosure: &Disclosure,
+    ) -> Result<crate::portability::AccountRecord> {
+        let next = chain.last().context("missing account record")?;
+        let previous = store.account_chain(&next.payload.account)?;
+        disclosure.restrict_if(
+            chain.len() > previous.len()
+                && previous.last().is_none_or(|old| {
+                    old.payload.home != next.payload.home
+                        || !old.payload.devices.is_subset(&next.payload.devices)
+                }),
+        )?;
+        store.register_account(chain)
+    }
+
+    fn feed_or_social(&mut self, remote: &str, call: Request) -> Result<Response> {
         match call {
-            Request::JoinGroup {
+            Request::Feed {
                 token,
                 community,
-                group,
+                author: _,
+                nearby,
             } => {
                 self.member(&community, &token)?;
-                self.join_group(&group).await?;
-                self.local_directory()?;
-                Ok(Response::GroupJoined {
-                    join: self.public_join(&group)?,
-                    group: Box::new(self.group_summary(&group)?),
-                })
+                let store = &self.store;
+                if let Some(filter) = &nearby {
+                    filter.validate()?;
+                }
+                let crate::feed_page::FeedPage {
+                    mut posts,
+                    event_count,
+                    ..
+                } = store.feed_page(&community, "", nearby.as_ref())?;
+                let mut deleted = store.erased_ids(&community)?;
+                let more = fit_feed_page(&mut posts, &mut deleted, 0)?;
+                Ok(Response::Feed {
+                    deleted,
+                    direct: false,
+                    privacy: false,
+                    posts,
+                    event_count,
+                    account_chain: Vec::new(),
+                }
+                .with_deletion_pages(more))
             }
-            call => self.handle(remote, call),
+            Request::Social {
+                token,
+                community,
+                account,
+                proof,
+                op,
+            } => {
+                self.member(&community, &token)?;
+                let store = &self.store;
+                let home = self.logical_addr().id.to_string();
+                let chain = store.account_chain(&account)?;
+                let record = chain
+                    .last()
+                    .context("register your account before messaging")?;
+                ensure!(record.payload.home == home, "account moved to another home");
+                proof.validate(
+                    record,
+                    "social-v1",
+                    &home,
+                    &crate::portability::digest(&(remote, &community, &op))?,
+                )?;
+                use crate::messaging::SocialOp;
+                self.disclosure.restrict_if(matches!(
+                    op.as_ref(),
+                    SocialOp::Block { .. }
+                        | SocialOp::SetPrivacy { .. }
+                        | SocialOp::DismissRequest { .. }
+                        | SocialOp::SetProfile { .. }
+                ))?;
+                self.store
+                    .social(&home, &community, record, &proof.device, *op)
+            }
+            _ => bail!("expected a feed or social operation"),
         }
     }
-    fn report_inbox(&self) -> Result<MutexGuard<'_, crate::report_inbox::Inbox>> {
-        self.reports
-            .as_ref()
-            .context("this home has no staffed report inbox")?
-            .lock()
-            .map_err(|_| anyhow::anyhow!("report inbox unavailable"))
-    }
-    fn handle(&self, remote: &str, request: Request) -> Result<Response> {
+
+    fn handle(&mut self, remote: &str, request: Request) -> Result<Response> {
         match request {
             Request::ReportAvailability => {
                 ensure!(
@@ -291,20 +561,8 @@ impl State {
                 );
                 Ok(Response::ReportAvailable)
             }
-            Request::SubmitReport {
-                token,
-                community,
-                receipt,
-                evidence,
-            } => {
-                self.member(&community, &token)?;
-                let result = self.report_inbox()?.submit(
-                    &self.endpoint.id().to_string(),
-                    &receipt,
-                    &evidence,
-                    now(),
-                )?;
-                Ok(Response::ReportResult { result })
+            Request::SubmitReport { .. } => {
+                bail!("report submission requires separate inbox dispatch")
             }
             Request::ReportStatus { receipt } => {
                 let result = self.report_inbox()?.lookup(
@@ -325,39 +583,19 @@ impl State {
                 })
             }
             Request::HomeOperation { .. } => bail!("unexpected HA operation wrapper"),
-            Request::Social {
-                token,
-                community,
-                account,
-                proof,
-                op,
-            } => {
-                self.member(&community, &token)?;
-                let home = self.logical_addr().id.to_string();
-                let mut store = self.store()?;
-                let chain = store.account_chain(&account)?;
-                let record = chain
-                    .last()
-                    .context("register your account before messaging")?;
-                ensure!(record.payload.home == home, "account moved to another home");
-                proof.validate(
-                    record,
-                    "social-v1",
-                    &home,
-                    &crate::portability::digest(&(remote, &community, &op))?,
-                )?;
-                store.social(&home, &community, record, &proof.device, *op)
+            call @ (Request::Feed { .. } | Request::Social { .. }) => {
+                self.feed_or_social(remote, call)
             }
             Request::AnnounceAccount { chain } => {
                 let record = crate::portability::validate_chain(&chain)?;
-                let mut store = self.store()?;
+                let store = &mut *self.store;
                 // Relaying a root-signed update needs no membership token, but may only
                 // advance an already-known account. It cannot allocate arbitrary accounts.
                 ensure!(
                     !store.account_chain(&record.payload.account)?.is_empty(),
                     "account not known here"
                 );
-                store.register_account(&chain)?;
+                Self::register_account(store, &chain, &self.disclosure)?;
                 Ok(Response::AccountState {
                     social: true,
                     privacy: true,
@@ -374,7 +612,7 @@ impl State {
                 Ok(Response::AccountState {
                     social: true,
                     privacy: true,
-                    chain: self.store()?.account_chain(&account)?,
+                    chain: self.store.account_chain(&account)?,
                 })
             }
             Request::PrivateGroup {
@@ -386,7 +624,7 @@ impl State {
             } => {
                 self.member(&community, &token)?;
                 let home = hex::encode(self.key.verifying_key().as_bytes());
-                let mut store = self.store()?;
+                let store = &mut *self.store;
                 let chain = store.account_chain(&account)?;
                 let record = chain
                     .last()
@@ -397,6 +635,10 @@ impl State {
                 );
                 let digest = crate::portability::digest(&(remote, &community, &op))?;
                 proof.validate(record, "private-group-v1", &home, &digest)?;
+                self.disclosure.restrict_if(matches!(
+                    op.as_ref(),
+                    crate::private_groups::Operation::Change { .. }
+                ))?;
                 let result = store.private_group(&home, &account, &proof.device, *op)?;
                 Ok(Response::PrivateGroup {
                     result: Box::new(result),
@@ -418,8 +660,8 @@ impl State {
                     &crate::portability::digest(&chain)?,
                 )?;
                 ensure!(record.payload.home == own, "account names another home");
-                let mut store = self.store()?;
-                let current = store.register_account(&chain)?;
+                let store = &mut *self.store;
+                let current = Self::register_account(store, &chain, &self.disclosure)?;
                 ensure!(
                     current.payload.home == own && current.payload.devices.contains(&proof.device),
                     "account moved or device revoked"
@@ -446,8 +688,8 @@ impl State {
                     &own,
                     &crate::portability::digest(&(&community, &after))?,
                 )?;
-                let mut store = self.store()?;
-                let current = store.register_account(&chain)?;
+                let store = &mut *self.store;
+                let current = Self::register_account(store, &chain, &self.disclosure)?;
                 // Reads of an old home's retained history remain possible after a move, using
                 // an active key in the latest known account record. Membership still applies.
                 ensure!(
@@ -510,12 +752,19 @@ impl State {
                     })
                     .filter(|deletion| self.validate_import(deletion).is_ok())
                     .collect();
-                let mut store = self.store()?;
-                let current = store.register_account(&chain)?;
+                let store = &mut *self.store;
+                let current = Self::register_account(store, &chain, &self.disclosure)?;
                 ensure!(
                     current == *record && current.payload.devices.contains(&proof.device),
                     "stale or revoked import device"
                 );
+                self.disclosure.restrict_if(events.iter().any(|e| {
+                    e.deletion.is_some()
+                        || matches!(
+                            e.event.payload.action,
+                            Action::Delete { .. } | Action::Erased { .. }
+                        )
+                }))?;
                 store.import_history(&record.payload.account, &events, &admitted_deletes)?;
                 Ok(Response::PersonalImported {
                     count: events.len(),
@@ -571,7 +820,7 @@ impl State {
                         "projection unavailable"
                     );
                 }
-                let mut ids = self.store()?.erased_after(&community, &after)?;
+                let mut ids = self.store.erased_after(&community, &after)?;
                 let more = ids.len() > crate::DELETION_PAGE;
                 ids.truncate(crate::DELETION_PAGE);
                 Ok(Response::DeletionPage { ids, more })
@@ -581,7 +830,7 @@ impl State {
                     known.len() <= 100 && self.peer(remote)?.communities.contains(&community),
                     "profile scope denied"
                 );
-                let store = self.store()?;
+                let store = &*self.store;
                 let home = self.logical_addr().id.to_string();
                 let owners = store.named_authors(&home, &community)?;
                 let mut records = std::collections::BTreeMap::new();
@@ -610,7 +859,7 @@ impl State {
                     .communities
                     .iter()
                     .all(|scope| self.access(remote, scope) == Some(Access::Suspended));
-                let store = self.store()?;
+                let store = &*self.store;
                 let page = store.peer_page(
                     if generation.as_deref() == Some(&self.generation) {
                         after
@@ -644,33 +893,6 @@ impl State {
                 }
                 Ok(page)
             }
-            Request::Feed {
-                token,
-                community,
-                author: _,
-                nearby,
-            } => {
-                self.member(&community, &token)?;
-                let store = self.store()?;
-                let events = store.events(&community)?;
-                if let Some(filter) = &nearby {
-                    filter.validate()?;
-                }
-                let mut posts =
-                    project_nearby(&events, &community, "", &store.hidden()?, nearby.as_ref());
-                store.apply_current_bylines(&mut posts, &events)?;
-                let mut deleted = store.erased_ids(&community)?;
-                let more = fit_feed_page(&mut posts, &mut deleted, 0)?;
-                Ok(Response::Feed {
-                    deleted,
-                    direct: false,
-                    privacy: false,
-                    posts,
-                    event_count: events.len(),
-                    account_chain: Vec::new(),
-                }
-                .with_deletion_pages(more))
-            }
             Request::Submit {
                 token,
                 event,
@@ -697,7 +919,7 @@ impl State {
                     event.payload.home == hex::encode(self.key.verifying_key().as_bytes()),
                     "submit to the event's designated home"
                 );
-                let mut store = self.store()?;
+                let store = &mut *self.store;
                 if let Some(existing) = store.existing(&event.id)? {
                     ensure!(
                         existing.event.header()? == event.header()?
@@ -716,7 +938,7 @@ impl State {
                         supplied == record.as_ref(),
                         "event account state not in supplied chain"
                     );
-                    let current = store.register_account(&account_chain)?;
+                    let current = Self::register_account(store, &account_chain, &self.disclosure)?;
                     ensure!(
                         current == **record
                             && current.payload.home == event.payload.home
@@ -772,8 +994,10 @@ impl State {
                     recent < AUTHOR_EVENTS_PER_MINUTE,
                     "author rate limit; retry later"
                 );
-                let username = store.sign_username(&event, &self.key)?;
-                let envelope = Envelope::accept(event, &self.key)?;
+                self.disclosure
+                    .restrict_if(matches!(event.payload.action, Action::Delete { .. }))?;
+                let username = store.sign_username(&event, &self.state.key)?;
+                let envelope = Envelope::accept(event, &self.state.key)?;
                 envelope.validate()?;
                 store.accept_with_username(&envelope, username.as_ref())?;
                 let envelope = store
@@ -828,17 +1052,6 @@ fn mark_ha(path: &std::path::Path) -> Result<()> {
     }
     Ok(())
 }
-fn retire_seed(path: &std::path::Path, store: Store) -> Result<()> {
-    let tx = store.db.unchecked_transaction()?;
-    tx.execute_batch(
-        "DELETE FROM guard.opening_keys; UPDATE guard.state SET key=randomblob(32), epoch=epoch+1;
-        DELETE FROM public_projections; DELETE FROM personal_events; DELETE FROM events;",
-    )?;
-    tx.commit()?;
-    drop(store);
-    std::fs::remove_file(path)?;
-    Ok(())
-}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerHealth {
@@ -877,25 +1090,27 @@ impl Server {
                 !state.public_replica_feeds.is_empty(),
                 "no configured replica scope"
             );
-            let store = state.store()?;
-            let mut age = 0;
-            for scope in &state.public_replica_feeds {
-                let verified: i64 = store.db.query_row(
-                    "SELECT verified FROM public_projections WHERE community=?",
-                    [scope],
-                    |row| row.get(0),
-                )?;
-                let elapsed = now()
-                    .checked_sub(verified)
-                    .context("invalid projection timestamp")?;
-                ensure!(elapsed >= 0, "invalid projection timestamp");
-                age = age.max(elapsed);
-            }
-            Ok(WorkerHealth {
-                ready: age <= 120,
-                image_bytes: None,
-                budget_bytes: None,
-                oldest_projection_age_seconds: Some(age),
+            state.operation(|op| {
+                let store = &*op.store;
+                let mut age = 0;
+                for scope in &state.public_replica_feeds {
+                    let verified: i64 = store.db.query_row(
+                        "SELECT verified FROM public_projections WHERE community=?",
+                        [scope],
+                        |row| row.get(0),
+                    )?;
+                    let elapsed = now()
+                        .checked_sub(verified)
+                        .context("invalid projection timestamp")?;
+                    ensure!(elapsed >= 0, "invalid projection timestamp");
+                    age = age.max(elapsed);
+                }
+                Ok(WorkerHealth {
+                    ready: age <= 120,
+                    image_bytes: None,
+                    budget_bytes: None,
+                    oldest_projection_age_seconds: Some(age),
+                })
             })
         }
     }
@@ -912,14 +1127,19 @@ impl Server {
         let key = signing_key(&config.private_key)?;
         let home = hex::encode(key.verifying_key().as_bytes());
         grant.validate(&home)?;
-        ensure!(
-            config.database_path.is_file(),
-            "bootstrap requires the existing dedicated database"
-        );
-        let _exclusive = lock_server(&config.database_path)?;
-        let store = Store::open_staging(&config.database_path)?;
-        let _guard_lock = crate::backup::lock_authority(&config.database_path)?;
-        let image = store.snapshot()?;
+        let path = config.database_path.clone();
+        let (store, locks, image) = tokio::task::spawn_blocking(move || {
+            ensure!(
+                path.is_file(),
+                "bootstrap requires the existing dedicated database"
+            );
+            let exclusive = lock_server(&path)?;
+            let store = Store::open_staging(&path)?;
+            let guard_lock = crate::backup::lock_authority(&path)?;
+            let image = store.snapshot()?;
+            anyhow::Ok((store, (exclusive, guard_lock), image))
+        })
+        .await??;
         let endpoint = transport::bind(
             config.network_mode,
             Some(iroh::SecretKey::from_bytes(&key.to_bytes())),
@@ -937,10 +1157,13 @@ impl Server {
         let result = ha.seed_image(&endpoint, image).await;
         endpoint.close().await;
         result?;
-        mark_ha(&config.database_path)?;
-        // The authority is now durable. Retire the bootstrap copy and invalidate
-        // its separate backup keys before future primary/standby service.
-        retire_seed(&config.database_path, store)
+        tokio::task::spawn_blocking(move || {
+            let _locks = locks;
+            mark_ha(&config.database_path)?;
+            // Invalidate the bootstrap keys after the authority has made the seed durable.
+            store.retire_seed(&config.database_path)
+        })
+        .await?
     }
     pub async fn start_ha(config: ServerConfig, options: HaOptions) -> Result<Self> {
         Self::start_inner(config, Some(options)).await
@@ -977,28 +1200,6 @@ impl Server {
                 "replica requires its founding public community peer"
             );
         }
-        let process_lock = lock_server(&config.database_path)?;
-        let store = if options.is_some() {
-            ensure!(
-                !config.database_path.exists(),
-                "HA staging path contains a previous database; complete the verified bootstrap retirement before serving"
-            );
-            // HA workers materialize the authority's fenced image in RAM on each
-            // revision change. An offline worker leaves no stale content on disk.
-            Store {
-                db: rusqlite::Connection::open_in_memory()?,
-            }
-        } else {
-            Store::open(&config.database_path)?
-        };
-        let guard_lock = if options.is_none() {
-            let lock = crate::backup::lock_authority(&config.database_path)?;
-            crate::backup::verify_epoch(&store.db)?;
-            store.recover_local_first_seen(&own_id)?;
-            Some(lock)
-        } else {
-            None
-        };
         let mut transport_key = key.clone();
 
         if let Some(options) = &options {
@@ -1022,27 +1223,59 @@ impl Server {
                 }
             }
         }
-        let peering = Policy::load()?;
-        let ha = options
-            .as_ref()
-            .map(|o| ha::Ha::new(o, &config, peering.as_ref()))
-            .transpose()?;
-        if ha.is_some() {
-            mark_ha(&config.database_path)?;
-        }
+        let home = own_id.clone();
+        let (config, workers, disclosure, process_lock, guard_lock, peering, ha) = tokio::task::spawn_blocking(move || {
+            let process_lock = lock_server(&config.database_path)?;
+            let mut store = if options.is_some() {
+                ensure!(
+                    !config.database_path.exists(),
+                    "HA staging path contains a previous database; complete the verified bootstrap retirement before serving"
+                );
+                // HA workers materialize the authority's fenced image in RAM on each
+                // revision change. An offline worker leaves no stale content on disk.
+                Store {
+                    db: rusqlite::Connection::open_in_memory()?.into(),
+                }
+            } else {
+                Store::open(&config.database_path)?
+            };
+            let guard_lock = if options.is_none() {
+                let lock = crate::backup::lock_authority(&config.database_path)?;
+                store.verify_authority()?;
+                store.operation(|store| store.recover_local_first_seen(&home))?;
+                Some(lock)
+            } else {
+                None
+            };
+            let peering = Policy::load()?;
+            let ha = options
+                .as_ref()
+                .map(|o| ha::Ha::new(o, &config, peering.as_ref()))
+                .transpose()?;
+            if ha.is_some() {
+                mark_ha(&config.database_path)?;
+            }
+            let disclosure = store.db.native_home().map(|home| home.disclosure.clone()).unwrap_or_default();
+            let workers = StoreWorkers::new(store, ha.is_none())?;
+            anyhow::Ok((config, workers, disclosure, process_lock, guard_lock, peering, ha))
+        }).await??;
         let secret = iroh::SecretKey::from_bytes(&transport_key.to_bytes());
         let endpoint = transport::bind(config.network_mode, Some(secret), true).await?;
-        let reports = if endpoint.id().to_string() == own_id {
-            std::env::var_os("YAP_REPORT_INBOX")
-                .map(|path| {
+        let reports = if endpoint.id().to_string() == own_id
+            && let Some(path) = std::env::var_os("YAP_REPORT_INBOX")
+        {
+            Some(Mutex::new(
+                tokio::task::spawn_blocking(move || {
                     crate::report_inbox::Inbox::open(std::path::Path::new(&path), Some(&own_id))
-                        .map(Mutex::new)
                 })
-                .transpose()?
+                .await??,
+            ))
         } else {
             None
         };
         let state = Arc::new(State {
+            workers,
+            disclosure,
             reports,
             peering,
             _process_lock: process_lock,
@@ -1058,78 +1291,60 @@ impl Server {
             replication_round: AtomicUsize::new(0),
             generation: new_secret(),
             key,
-            store: Mutex::new(store),
             communities: config.communities,
             peers: RwLock::new(config.peers),
         });
         let accept_endpoint = endpoint.clone();
         let accept_state = state.clone();
-        let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+        let work = Arc::new(Semaphore::new(server_streams::MAX_WORK));
+        let sessions = Arc::new(Semaphore::new(server_streams::MAX_MUX_SESSIONS));
         let accept_task = tokio::spawn(async move {
-            let mut sweep = tokio::time::interval(Duration::from_secs(60));
+            let expire_reports = async {
+                let mut sweep = tokio::time::interval(Duration::from_secs(60));
+                loop {
+                    sweep.tick().await;
+                    if accept_state
+                        .spawn_job(|state| state.report_inbox()?.purge(now()))
+                        .await
+                        .is_err()
+                    {
+                        eprintln!("Report inbox expiry failed");
+                    }
+                }
+            };
+            tokio::pin!(expire_reports);
+            let mut handlers = tokio::task::JoinSet::new();
             loop {
                 let incoming = tokio::select! {
-                    incoming=accept_endpoint.accept()=>match incoming{Some(incoming)=>incoming,None=>break},
-                    _=sweep.tick(), if accept_state.reports.is_some()=>{
-                        if accept_state.report_inbox().and_then(|mut inbox|inbox.purge(now())).is_err(){eprintln!("Report inbox expiry failed");}
-                        continue;
-                    }
+                    incoming = accept_endpoint.accept() => match incoming {
+                        Some(incoming) => incoming,
+                        None => break,
+                    },
+                    () = &mut expire_reports, if accept_state.reports.is_some() => break,
+                    Some(_) = handlers.join_next(), if !handlers.is_empty() => continue,
                 };
-                let Ok(permit) = slots.clone().try_acquire_owned() else {
+                let Ok(handshake) = work.clone().try_acquire_owned() else {
                     incoming.refuse();
                     continue;
                 };
-                let state = accept_state.clone();
-                tokio::spawn(async move {
-                    let _permit = permit;
-                    let _ = tokio::time::timeout(Duration::from_secs(RPC_TIMEOUT_SECS), async {
-                        let connection = incoming.await?;
-                        let (mut send, mut recv) = connection.accept_bi().await?;
-                        let remote=connection.remote_id().to_string();
-                        let mut first=[0u8;1];
-                        recv.read_exact(&mut first).await?;
-                        if first[0]==ha::CONTROL {
-                            let ha=state.ha.as_ref().context("HA control disabled")?;
-                            let bytes=ha.control(&remote,&mut recv).await?;
-                            send.write_all(&bytes).await?;
-                            send.finish()?;
-                            connection.closed().await;
-                            return anyhow::Ok(());
-                        }
-                        let mut bytes=first.to_vec();
-                        bytes.extend_from_slice(&recv.read_to_end(MAX_FRAME-1).await?);
-                        let response = match serde_json::from_slice(&bytes).context("invalid request") {
-                            Ok(request) if state.ha.is_some() => {
-                                let (id,call)=match request {
-                                    Request::HomeOperation{request_id,call}=>(request_id,*call),
-                                    other=>(new_secret(),other)
-                                };
-                                state.ha.as_ref().unwrap().request(&state,&remote,id,call).await.unwrap_or_else(|_|Response::Error{code:"ha_unavailable".into(),message:"Home commit authority unavailable; retry this operation".into()})
-                            }
-                            Ok(call)=>state.dispatch(&remote,call).await.unwrap_or_else(|e|Response::Error{code:"rejected".into(),message:e.to_string()}),
-                            Err(e)=>Response::Error{code:"rejected".into(),message:e.to_string()},
-                        };
-                        let mut response = crate::transport::encode_response(&response)?;
-                        if response.len() > MAX_FRAME {
-                            response = serde_json::to_vec(&Response::Error {
-                                code: "capacity".into(),
-                                message: "feed exceeds v1 response capacity".into(),
-                            })?;
-                        }
-                        send.write_all(&response).await?;
-                        send.finish()?;
-                        // Keep streams alive until the client acknowledges receipt by closing.
-                        connection.closed().await;
-                        anyhow::Ok(())
-                    })
-                    .await;
-                });
+                handlers.spawn(server_streams::serve(
+                    accept_state.clone(),
+                    incoming,
+                    handshake,
+                    sessions.clone(),
+                ));
             }
+            handlers.shutdown().await;
+            // A cancelled stream's blocking encoder retains its admission permit.
+            let _drained = work.acquire_many(server_streams::MAX_WORK as u32).await;
         });
         Ok(Self {
             endpoint,
             state,
             accept_task,
+            sync_slots: Semaphore::new(SYNC_CONCURRENCY),
+            peer_syncs: Mutex::default(),
+            sync_round: tokio::sync::Mutex::default(),
         })
     }
     /// Atomically replace peer policy. Removal prevents future exchange, not history recall.
@@ -1139,12 +1354,14 @@ impl Server {
             &self.endpoint.id().to_string(),
             &self.state.communities,
         )?;
-        *self
-            .state
-            .peers
-            .write()
-            .map_err(|_| anyhow::anyhow!("peer policy unavailable"))? = peers;
-        Ok(())
+        self.state.disclosure.restrict(|| {
+            *self
+                .state
+                .peers
+                .write()
+                .map_err(|_| anyhow::anyhow!("peer policy unavailable"))? = peers;
+            Ok(())
+        })
     }
     pub fn join(&self, community: &str, mode: NetworkMode) -> Result<JoinConfig> {
         Ok(JoinConfig {
@@ -1169,16 +1386,26 @@ impl Server {
         };
         // This is a scheduling hint only. Leases and policy checks use the fenced,
         // committed home image. Both nodes recover it on the next client/federation call.
-        if !self.state.store()?.db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM push_devices)",
-            [],
-            |r| r.get::<_, bool>(0),
-        )? {
+        if !self
+            .state
+            .blocking(|state| {
+                Ok(state.store.db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM push_devices)",
+                    [],
+                    |r| r.get::<_, bool>(0),
+                )?)
+            })
+            .await?
+        {
             return Ok(());
         }
         let jobs = match &self.state.ha {
             Some(ha) => ha.push_operation(&self.state, None).await?,
-            None => self.state.store()?.claim_push()?,
+            None => {
+                self.state
+                    .blocking(|state| state.store.claim_push())
+                    .await?
+            }
         };
         if jobs.as_array().is_none_or(Vec::is_empty) {
             return Ok(());
@@ -1200,11 +1427,13 @@ impl Server {
         let outcomes = serde_json::from_slice(&output.stdout)?;
         match &self.state.ha {
             Some(ha) => {
-                ha.push_operation(&self.state, Some((&jobs, &outcomes)))
+                ha.push_operation(&self.state, Some((jobs, outcomes)))
                     .await?;
             }
             None => {
-                self.state.store()?.finish_push(&jobs, &outcomes)?;
+                self.state
+                    .blocking(move |state| state.store.finish_push(&jobs, &outcomes))
+                    .await?;
             }
         }
         Ok(())
@@ -1213,6 +1442,7 @@ impl Server {
         if let Some(ha) = &self.state.ha {
             return ha.synchronize(self).await;
         }
+        let _round = self.sync_round.lock().await;
         self.sync_inner().await
     }
     async fn sync_inner(&self) -> Result<usize> {
@@ -1221,10 +1451,17 @@ impl Server {
         if let Err(error) = self.discover_once().await {
             errors.push(format!("discovery: {error:#}"));
         }
-        for peer in self.sync_peers()? {
-            match self.sync_peer_inner(&peer).await {
+        let peers = self.state.blocking(|op| op.sync_peers()).await?;
+        let mut results = stream::iter(
+            peers
+                .into_iter()
+                .map(|peer| async move { (peer.address.id, self.sync_peer_inner(&peer).await) }),
+        )
+        .buffered_unordered(SYNC_CONCURRENCY);
+        while let Some((id, result)) = results.next().await {
+            match result {
                 Ok(count) => imported += count,
-                Err(error) => errors.push(format!("{}: {error:#}", peer.address.id)),
+                Err(error) => errors.push(format!("{id}: {error:#}")),
             }
         }
         ensure!(
@@ -1234,38 +1471,32 @@ impl Server {
         );
         Ok(imported)
     }
-    fn sync_peers(&self) -> Result<Vec<PeerConfig>> {
-        let mut peers = self
-            .state
-            .peers
-            .read()
-            .map_err(|_| anyhow::anyhow!("peer policy unavailable"))?
-            .clone();
-        for automatic in self.select_auto_peers()? {
-            if let Some(existing) = peers
-                .iter_mut()
-                .find(|p| p.address.id == automatic.address.id)
-            {
-                existing.communities.extend(automatic.communities);
-            } else {
-                peers.push(automatic);
-            }
-        }
-        peers.retain(|peer| {
-            peer.communities.iter().any(|scope| {
-                self.state
-                    .access(&peer.address.id.to_string(), scope)
-                    .is_some()
-            })
-        });
-        Ok(peers)
-    }
     /// Validate complete bounded pages before committing imports and cursor together.
     pub async fn sync_peer(&self, peer: &PeerConfig) -> Result<usize> {
         ensure!(self.state.ha.is_none(), "use fenced sync_once for HA peers");
         self.sync_peer_inner(peer).await
     }
     async fn sync_peer_inner(&self, peer: &PeerConfig) -> Result<usize> {
+        // A direct sync and a scheduled round may target the same peer.
+        let lock = {
+            let mut locks = self
+                .peer_syncs
+                .lock()
+                .map_err(|_| anyhow::anyhow!("peer sync locks unavailable"))?;
+            locks.retain(|_, lock| lock.strong_count() != 0);
+            if let Some(lock) = locks
+                .get(&peer.address.id)
+                .and_then(std::sync::Weak::upgrade)
+            {
+                lock
+            } else {
+                let lock = Arc::new(tokio::sync::Mutex::new(()));
+                locks.insert(peer.address.id, Arc::downgrade(&lock));
+                lock
+            }
+        };
+        let _peer = lock.lock().await;
+        let _slot = self.sync_slots.acquire().await?;
         let mut count = 0;
         for _ in 0..MAX_SYNC_PAGES {
             let (entries, more) = self.sync_page(peer).await?;
@@ -1280,16 +1511,23 @@ impl Server {
 
     async fn sync_page(&self, peer: &PeerConfig) -> Result<(usize, bool)> {
         let id = peer.address.id.to_string();
-        // Authorization is rechecked rather than accepting an arbitrary caller-provided address.
-        let current = self.state.peer_for_pull(&id)?;
-        let scope = blake3::hash(&serde_json::to_vec(&(
-            &current.communities,
-            &self.state.auto.blocked_hosts,
-            &self.state.peering,
-        ))?)
-        .to_hex()
-        .to_string();
-        let (known_generation, after) = self.state.store()?.scoped_cursor(&id, &scope)?;
+        // Recheck authorization before trusting a caller-provided address.
+        let remote = id.clone();
+        let (current, scope, known_generation, after) = self
+            .state
+            .blocking(move |state| {
+                let current = state.peer_for_pull(&remote)?;
+                let scope = blake3::hash(&serde_json::to_vec(&(
+                    &current.communities,
+                    &state.auto.blocked_hosts,
+                    &state.peering,
+                ))?)
+                .to_hex()
+                .to_string();
+                let (known_generation, after) = state.store.scoped_cursor(&remote, &scope)?;
+                Ok((current, scope, known_generation, after))
+            })
+            .await?;
         let response = transport::rpc(
             &self.endpoint,
             peer.address.clone(),
@@ -1300,101 +1538,135 @@ impl Server {
             },
         )
         .await?;
-        let Response::Page {
-            generation,
-            entries,
-            next,
-            more,
-        } = response
-        else {
-            bail!("invalid federation response");
-        };
-        ensure!(
-            generation.len() == 64 && hex::decode(&generation).is_ok(),
-            "invalid log generation"
-        );
-        let after = if known_generation.as_deref() == Some(&generation) {
-            after
-        } else {
-            0
-        };
-        ensure!(
-            next >= after && next <= i64::MAX as u64 && (!more || next > after),
-            "non-progressing federation cursor"
-        );
-        let mut previous = after;
-        let mut accepted = Vec::new();
-        for entry in &entries {
-            ensure!(
-                entry.cursor > previous && entry.cursor <= next,
-                "invalid federation page ordering"
-            );
-            ensure!(
-                current
-                    .communities
-                    .contains(&entry.envelope.event.payload.community),
-                "peer exceeded configured community scope"
-            );
-            // A deliberate local deny is different from an invalid/untrusted page:
-            // verify its bytes, skip that origin, and keep other hosts progressing.
-            entry.envelope.validate()?;
-            previous = entry.cursor;
-            if self
-                .state
-                .auto
-                .blocked_hosts
-                .contains(&entry.envelope.event.payload.home)
-            {
-                continue;
-            }
-            let payload = &entry.envelope.event.payload;
-            let is_deletion = matches!(
-                payload.action,
-                Action::Delete { .. } | Action::Erased { .. }
-            );
-            let permitted = |party: &str| match self.state.access(party, &payload.community) {
-                Some(Access::Active) => true,
-                Some(Access::Suspended) => is_deletion,
-                None => false,
-            };
-            if !permitted(&id) || !permitted(&payload.home) {
-                continue;
-            }
-            self.state.validate_import(&entry.envelope)?;
-            accepted.push(entry.clone());
-        }
         self.state
-            .store()?
-            .import_scoped_page(&id, &generation, next, &accepted, &scope)?;
-        Ok((entries.len(), more))
+            .blocking(move |state| {
+                let Response::Page {
+                    generation,
+                    entries,
+                    next,
+                    more,
+                } = &response
+                else {
+                    bail!("invalid federation response");
+                };
+                let fresh = state.peer_for_pull(&id)?;
+                ensure!(
+                    fresh.communities == current.communities
+                        && state.store.scoped_cursor(&id, &scope)?
+                            == (known_generation.clone(), after),
+                    "peer scope or cursor changed during pull"
+                );
+                let (next, more) = (*next, *more);
+                ensure!(
+                    generation.len() == 64 && hex::decode(generation).is_ok(),
+                    "invalid log generation"
+                );
+                let after = if known_generation.as_deref() == Some(generation) {
+                    after
+                } else {
+                    0
+                };
+                ensure!(
+                    next >= after && next <= i64::MAX as u64 && (!more || next > after),
+                    "non-progressing federation cursor"
+                );
+                let mut previous = after;
+                let mut accepted = Vec::new();
+                let examined = entries.len();
+                for entry in entries {
+                    ensure!(
+                        entry.cursor > previous && entry.cursor <= next,
+                        "invalid federation page ordering"
+                    );
+                    ensure!(
+                        current
+                            .communities
+                            .contains(&entry.envelope.event.payload.community),
+                        "peer exceeded configured community scope"
+                    );
+                    // A deliberate local deny is different from an invalid/untrusted page:
+                    // verify its bytes, skip that origin, and keep other hosts progressing.
+                    entry.envelope.validate()?;
+                    previous = entry.cursor;
+                    if state
+                        .auto
+                        .blocked_hosts
+                        .contains(&entry.envelope.event.payload.home)
+                    {
+                        continue;
+                    }
+                    let payload = &entry.envelope.event.payload;
+                    let is_deletion = matches!(
+                        payload.action,
+                        Action::Delete { .. } | Action::Erased { .. }
+                    );
+                    let permitted = |party: &str| match state.access(party, &payload.community) {
+                        Some(Access::Active) => true,
+                        Some(Access::Suspended) => is_deletion,
+                        None => false,
+                    };
+                    if !permitted(&id) || !permitted(&payload.home) {
+                        continue;
+                    }
+                    state.validate_import(&entry.envelope)?;
+                    accepted.push(entry.clone());
+                }
+                state.disclosure.restrict_if(accepted.iter().any(|entry| {
+                    entry.envelope.deletion.is_some()
+                        || matches!(
+                            entry.envelope.event.payload.action,
+                            Action::Delete { .. } | Action::Erased { .. }
+                        )
+                }))?;
+                state
+                    .store
+                    .import_scoped_page(&id, generation, next, &accepted, &scope)?;
+                Ok((examined, more))
+            })
+            .await
     }
 
     async fn sync_peer_metadata(&self, peer: &PeerConfig) -> Result<()> {
         let id = peer.address.id.to_string();
-        let current = self.state.peer_for_pull(&id)?;
+        let remote = id.clone();
+        let current = self
+            .state
+            .blocking(move |state| state.peer_for_pull(&remote))
+            .await?;
         for community in &current.communities {
             if self.state.access(&id, community) != Some(Access::Active) {
                 continue;
             }
+            let remote = id.clone();
+            let scope = community.clone();
             let owners: Vec<_> = self
                 .state
-                .store()?
-                .named_authors(&id, community)?
-                .into_iter()
-                .collect();
+                .blocking(move |state| {
+                    Ok(state
+                        .store
+                        .named_authors(&remote, &scope)?
+                        .into_iter()
+                        .collect())
+                })
+                .await?;
             for batch in owners.chunks(100) {
-                let known = {
-                    let store = self.state.store()?;
-                    batch
-                        .iter()
-                        .map(|owner| {
-                            Ok((
-                                owner.clone(),
-                                store.current_profile(&id, owner)?.map_or(0, |p| p.revision),
-                            ))
-                        })
-                        .collect::<Result<std::collections::BTreeMap<_, _>>>()?
-                };
+                let requested = batch.to_vec();
+                let remote = id.clone();
+                let known = self
+                    .state
+                    .blocking(move |state| {
+                        let store = &*state.store;
+                        requested
+                            .iter()
+                            .map(|owner| {
+                                let revision = store
+                                    .current_profile(&remote, owner)?
+                                    .map_or(0, |p| p.revision);
+                                Ok((owner.clone(), revision))
+                            })
+                            .collect::<Result<BTreeMap<_, _>>>()
+                    })
+                    .await?;
                 let Response::Social { result } = transport::rpc(
                     &self.endpoint,
                     peer.address.clone(),
@@ -1407,13 +1679,30 @@ impl Server {
                 else {
                     bail!("invalid profile response")
                 };
-                let records: std::collections::BTreeMap<String, crate::profiles::ProfileRecord> =
-                    serde_json::from_value(result)?;
-                let store = self.state.store()?;
-                for (owner, record) in records {
-                    ensure!(batch.contains(&owner), "unrequested profile");
-                    store.import_profile(&id, &owner, record)?;
-                }
+                let requested = batch.to_vec();
+                let remote = id.clone();
+                let scope = community.clone();
+                self.state
+                    .blocking(move |state| {
+                        ensure!(
+                            state.peer(&remote)?.communities.contains(&scope),
+                            "profile scope changed"
+                        );
+                        let records: BTreeMap<String, crate::profiles::ProfileRecord> =
+                            serde_json::from_value(result.clone())?;
+                        let store = &*state.store;
+                        for (owner, record) in records {
+                            ensure!(requested.contains(&owner), "unrequested profile");
+                            state.disclosure.restrict_if(
+                                store
+                                    .current_profile(&remote, &owner)?
+                                    .is_some_and(|old| old.revision < record.revision),
+                            )?;
+                            store.import_profile(&remote, &owner, record)?;
+                        }
+                        Ok(())
+                    })
+                    .await?;
             }
         }
         if self.state.access(&id, &format!("{id}/public")) == Some(Access::Active) {
@@ -1427,12 +1716,106 @@ impl Server {
             self.state.ha.is_none(),
             "HA staging cannot be edited directly"
         );
-        self.state.store()?.moderate(event, hide)
+        self.state.operation(|op| {
+            op.disclosure.restrict_if(hide)?;
+            op.store.moderate(event, hide)
+        })
     }
-    /// Stop accepting and close active transport connections; consumes this running server.
+    /// Stop accepting, cancel network work, and drain blocking jobs before releasing storage.
     pub async fn close(self) {
-        self.accept_task.abort();
         self.endpoint.close().await;
+        let _ = self.accept_task.await;
+        self.state.workers.drain().await;
+        if let Some(ha) = &self.state.ha {
+            ha.drain().await;
+        }
+        let _ = tokio::task::spawn_blocking(move || drop(self.state)).await;
+    }
+}
+
+#[cfg(test)]
+mod federation_tests {
+    use super::*;
+
+    pub(super) fn config(database_path: PathBuf) -> ServerConfig {
+        ServerConfig {
+            database_path,
+            private_key: new_secret(),
+            communities: BTreeMap::from([("test".into(), new_secret())]),
+            peers: Vec::new(),
+            network_mode: NetworkMode::Local,
+            public_replica_feeds: Default::default(),
+            auto_federation: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn overlapping_syncs_advance_while_another_peer_stalls() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let stalled = transport::bind(NetworkMode::Local, None, true).await?;
+        let healthy = transport::bind(NetworkMode::Local, None, true).await?;
+        let mut config = config(dir.path().join("home"));
+        let peer = |endpoint: &Endpoint| PeerConfig {
+            address: endpoint.addr(),
+            communities: BTreeSet::from(["test".into()]),
+        };
+        let source = peer(&healthy);
+        config.peers = vec![peer(&stalled), source.clone()];
+        let server = Server::start(config).await?;
+        let reply = |expected_after| {
+            let endpoint = &healthy;
+            async move {
+                let connection = endpoint.accept().await.context("endpoint closed")?.await?;
+                let (mut send, mut recv) = connection.accept_bi().await?;
+                let request = serde_json::from_slice(&recv.read_to_end(MAX_FRAME).await?)?;
+                let Request::Pull { after, .. } = request else {
+                    bail!("expected pull")
+                };
+                ensure!(after == expected_after, "stale cursor {after}");
+                send.write_all(&serde_json::to_vec(&Response::Page {
+                    generation: "aa".repeat(32),
+                    entries: vec![],
+                    next: after + 1,
+                    more: false,
+                })?)
+                .await?;
+                send.finish()?;
+                connection.closed().await;
+                anyhow::Ok(())
+            }
+        };
+        let (round, responses) = tokio::time::timeout(Duration::from_secs(8), async {
+            tokio::join!(server.sync_once(), async {
+                let stalled_connection = stalled
+                    .accept()
+                    .await
+                    .context("stalled peer closed")?
+                    .await?;
+                let (mut send, mut recv) = stalled_connection.accept_bi().await?;
+                recv.read_to_end(MAX_FRAME).await?;
+                // Keep the first peer waiting until both pulls from the second peer finish.
+                let (direct, replies) = tokio::join!(server.sync_peer(&source), async {
+                    reply(0).await?;
+                    reply(1).await
+                });
+                replies?;
+                send.write_all(&serde_json::to_vec(&Response::Error {
+                    code: "rejected".into(),
+                    message: "test peer unavailable".into(),
+                })?)
+                .await?;
+                send.finish()?;
+                stalled_connection.closed().await;
+                direct
+            })
+        })
+        .await?;
+        responses?;
+        assert!(round.is_err());
+        stalled.close().await;
+        healthy.close().await;
+        server.close().await;
+        Ok(())
     }
 }
 

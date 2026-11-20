@@ -852,7 +852,7 @@ async fn main() -> Result<()> {
             event,
             unhide,
         } => {
-            Store::open(&database)?.moderate(&event, !unhide)?;
+            Store::moderate_existing(&database, &event, !unhide)?;
             println!("local moderation updated");
         }
     }

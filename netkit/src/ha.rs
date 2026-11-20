@@ -18,6 +18,7 @@ pub fn export_ha(path: &Path, grant: &FullHomeStandby, output: &Path) -> Result<
         [guard.to_str().context("invalid guard path")?],
     )?;
     let tx = db.unchecked_transaction()?;
+    crate::store::migrations::guard_version(&tx, "guard")?;
     let (image, key): (Vec<u8>, Vec<u8>) = tx.query_row(
         "SELECT image,key FROM head JOIN membership USING(singleton)
          JOIN deletion_epoch USING(singleton) JOIN guard.state USING(id,epoch)
@@ -45,7 +46,7 @@ pub fn moderate_ha(path: &Path, grant: &FullHomeStandby, event: &str, hide: bool
     let (rev,image):(u64,Vec<u8>)=tx.query_row("SELECT revision,image FROM head JOIN membership USING(singleton) WHERE home=?1 AND standby=?2",
         params![grant.home,grant.standby.id.to_string()],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let mut store = Store {
-        db: Connection::open_in_memory()?,
+        db: Connection::open_in_memory()?.into(),
     };
     store.restore_snapshot(&image)?;
     store.moderate(event, hide)?;
@@ -439,12 +440,18 @@ fn unpack<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<(T, Vec<u8>)> 
     );
     Ok((serde_json::from_slice(header)?, image.to_vec()))
 }
+// A cancelled request can drop its future while its blocking job is still running.
+tokio::task_local! {
+    pub(super) static STAGING: Arc<tokio::sync::OwnedMutexGuard<Option<u64>>>;
+}
+
 pub(super) struct Ha {
     policy: String,
     grant: FullHomeStandby,
-    ledger: Option<Mutex<Ledger>>,
+    ledger: Option<Arc<Mutex<Ledger>>>,
+    ledger_worker: Arc<Semaphore>,
     // Only one operation can touch the staging database on each physical node at once.
-    cached: tokio::sync::Mutex<Option<u64>>,
+    cached: Arc<tokio::sync::Mutex<Option<u64>>>,
 }
 impl Ha {
     pub(super) fn new(
@@ -477,14 +484,15 @@ impl Ha {
         let ledger = match &options.role {
             HaRole::Primary => None,
             HaRole::Standby { ledger, .. } => {
-                Some(Mutex::new(Ledger::open(ledger, &options.grant)?))
+                Some(Arc::new(Mutex::new(Ledger::open(ledger, &options.grant)?)))
             }
         };
         Ok(Self {
             policy,
             grant: options.grant.clone(),
             ledger,
-            cached: tokio::sync::Mutex::new(None),
+            ledger_worker: Arc::new(Semaphore::new(1)),
+            cached: Arc::default(),
         })
     }
     pub(super) fn committed_capacity(&self) -> Result<(usize, usize)> {
@@ -503,13 +511,21 @@ impl Ha {
         Ok((bytes, snapshot_limit()?))
     }
 
-    fn local(&self, primary: bool, op: Control, data: Vec<u8>) -> Result<(Answer, Vec<u8>)> {
-        self.ledger
-            .as_ref()
-            .context("not the commit authority")?
-            .lock()
-            .map_err(|_| anyhow::anyhow!("ledger unavailable"))?
-            .exchange(primary, op, data)
+    pub(super) async fn drain(&self) {
+        let _all = self.ledger_worker.acquire().await;
+    }
+
+    async fn local(&self, primary: bool, op: Control, data: Vec<u8>) -> Result<(Answer, Vec<u8>)> {
+        let ledger = self.ledger.clone().context("not the commit authority")?;
+        let permit = self.ledger_worker.clone().acquire_owned().await?;
+        tokio::task::spawn_blocking(move || {
+            let (_permit, ledger) = (permit, ledger);
+            ledger
+                .lock()
+                .map_err(|_| anyhow::anyhow!("ledger unavailable"))?
+                .exchange(primary, op, data)
+        })
+        .await?
     }
     pub(super) async fn control(
         &self,
@@ -528,6 +544,7 @@ impl Ha {
         ensure!(policy == self.policy, "home admission policies differ");
         let (answer, image) = self
             .local(true, op, image)
+            .await
             .unwrap_or((Answer::Refused, Vec::new()));
         packet(&answer, &image)
     }
@@ -538,7 +555,7 @@ impl Ha {
         image: Vec<u8>,
     ) -> Result<(Answer, Vec<u8>)> {
         if self.ledger.is_some() {
-            return self.local(false, op, image);
+            return self.local(false, op, image).await;
         }
         tokio::time::timeout(Duration::from_secs(crate::RPC_TIMEOUT_SECS), async {
             let connection = endpoint
@@ -568,12 +585,12 @@ impl Ha {
         );
         Ok(())
     }
-    async fn run<F, Fut>(&self, state: &State, op: Operation, work: F) -> Result<Response>
+    async fn run<F, Fut>(&self, state: &Arc<State>, op: Operation, work: F) -> Result<Response>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<Response>>,
     {
-        let mut cache = self.cached.lock().await;
+        let mut cache = self.cached.clone().lock_owned().await;
         // Taking the known revision first makes cancellation at any later await invalidate
         // speculative local changes, including cancellation after a successful remote commit.
         let known = cache.take();
@@ -601,31 +618,54 @@ impl Ha {
             Answer::Ready { revision, permit } => (revision, permit),
             _ => bail!("home commit authority unavailable"),
         };
-        if !image.is_empty() {
-            state.store()?.restore_snapshot(&image)?;
-        } else {
-            ensure!(known == Some(rev), "missing committed snapshot");
-        }
-        let before = state.store()?.db.total_changes();
-        let result = work().await;
-        let ok = result.is_ok();
-        let response = match result {
-            Ok(response) => response,
-            Err(e) => Response::Error {
-                code: "rejected".into(),
-                message: e.to_string(),
-            },
-        };
-        let serialized = serde_json::to_string(&response)?;
-        ensure!(serialized.len() <= MAX_FRAME, "home response exceeds bound");
-        let image = {
-            let store = state.store()?;
-            if ok && before != store.db.total_changes() {
-                store.snapshot()?
-            } else {
-                Vec::new()
-            }
-        };
+        let cache = Arc::new(cache);
+        let (ok, serialized, image) = STAGING
+            .scope(cache.clone(), async {
+                let before = state
+                    .ha_blocking(move |store| {
+                        if !image.is_empty() {
+                            store.restore_snapshot(&image)?;
+                        } else {
+                            ensure!(known == Some(rev), "missing committed snapshot");
+                        }
+                        Ok(store
+                            .db
+                            .sqlite()
+                            .context("expected HA staging")?
+                            .total_changes())
+                    })
+                    .await?;
+                let result = work().await;
+                let ok = result.is_ok();
+                // Queue behind any staging work still completing after a background timeout.
+                let (serialized, image) = state
+                    .ha_blocking(move |store| {
+                        let response = result.unwrap_or_else(|e| Response::Error {
+                            code: "rejected".into(),
+                            message: e.to_string(),
+                        });
+                        let serialized = serde_json::to_string(&response)?;
+                        ensure!(serialized.len() <= MAX_FRAME, "home response exceeds bound");
+                        let image = if ok
+                            && before
+                                != store
+                                    .db
+                                    .sqlite()
+                                    .context("expected HA staging")?
+                                    .total_changes()
+                        {
+                            store.snapshot()?
+                        } else {
+                            Vec::new()
+                        };
+                        Ok((serialized, image))
+                    })
+                    .await?;
+                anyhow::Ok((ok, serialized, image))
+            })
+            .await?;
+        let mut cache =
+            Arc::try_unwrap(cache).map_err(|_| anyhow::anyhow!("staging still busy"))?;
         let (answer, _) = self
             .exchange(
                 &state.endpoint,
@@ -649,13 +689,13 @@ impl Ha {
     }
     pub(super) async fn request(
         &self,
-        state: &State,
+        state: &Arc<State>,
         remote: &str,
         id: String,
         call: Request,
     ) -> Result<Response> {
         if matches!(call, Request::ServerSource) {
-            return state.handle(remote, call);
+            return state.dispatch(remote, call).await;
         }
         if matches!(
             call,
@@ -663,12 +703,12 @@ impl Ha {
                 | Request::SubmitReport { .. }
                 | Request::ReportStatus { .. }
         ) {
-            return Ok(state
-                .handle(remote, call)
-                .unwrap_or_else(|error| Response::Error {
+            return Ok(state.dispatch(remote, call).await.unwrap_or_else(|error| {
+                Response::Error {
                     code: "rejected".into(),
                     message: error.to_string(),
-                }));
+                }
+            }));
         }
         // Previous federation receipts must never bypass a later policy suspension.
         let bytes = if matches!(
@@ -688,18 +728,19 @@ impl Ha {
     }
     pub(super) async fn push_operation(
         &self,
-        state: &State,
-        jobs: Option<(&serde_json::Value, &serde_json::Value)>,
+        state: &Arc<State>,
+        jobs: Option<(serde_json::Value, serde_json::Value)>,
     ) -> Result<serde_json::Value> {
         let op = Operation::new(&self.grant.home, new_secret(), b"push-dispatch")?;
         match self
-            .run(state, op, || async {
-                let store = state.store()?;
-                let result = match jobs {
-                    Some((jobs, outcomes)) => store.finish_push(jobs, outcomes)?,
-                    None => store.claim_push()?,
-                };
-                Ok(Response::Social { result })
+            .run(state, op, || {
+                state.ha_blocking(move |store| {
+                    let result = match jobs {
+                        Some((jobs, outcomes)) => store.finish_push(&jobs, &outcomes)?,
+                        None => store.claim_push()?,
+                    };
+                    Ok(Response::Social { result })
+                })
             })
             .await?
         {
@@ -709,7 +750,7 @@ impl Ha {
     }
     // Each operation gets its own permit and deadline. A failed peer cannot roll back
     // another peer's cursor, and slow metadata cannot roll back a verified page.
-    async fn background<T, F>(&self, state: &State, work: F) -> Result<T>
+    async fn background<T, F>(&self, state: &Arc<State>, work: F) -> Result<T>
     where
         T: Serialize + serde::de::DeserializeOwned,
         F: std::future::Future<Output = Result<T>>,
@@ -741,7 +782,7 @@ impl Ha {
             errors.push(format!("discovery: {e:#}"));
         }
         let peers = self
-            .background(&server.state, async { server.sync_peers() })
+            .background(&server.state, server.state.blocking(|op| op.sync_peers()))
             .await?;
         let mut count = 0;
         for peer in peers {
@@ -808,6 +849,82 @@ mod tests {
             result: "durable receipt".into(),
         }
     }
+    #[tokio::test]
+    async fn cancelled_and_timed_out_staging_writes_keep_the_fence() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let config = super::super::federation_tests::config(dir.path().join("staging"));
+        let standby = iroh::SecretKey::generate();
+        let grant = FullHomeStandby::issue(
+            &signing_key(&config.private_key)?,
+            EndpointAddr::new(standby.public()),
+        )?;
+        let server = Server::start_ha(
+            config,
+            HaOptions {
+                grant,
+                role: HaRole::Standby {
+                    transport_key: hex::encode(standby.to_bytes()),
+                    ledger: dir.path().join("ledger"),
+                },
+            },
+        )
+        .await?;
+        let state = &server.state;
+        let ha = state.ha.as_ref().unwrap();
+        let image = Store::open(&dir.path().join("seed"))?.snapshot()?;
+        ha.local(true, Control::Seed, image).await?;
+        for cancel_request in [true, false] {
+            let (started, running) = tokio::sync::oneshot::channel();
+            let (resume, paused) = std::sync::mpsc::channel();
+            let mut operation = Box::pin(ha.background(
+                state,
+                state.ha_blocking(move |store| {
+                    started.send(()).unwrap();
+                    paused.recv_timeout(Duration::from_secs(6))?;
+                    store.moderate("speculative", true)
+                }),
+            ));
+            tokio::select! {
+                started = running => started?,
+                result = &mut operation => panic!("unexpected completion: {result:?}"),
+            }
+            if cancel_request {
+                drop(operation);
+                assert!(ha.cached.try_lock().is_err());
+                resume.send(())?;
+            } else {
+                // The background deadline expires while the mutation is paused.
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(3200), &mut operation)
+                        .await
+                        .is_err()
+                );
+                assert!(ha.cached.try_lock().is_err());
+                resume.send(())?;
+                assert!(operation.await.is_err());
+            }
+            assert!(ha.cached.lock().await.is_none());
+            if cancel_request {
+                // Simulate expiry of the abandoned authority permit.
+                ha.ledger
+                    .as_ref()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .permit
+                    .as_mut()
+                    .unwrap()
+                    .issued -= OPERATION_TTL;
+            }
+            let hidden = ha
+                .background(state, state.ha_blocking(|store| store.hidden()))
+                .await?;
+            assert!(hidden.is_empty());
+        }
+        server.close().await;
+        Ok(())
+    }
+
     #[test]
     fn capacity_warning_precedes_the_commit_limit() {
         let health = |used| WorkerHealth {

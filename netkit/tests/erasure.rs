@@ -1,4 +1,5 @@
 #![cfg(feature = "server")]
+mod support;
 use anyhow::Result;
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce, aead::Aead};
 use std::collections::BTreeSet;
@@ -18,8 +19,8 @@ fn accepted(home_secret: &str, wallet: &AccountWallet, n: u64, action: Action) -
     Envelope::accept(event, &signing_key(home_secret)?)
 }
 
-#[test]
-fn home_accepts_activity_and_deletion_past_the_old_log_limit() -> Result<()> {
+#[tokio::test]
+async fn home_accepts_activity_and_deletion_past_the_old_log_limit() -> Result<()> {
     let dir = tempdir()?;
     let home = new_secret();
     let home_id = hex::encode(signing_key(&home)?.verifying_key().as_bytes());
@@ -39,13 +40,15 @@ fn home_accepts_activity_and_deletion_past_the_old_log_limit() -> Result<()> {
     )?;
     store.accept(&post)?;
     // Fill unrelated log slots directly to exercise admission at its production bound.
-    let db = rusqlite::Connection::open(&path)?;
-    db.execute(
-        "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<?)
-        INSERT INTO events(id, community, author, author_seq, envelope)
-        SELECT 'fixture-' || i, 'other', 'fixture', i, '{}' FROM n",
-        [10_001],
-    )?;
+    let db = support::primary(&path).await?;
+    support::seed_range(
+        &db,
+        "INSERT INTO events(id,community,author,author_seq,envelope)
+         SELECT 'fixture-' || value,?1,'fixture',value,'{}' FROM generate_series(?2,?3)",
+        "other",
+        10_001,
+    )
+    .await?;
     let vote = accepted(
         &home,
         &wallet,
@@ -72,8 +75,8 @@ fn home_accepts_activity_and_deletion_past_the_old_log_limit() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn erased_payload_stays_gone_across_replay_new_peers_private_import_and_backup_restore()
+#[tokio::test]
+async fn erased_payload_stays_gone_across_replay_new_peers_private_import_and_backup_restore()
 -> Result<()> {
     let dir = tempdir()?;
     let home = new_secret();
@@ -132,9 +135,33 @@ fn erased_payload_stays_gone_across_replay_new_peers_private_import_and_backup_r
         store.accept(e)?;
         store.import_personal_events(&owner, std::slice::from_ref(e))?;
     }
+    let primary = support::primary(&db).await?;
+    let raw: String = primary
+        .query(
+            "SELECT envelope FROM events WHERE id=?",
+            [create.event.id.as_str()],
+        )
+        .await?
+        .next()
+        .await?
+        .unwrap()
+        .get(0)?;
+    let header: Envelope = serde_json::from_str(&raw)?;
+    assert_eq!(header.event.payload, create.event.header()?);
+    assert!(header.deletion.is_none());
+    drop(primary);
     store.backup(&backup_path)?;
-    std::fs::copy(&db, &stale)?;
+    drop(store);
+    support::assert_no_plaintext(&db, &["sensitive_body_marker", &create.event.payload.nonce])?;
+    support::raw_snapshot(&db, &stale)?;
     let guard = db.with_added_extension("deletion-guard");
+    std::os::unix::fs::symlink(&guard, stale.with_added_extension("deletion-guard"))?;
+    // Establish that the complete snapshot and guard agree before any deletion.
+    assert_eq!(
+        Store::open(&stale)?.existing(&create.event.id)?,
+        Some(create.clone())
+    );
+    let mut store = Store::open(&db)?;
     let mut offline = Store::open(&dir.path().join("offline.db"))?;
     offline.accept(&create)?;
     let other = AccountWallet::create(new_secret(), home_id.clone())?;
@@ -233,8 +260,11 @@ fn erased_payload_stays_gone_across_replay_new_peers_private_import_and_backup_r
     assert_eq!(restored.account_chain(&owner)?, replacement.chain);
     assert_eq!(restored.existing(&live.event.id)?, Some(live.clone()));
     // A raw database rollback is rejected even when pointed at the correct current guard.
-    std::os::unix::fs::symlink(&guard, stale.with_added_extension("deletion-guard"))?;
-    assert!(Store::open(&stale).is_err());
+    let error = Store::open(&stale).err().expect("raw rollback accepted");
+    assert!(
+        format!("{error:#}").contains("predates trusted guard"),
+        "{error:#}"
+    );
     for replica in [&mut store, &mut restored, &mut offline, &mut fresh] {
         replica.accept(&create)?;
         replica.import_personal_events(&owner, std::slice::from_ref(&create))?;
@@ -246,6 +276,11 @@ fn erased_payload_stays_gone_across_replay_new_peers_private_import_and_backup_r
         }
         assert_eq!(replica.existing(&create.event.id)?, Some(redacted.clone()));
     }
+    drop(restored);
+    drop(store);
+    drop(guard_db);
+    support::assert_no_plaintext(&db, &markers)?;
+    support::assert_no_plaintext(&restored_path, &markers)?;
     for path in [&db, &guard, &restored_path] {
         let raw = std::fs::read(path)?;
         for marker in markers {
