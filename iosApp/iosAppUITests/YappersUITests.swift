@@ -728,7 +728,16 @@ final class YappersUITests: XCTestCase {
             !app.keyboards.firstMatch.exists && liveComment.exists && liveComment.isHittable
         }, evaluatedWith: app)
         wait(for: [visibleComment], timeout: 10)
+        let deleteReply = app.buttons["Delete reply"]
+        XCTAssertTrue(deleteReply.waitForExistence(timeout: 30))
+        XCTAssertEqual(deleteReply.frame.width, 44, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(deleteReply.frame.height, 44)
         capture("Federated comment revealed", app: app)
+        deleteReply.tap()
+        let confirmation = app.alerts["Delete this from the community?"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        confirmation.buttons["Cancel"].tap()
+        XCTAssertTrue(liveComment.isHittable)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.buttons["Upvote"].firstMatch.tap()
         app.buttons["Save post"].firstMatch.tap()

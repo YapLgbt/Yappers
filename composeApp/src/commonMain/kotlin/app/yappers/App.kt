@@ -1157,7 +1157,7 @@ private fun Conversation(post: Post, alias: String, namedIdentity: String, anony
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             PostByline(reply.author, reply.username, isAnonymous(reply.author, reply.visibility), Modifier.weight(1f)) { onReplyAuthor(reply) }
                             if (networked && reply.mine && !reply.pending && reply.remoteId != null) {
-                                if (nativeButton != null) nativeButton(FormRow("delete", "Delete reply", symbol = "trash", destructive = true,
+                                if (nativeButton != null) nativeButton(FormRow("delete", "Delete reply", "icon", symbol = "trash", destructive = true,
                                     onTap = { onDelete(reply.remoteId) }), Modifier)
                                 else TextButton(onClick = { onDelete(reply.remoteId) }) { Text("Delete reply") }
                             }
