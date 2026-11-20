@@ -22,11 +22,15 @@ async function release(directory) {
 }
 
 function fixtureServer() {
-  const fixture = { release: null, corrupt: false, corruptions: 0, offline: false };
+  const fixture = { release: null, corrupt: false, corruptions: 0, offline: false, refuseWorker: false };
   const server = http.createServer(async (req, res) => {
     if (fixture.offline) return req.socket.destroy();
     try {
       const { pathname } = new URL(req.url, 'http://localhost');
+      if (fixture.refuseWorker && ['/app/background-sw.js', '/app/sw.js'].includes(pathname)) {
+        res.writeHead(503, { 'Cache-Control': 'no-store' }).end();
+        return;
+      }
       if (!/^\/(app|_app|assets)\//.test(pathname)) { res.writeHead(404).end(); return; }
       const file = path.resolve(fixture.release.root, '.' + (pathname.endsWith('/') ? pathname + 'index.html' : pathname));
       assert(file.startsWith(fixture.release.root + path.sep));
@@ -46,7 +50,7 @@ function fixtureServer() {
   return { fixture, server };
 }
 
-async function install(page, url) {
+async function openApp(page, url) {
   // Observe real messages and full document loads. The probe never asks for a
   // build or initiates an update, either of which could conceal a missing app listener.
   await page.addInitScript(() => {
@@ -58,7 +62,6 @@ async function install(page, url) {
   });
   await page.goto(url);
   await page.getByRole('heading', { name: 'Welcome to Yap' }).waitFor();
-  await page.waitForFunction(() => !!navigator.serviceWorker.controller);
 }
 
 async function expectBuild(page, build) {
@@ -67,17 +70,14 @@ async function expectBuild(page, build) {
     build, { timeout });
 }
 
-async function online(context) {
-  await context.setOffline(true);
-  await context.setOffline(false);
-}
-
 async function legacyUpgrade(context, url, fixture, old, a) {
   fixture.release = old;
   const tab = await context.newPage();
-  await install(tab, url);
+  await openApp(tab, url);
+  await tab.waitForFunction(() => !!navigator.serviceWorker.controller);
   const other = await context.newPage();
-  await install(other, url);
+  await openApp(other, url);
+  await other.waitForFunction(() => !!navigator.serviceWorker.controller);
   fixture.release = a;
   // v48 has no application update listener. Trigger the browser's worker check
   // while BOTH legacy clients are still controlled, then navigate just one tab.
@@ -96,16 +96,19 @@ async function legacyUpgrade(context, url, fixture, old, a) {
 async function automaticUpgrade(context, url, fixture, a, b) {
   fixture.release = a;
   const tab = await context.newPage();
-  await install(tab, url);
+  await openApp(tab, url);
   await expectBuild(tab, a.build);
   assert.equal(await tab.evaluate(() => sessionStorage.qaLoads), '1', 'first install reloaded the shell');
 
   await tab.locator('#welcome-create').click();
   const alias = tab.locator('#welcome-alias');
   await alias.fill('Unsaved neighborhood alias');
+  await context.setOffline(true);
   fixture.release = b;
-  await online(context);
+  await context.setOffline(false);
   await tab.waitForFunction(build => window.qaBuild === build, b.build, { timeout });
+  // Leave the form dirty across the pending reload's one-second retry.
+  await new Promise(resolve => setTimeout(resolve, 1300));
   assert.equal(await tab.locator('meta[name="yap-build"]').getAttribute('content'), a.build);
   assert.equal(await alias.inputValue(), 'Unsaved neighborhood alias');
   assert.equal(await tab.evaluate(() => sessionStorage.qaLoads), '1', 'an update interrupted Welcome');
@@ -119,8 +122,26 @@ async function automaticUpgrade(context, url, fixture, a, b) {
 async function failedUpgrade(context, url, fixture, a, b) {
   fixture.release = a;
   const tab = await context.newPage();
-  await install(tab, url);
+  // Observe the real registration failure of the classic fallback. Both
+  // worker URLs return 503 on the first visit; the application owns the retry.
+  fixture.refuseWorker = true;
+  await tab.addInitScript(() => {
+    const workers = navigator.serviceWorker;
+    const register = workers.register.bind(workers);
+    workers.register = (url, options) => {
+      const attempt = register(url, options);
+      if (url === '/app/sw.js') attempt.catch(() => { window.qaFallbackFailed = true; });
+      return attempt;
+    };
+  });
+  await openApp(tab, url);
+  await tab.waitForFunction(() => window.qaFallbackFailed);
+  assert.equal(await tab.evaluate(() => navigator.serviceWorker.controller), null);
+  await context.setOffline(true);
+  fixture.refuseWorker = false;
+  await context.setOffline(false);
   await expectBuild(tab, a.build);
+  assert.equal(await tab.evaluate(() => sessionStorage.qaLoads), '1', 'registration retry reloaded the shell');
   await tab.evaluate(async () => {
     const reg = await navigator.serviceWorker.ready;
     reg.addEventListener('updatefound', () => {
@@ -128,14 +149,14 @@ async function failedUpgrade(context, url, fixture, a, b) {
       worker.addEventListener('statechange', () => { window.qaInstallState = worker.state; });
     });
   });
+  await context.setOffline(true);
   fixture.release = b;
   fixture.corrupt = true;
-  await online(context);
+  await context.setOffline(false);
   await tab.waitForFunction(() => window.qaInstallState === 'redundant', null, { timeout });
   assert(fixture.corruptions > 0, 'new worker did not request the corrupt WASM');
 
-  // Refuse socket connections even for the worker. Both WebKit and Chrome
-  // can now reach the shell and runtime only through the previous offline cache.
+  // Drop origin requests even from the worker, so only its cached copy can load.
   fixture.offline = true;
   const shell = await tab.goto(url);
   assert(shell?.fromServiceWorker(), 'offline shell did not come from the active worker');
@@ -149,7 +170,7 @@ async function failedUpgrade(context, url, fixture, a, b) {
   }, wasm);
   const expected = createHash('sha256').update(await fs.readFile(path.join(a.root, wasm))).digest('hex');
   assert.equal(actual, expected, 'offline runtime differs from A');
-  console.log('PASS corrupt B rejected, A shell and exact A WASM available offline');
+  console.log('PASS registration retry on reconnect, corrupt B rejected, A shell and exact A WASM available offline');
 }
 
 async function main() {
@@ -164,12 +185,11 @@ async function main() {
   try {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const url = 'http://127.0.0.1:' + server.address().port + '/app/';
-    for (const run of [legacyUpgrade, automaticUpgrade, failedUpgrade]) {
+    for (const [run, from, to] of [[legacyUpgrade, old, a], [automaticUpgrade, a, b], [failedUpgrade, a, b]]) {
       const context = await browser.newContext();
       context.setDefaultTimeout(timeout);
       try {
-        if (run === legacyUpgrade) await run(context, url, fixture, old, a);
-        else await run(context, url, fixture, a, b);
+        await run(context, url, fixture, from, to);
       } finally { await context.close(); }
     }
   } finally {
