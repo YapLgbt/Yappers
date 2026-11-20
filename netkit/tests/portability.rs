@@ -1088,3 +1088,73 @@ fn competing_account_updates_accept_one_chain() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn account_deletion_survives_lost_ack_and_restore_of_an_older_backup() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("home");
+    let archive = dir.path().join("before.backup");
+    let mut cfg = config(&path, new_secret(), "nearby");
+    let home = Server::start(cfg.clone()).await?;
+    let owner = wallet(&home.endpoint.id().to_string());
+    let neighbor = wallet(&home.endpoint.id().to_string());
+    let writer = portable_client(&home, "nearby", &owner).await;
+    let reader = portable_client(&home, "nearby", &neighbor).await;
+    let content = writer.prepare(action("Delete with my account"))?;
+    let target = content.event.id.clone();
+    writer.submit(content.event).await?;
+    let keep = reader.prepare(action("Another neighbor's post"))?.event;
+    reader.submit(keep.clone()).await?;
+    Store::backup_existing(&path, &archive)?;
+
+    let intent = writer.prepare_account_deletion(&owner)?;
+    let Response::AccountDeletePending { targets } =
+        writer.account_deletion_step(&intent, vec![]).await?
+    else {
+        anyhow::bail!("Home omitted the live post from deletion");
+    };
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].id, target);
+    let batch = writer.prepare_account_deletion_batch(&intent, &targets, content.next_sequence)?;
+    // Model a lost reply: a restarted client can discover completion without
+    // either re-registering the account or reserving another author sequence.
+    let reply = writer.account_deletion_step(&intent, batch.proofs).await?;
+    assert!(matches!(reply, Response::AccountDeleted { .. }));
+    assert!(writer.register_account(&owner).await.is_err());
+    assert!(matches!(
+        writer.account_deletion_step(&intent, vec![]).await?,
+        Response::AccountDeleted { .. }
+    ));
+    writer.close().await;
+    reader.close().await;
+    home.close().await;
+
+    cfg.database_path = dir.path().join("restored");
+    yappers_netkit::backup::restore(
+        &path.with_added_extension("deletion-guard"),
+        &archive,
+        &cfg.database_path,
+    )?;
+    let restored = Server::start(cfg).await?;
+    let writer = portable_client(&restored, "nearby", &owner).await;
+    let reader = portable_client(&restored, "nearby", &neighbor).await;
+    // The exported root can sign a newer grant. It still cannot resurrect
+    // this account on a restored Home that has seen its terminal deletion.
+    let recovery = owner.transition(restored.endpoint.id().to_string(), false)?;
+    let recovered = portable_client(&restored, "nearby", &recovery).await;
+    assert!(recovered.register_account(&recovery).await.is_err());
+    assert!(writer.export_owned(&owner).await.is_err());
+    assert!(matches!(
+        writer.account_deletion_step(&intent, vec![]).await?,
+        Response::AccountDeleted { .. }
+    ));
+    let Response::Feed { posts, .. } = reader.feed().await? else {
+        anyhow::bail!("expected a feed from the restored Home");
+    };
+    assert_eq!(posts.iter().map(|p| &p.id).collect::<Vec<_>>(), [&keep.id]);
+    recovered.close().await;
+    writer.close().await;
+    reader.close().await;
+    restored.close().await;
+    Ok(())
+}

@@ -33,6 +33,7 @@ object InboxPush {
     private val pending = MutableStateFlow<String?>(null)
     internal val routes = pending.asStateFlow()
     fun open(route: String) { if (route.length == 64 && route.all { it in "0123456789abcdef" }) pending.value = route }
+    internal fun clear() { pending.value = null }
     internal fun take(route: String) = pending.compareAndSet(route, null)
     internal suspend fun token(): String = suspendCancellableCoroutine { continuation ->
         checkNotNull(registration) { "Push is unavailable on this device." }.requestToken { token, error ->

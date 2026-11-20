@@ -62,7 +62,7 @@ class AppleSyncRuntime(storage: NetkitStorage, nearby: NearbyServices) {
             it.setForeground(isForeground())
         }
 
-    val refreshEnabled: Boolean get() = controller.state.value.enabled
+    val refreshEnabled: Boolean get() = controller.deletion.value == DeletionStatus.Idle && controller.state.value.enabled
     val hasPendingUploads: Boolean get() = controller.state.value.let { state ->
         state.pendingCount > 0 || state.messages.any { it.status == "queued" }
     }
@@ -127,7 +127,7 @@ class AppleAppSession(
     private val nearby: NearbyServices,
 ) {
     private val storage = AppleStorage()
-    private val content = AppContentState(storage)
+    private var content by mutableStateOf(AppContentState(storage, runtime.controller))
     private val networking = runtime.controller
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val center = NSNotificationCenter.defaultCenter
@@ -164,6 +164,19 @@ class AppleAppSession(
     }
 
     val tabsVisible: Boolean get() = !installWelcome && !networking.welcome.value && !networking.backupStep.value
+
+    fun onAccountReset(action: () -> Unit) {
+        val initial = networking.generation.value
+        scope.launch {
+            networking.generation.collect { generation ->
+                if (generation != initial) {
+                    content = AppContentState(storage, runtime.controller)
+                    installWelcome = true
+                    action()
+                }
+            }
+        }
+    }
 
     fun didSelectTab(tab: String) { activeTab = tab }
 

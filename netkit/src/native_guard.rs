@@ -46,6 +46,10 @@ pub(crate) enum Intent {
         community: String,
         target: String,
     },
+    RetireAccount {
+        account: String,
+        record_id: String,
+    },
     Cutover,
 }
 
@@ -225,6 +229,7 @@ impl NativeGuard {
         let mut db = self.writer()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         check(&tx, expected)?;
+        ensure!(!retired(&tx, scope.owner)?, "account deleted");
         let args = params![scope.target, scope.owner, scope.community, scope.private];
         ensure!(!tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM known_deletions WHERE target=? AND owner=? AND community=? AND private<=?)",
@@ -344,6 +349,14 @@ fn successor(db: &Connection, before: &Stamp, op_id: &str, intents: &[Intent]) -
     })
 }
 
+fn retired(db: &Connection, account: &str) -> Result<bool> {
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM known_deleted_accounts WHERE account=?)",
+        [account],
+        |r| r.get(0),
+    )?)
+}
+
 fn validate_intent(db: &Connection, intent: &Intent) -> Result<()> {
     match intent {
         Intent::Delete { proof, .. } => {
@@ -358,6 +371,7 @@ fn validate_intent(db: &Connection, intent: &Intent) -> Result<()> {
         }
         Intent::Account { chain } => {
             let latest = validate_chain(chain)?;
+            ensure!(!retired(db, &latest.payload.account)?, "account deleted");
             let known: Option<String> = db
                 .query_row(
                     "SELECT chain FROM current_accounts WHERE account=?",
@@ -381,6 +395,18 @@ fn validate_intent(db: &Connection, intent: &Intent) -> Result<()> {
             ensure!(
                 !peer.is_empty() && !community.is_empty() && !target.is_empty(),
                 "missing delivery identity"
+            );
+        }
+        Intent::RetireAccount { account, record_id } => {
+            let raw: String = db.query_row(
+                "SELECT chain FROM current_accounts WHERE account=?",
+                [account],
+                |r| r.get(0),
+            )?;
+            let chain: Vec<AccountRecord> = serde_json::from_str(&raw)?;
+            ensure!(
+                validate_chain(&chain)?.id()? == *record_id,
+                "deletion does not match current guard registration"
             );
         }
         Intent::Cutover => {}
@@ -428,6 +454,14 @@ fn apply_intent(db: &Connection, intent: &Intent) -> Result<()> {
                 "INSERT OR IGNORE INTO known_deliveries VALUES(?,?,?)",
                 params![peer, community, target],
             )?;
+        }
+        Intent::RetireAccount { account, record_id } => {
+            db.execute(
+                "INSERT INTO known_deleted_accounts VALUES(?,?)",
+                params![account, record_id],
+            )?;
+            db.execute("DELETE FROM current_accounts WHERE account=?", [account])?;
+            db.execute("DELETE FROM opening_keys WHERE owner=?", [account])?;
         }
         Intent::Cutover => {}
     }
@@ -607,6 +641,16 @@ pub(crate) fn stage_delete(db: &HomeDb, proof: &Envelope, private: bool) -> Resu
         Intent::Delete {
             proof: Box::new(proof.clone()),
             private,
+        },
+    )
+}
+
+pub(crate) fn stage_retirement(db: &HomeDb, account: &str, record_id: &str) -> Result<()> {
+    stage(
+        db,
+        Intent::RetireAccount {
+            account: account.into(),
+            record_id: record_id.into(),
         },
     )
 }

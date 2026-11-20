@@ -50,7 +50,7 @@ class YapActivity : ComponentActivity() {
 
     private fun acceptInboxIntent(intent: Intent) {
         if (intent.action == AndroidInboxService.OPEN) {
-            intent.getStringExtra("route")?.let(InboxPush::open)
+            AndroidPush.ifActive(this) { intent.getStringExtra("route")?.let(InboxPush::open) }
             intent.removeExtra("route")
         }
     }

@@ -1,4 +1,4 @@
-# Deleting a post or reply
+# Deleting content and accounts
 
 Home supports Iroh ALPN `yappers/netkit/7` for multiplexed requests and `yappers/netkit/6` for single-request connections. Posts, replies, votes and deletes use event version 4. The storage upgrade preserves the existing wire format, signing keys and signatures. Stores containing earlier signed event formats require a separate cutover because an operator cannot recreate author signatures.
 
@@ -9,6 +9,12 @@ The creation event contains a random 32-byte nonce and a complete typed action. 
 The home attests to the event ID, originating home and acceptance time. For portable accounts it checks the supplied account chain and requires the current revision to authorize the signing device. The signed event retains the root-signed grant used at acceptance. After rotation, the replacement device can delete a post created by a previously authorized device. Peers verify both signatures, both grants, both home receipts, the target ID, community and account ownership. They rely on the accepting home's knowledge of revocation at acceptance. An isolated home can lack a newer account revision. A peer inspecting a deleted header can verify these facts without inspecting the former content. Account identifiers, community, timing, sequence and commitments remain linkable metadata.
 
 An erased event travels with the complete signed deletion envelope, even on the first page of a new peer's initial sync. Checking the proof includes checking its originating home's admission for the community. The home reserves a deletion slot for each live post and reply within its event-count limit. A delayed full event, private-history upload or repeated submission cannot replace a matching deletion. A local hide and an account block have no authority to erase someone else's post. Independent readers can retain material they already received.
+
+## Deleting an account from a phone
+
+**Delete account** in the iOS and Android profile settings asks for confirmation, then contacts the account’s Home. The recovery authority signs the deletion intent and a currently authorized device authenticates the request. Home enumerates the account’s live posts and replies across communities, including private authored history. The device signs a deletion for each target in batches. Home also removes the profile, releases the username, clears account-owned messaging and push records, and records the retired account ID in its independent deletion guard. The guard prevents a later registration or managed restore from bringing the account back on this Home. Older protected archives can contain account metadata encrypted under the Home backup key. Restore uses the current guard to purge that metadata before opening the restored database.
+
+The phone saves its place before sending each batch. After Home confirms completion, the app erases the account keys, cached content and drafts on that phone and returns to Welcome. If interrupted, it can retry with the same proofs or finish local cleanup. Previously delivered messages on other devices, independently exported files and separately submitted moderation reports have their own lifetimes.
 
 ## Storage and backup
 

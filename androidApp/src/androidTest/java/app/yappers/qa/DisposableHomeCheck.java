@@ -7,6 +7,7 @@ import android.os.Bundle;
 import android.util.Base64;
 import app.yappers.*;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
 import kotlin.coroutines.Continuation;
 import kotlin.coroutines.EmptyCoroutineContext;
 import kotlin.jvm.functions.Function1;
@@ -39,6 +40,20 @@ public final class DisposableHomeCheck extends Instrumentation {
         String stage = "fixture";
         try {
             require(Build.MODEL.contains("sdk") || Build.HARDWARE.contains("ranchu"), "Use a disposable emulator");
+            if ("verify-wipe".equals(arguments.getString("check"))) {
+                stage = "verify device cleanup after restart";
+                KeyStore keys = KeyStore.getInstance("AndroidKeyStore");
+                keys.load(null);
+                require(!keys.containsAlias("yap-account-v1"), "Account encryption key survived restart");
+                require(!keys.containsAlias("yap-account-deletion-journal-v1"), "Journal key survived restart");
+                require(!getTargetContext().getSharedPreferences("installation", 0).contains("welcomed"),
+                        "Previous welcome flag survived restart");
+                android.content.SharedPreferences push = getTargetContext().getSharedPreferences("push-delivery", 0);
+                require(push.getBoolean("disabledAfterDeletion", false) && !push.contains("token"),
+                        "Push delivery was not cleared and disabled");
+                finish(Activity.RESULT_OK, result);
+                return;
+            }
             if ("public-discovery".equals(arguments.getString("check"))) {
                 stage = "public enrollment discovery";
                 android.content.Intent launch = getTargetContext().getPackageManager().getLaunchIntentForPackage(getTargetContext().getPackageName());
@@ -84,6 +99,12 @@ public final class DisposableHomeCheck extends Instrumentation {
             DisposableHomeCheck.<kotlin.Unit>await(c -> client.save(own.getId(), c));
             DisposableHomeCheck.<kotlin.Unit>await(client::sync);
             Post other = client.getState().getValue().getSnapshot().getPosts().stream().filter(p -> p.getHeadline().equals("Native inbox test")).findFirst().get();
+            if ("delete-account".equals(arguments.getString("check"))) {
+                DisposableHomeCheck.<kotlin.Unit>await(client::shutdown);
+                result.putString("checks", "Two account fixture ready for release Activity deletion");
+                finish(Activity.RESULT_OK, result);
+                return;
+            }
             stage = "send and receive encrypted DM";
             MessageContact contact = await(c -> client.messageContact(other.getRemoteId(), c));
             DisposableHomeCheck.<kotlin.Unit>await(c -> client.sendMessage(contact, "Android says hello 🌈", c));

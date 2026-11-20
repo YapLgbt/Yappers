@@ -69,6 +69,8 @@ pub struct Server {
 mod ha;
 #[path = "replica.rs"]
 mod replica;
+#[path = "server_account_delete.rs"]
+mod server_account_delete;
 #[path = "server_streams.rs"]
 mod server_streams;
 #[path = "store_read.rs"]
@@ -586,6 +588,36 @@ impl CatalogOp<'_> {
             call @ (Request::Feed { .. } | Request::Social { .. }) => {
                 self.feed_or_social(remote, call)
             }
+            Request::AccountDeleteAvailability {
+                token,
+                community,
+                chain,
+                intent,
+                proof,
+            } => {
+                self.member(&community, &token)?;
+                self.check_account_deletion(
+                    &chain,
+                    &intent,
+                    &proof,
+                    "check-account-delete-v1",
+                    &crate::portability::digest(&intent)?,
+                )?;
+                Ok(Response::AccountDeleteAvailable {
+                    account: intent.account,
+                })
+            }
+            Request::AccountDelete {
+                token,
+                community,
+                chain,
+                intent,
+                proof,
+                deletes,
+            } => {
+                self.member(&community, &token)?;
+                self.delete_account(&chain, &intent, &proof, &deletes)
+            }
             Request::AnnounceAccount { chain } => {
                 let record = crate::portability::validate_chain(&chain)?;
                 let store = &mut *self.store;
@@ -920,6 +952,7 @@ impl CatalogOp<'_> {
                     "submit to the event's designated home"
                 );
                 let store = &mut *self.store;
+                crate::account_store::require_live(&store.db, event.owner_id())?;
                 if let Some(existing) = store.existing(&event.id)? {
                     ensure!(
                         existing.event.header()? == event.header()?

@@ -6,8 +6,10 @@ import Yappers
 /// Keys/capabilities never enter UserDefaults. The outbox is an atomic protected file.
 final class AppleNetkitStorage: NSObject, NetkitStorage {
     private static let accountService = "app.yappers.prototype.netkit.v1"
+    private let deletionJournal = "account-deletion-v1"
     private let service: String
     private let directoryName: String
+    var stopAccountActivity: (() -> Void)?
     override init() {
         #if DEBUG
         let testing = ProcessInfo.processInfo.arguments.contains("--netkit-ui-test")
@@ -26,6 +28,7 @@ final class AppleNetkitStorage: NSObject, NetkitStorage {
         if testing && ProcessInfo.processInfo.arguments.contains("--netkit-reset") {
             let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service]
             SecItemDelete(query as CFDictionary)
+            SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service + ".deletion"] as CFDictionary)
             SecItemDelete([kSecClass as String: kSecClassGenericPassword,
                            kSecAttrService as String: "app.yappers.recovery-key.uitests",
                            kSecAttrSynchronizable as String: true] as CFDictionary)
@@ -35,7 +38,7 @@ final class AppleNetkitStorage: NSObject, NetkitStorage {
     #if DEBUG
     /// A developer-invoked local reset, paired with uninstall to clear the app container.
     static func clearAccountKeychainForFirstRun() throws {
-        for name in [accountService, accountService + ".uitests"] {
+        for name in [accountService, accountService + ".deletion", accountService + ".uitests", accountService + ".uitests.deletion"] {
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: name,
@@ -77,6 +80,35 @@ final class AppleNetkitStorage: NSObject, NetkitStorage {
         }
     }
 
+    func eraseDeletedAccount(recoveryKey: String) throws {
+        // Pending signed batches may be large; they normally share the protected
+        // file store. Keep the compact confirmation independently through cleanup.
+        let confirmed = try readSecret(key: deletionJournal)
+        if confirmed != "null" { try saveKeychain(deletionJournal, confirmed, namespace: service + ".deletion") }
+        if let stopAccountActivity {
+            if Thread.isMainThread { stopAccountActivity() }
+            else { DispatchQueue.main.sync(execute: stopAccountActivity) }
+        }
+        try AppleRecoveryFiles.eraseSavedKey(recoveryKey, testing: service.hasSuffix(".uitests"))
+        try eraseLocalAccount()
+        guard UserDefaults.standard.synchronize() else { throw CocoaError(.fileWriteUnknown) }
+        if !service.hasSuffix(".uitests") {
+            // Older document pickers imported sandbox copies of selected files.
+            let files = FileManager.default
+            let documents = try files.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: false)
+            let inbox = documents.appendingPathComponent("Inbox")
+            if files.fileExists(atPath: inbox.path) { try files.removeItem(at: inbox) }
+            for item in try files.contentsOfDirectory(at: files.temporaryDirectory, includingPropertiesForKeys: nil)
+                where item.lastPathComponent.hasSuffix("-Inbox") { try files.removeItem(at: item) }
+        }
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service + ".deletion", kSecAttrAccount as String: deletionJournal]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+        }
+    }
+
     private var stateURL: URL {
         get throws {
             let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
@@ -101,6 +133,7 @@ final class AppleNetkitStorage: NSObject, NetkitStorage {
         try file.synchronize()
     }
     private func conversationURL(_ name: String) throws -> URL? {
+        if name == deletionJournal { return try stateURL.deletingLastPathComponent().appendingPathComponent(name + ".sealed") }
         guard name.hasPrefix("direct-v1-") else { return nil }
         guard name.range(of: #"^direct-v1-[0-9a-f]{64}-[0-9a-f]{64}-[0-9a-f]{64}$"#, options: .regularExpression) != nil else {
             throw CocoaError(.fileReadInvalidFileName)
@@ -119,6 +152,10 @@ final class AppleNetkitStorage: NSObject, NetkitStorage {
         return key
     }
     func readSecret(key: String) throws -> String {
+        if key == deletionJournal {
+            let confirmed = try keychainValue(key, namespace: service + ".deletion")
+            if confirmed != "null" { return confirmed }
+        }
         guard let url = try conversationURL(key) else { return try keychainValue(key) }
         guard FileManager.default.fileExists(atPath: url.path) else { return "null" }
         let box = try AES.GCM.SealedBox(combined: Data(contentsOf: url))
@@ -135,9 +172,9 @@ final class AppleNetkitStorage: NSObject, NetkitStorage {
         defer { try? file.close() }
         try file.synchronize()
     }
-    private func keychainValue(_ key: String) throws -> String {
+    private func keychainValue(_ key: String, namespace: String? = nil) throws -> String {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service, kSecAttrAccount as String: key,
+            kSecAttrService as String: namespace ?? service, kSecAttrAccount as String: key,
             kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -147,9 +184,9 @@ final class AppleNetkitStorage: NSObject, NetkitStorage {
         }
         return value
     }
-    private func saveKeychain(_ key: String, _ value: String) throws {
+    private func saveKeychain(_ key: String, _ value: String, namespace: String? = nil) throws {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service, kSecAttrAccount as String: key]
+            kSecAttrService as String: namespace ?? service, kSecAttrAccount as String: key]
         let update: [String: Any] = [kSecValueData as String: Data(value.utf8),
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
         var status = SecItemUpdate(query as CFDictionary, update as CFDictionary)

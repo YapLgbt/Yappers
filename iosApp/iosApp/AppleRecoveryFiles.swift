@@ -45,7 +45,7 @@ final class AppleRecoveryFiles: NSObject, RecoveryFiles, UIDocumentPickerDelegat
     func loadRecovery(onResult: @escaping (String?, String?) -> Void) {
         guard completion == nil else { onResult(nil, "A file operation is already open."); return }
         completion = onResult; exporting = false
-        present(UIDocumentPickerViewController(forOpeningContentTypes: [.data], asCopy: true))
+        present(UIDocumentPickerViewController(forOpeningContentTypes: [.data], asCopy: false))
     }
     private func present(_ picker: UIDocumentPickerViewController) {
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first(where: { $0.activationState == .foregroundActive }),
@@ -90,26 +90,28 @@ final class AppleRecoveryFiles: NSObject, RecoveryFiles, UIDocumentPickerDelegat
 
 extension AppleRecoveryFiles: RecoveryKeyVault {
     // Saved backups are separate from the local sign-in that "Start over" erases.
-    private var vaultQuery: [String: Any] {
-        let testing = ProcessInfo.processInfo.arguments.contains("--netkit-ui-test")
+    private static func query(testing: Bool) -> [String: Any] {
         return [kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: "app.yappers.recovery-key" + (testing ? ".uitests" : ""),
                 kSecAttrSynchronizable as String: true]
     }
+    private var vaultQuery: [String: Any] {
+        Self.query(testing: ProcessInfo.processInfo.arguments.contains("--netkit-ui-test"))
+    }
 
-    private func entryID(_ key: String) -> String {
+    private static func entryID(_ key: String) -> String {
         SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     func hasKey(key: String) -> Bool {
         var query = vaultQuery
-        query[kSecAttrAccount as String] = entryID(key)
+        query[kSecAttrAccount as String] = Self.entryID(key)
         return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
 
     func saveKey(key: String, label: String, onResult: @escaping (String?) -> Void) {
         var item = vaultQuery
-        item[kSecAttrAccount as String] = entryID(key)
+        item[kSecAttrAccount as String] = Self.entryID(key)
         item[kSecAttrLabel as String] = label.isEmpty ? "Yap account" : label
         item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
         item[kSecValueData as String] = Data(key.utf8)
@@ -118,10 +120,19 @@ extension AppleRecoveryFiles: RecoveryKeyVault {
     }
 
     func removeKey(key: String, onResult: @escaping (String?) -> Void) {
-        var query = vaultQuery
-        query[kSecAttrAccount as String] = entryID(key)
+        do {
+            try Self.eraseSavedKey(key, testing: ProcessInfo.processInfo.arguments.contains("--netkit-ui-test"))
+            onResult(nil)
+        } catch { onResult("Couldn’t remove the saved key. Try again.") }
+    }
+
+    static func eraseSavedKey(_ key: String, testing: Bool) throws {
+        var query = Self.query(testing: testing)
+        query[kSecAttrAccount as String] = Self.entryID(key)
         let status = SecItemDelete(query as CFDictionary)
-        onResult(status == errSecSuccess || status == errSecItemNotFound ? nil : "Couldn’t remove the saved key. Try again.")
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+        }
     }
 
     func chooseKey(onResult: @escaping (String?, String?) -> Void) {

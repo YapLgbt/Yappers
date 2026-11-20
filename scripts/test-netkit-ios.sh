@@ -1,8 +1,11 @@
 #!/bin/bash
+# NETKIT_TEST_SCOPE=delete-account scripts/test-netkit-ios.sh creates and removes its own iPhone simulator.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 NETKIT_ROOT="$PWD"
-NETKIT_DEVICE="${1:-$(python3 scripts/booted-iphone.py)}"
+NETKIT_SCOPE="${NETKIT_TEST_SCOPE:-all}"
+NETKIT_DISPOSABLE_DEVICE=''
+if [ "$NETKIT_SCOPE" != delete-account ]; then NETKIT_DEVICE="${1:-$(python3 scripts/booted-iphone.py)}"; fi
 NETKIT_CARGO="${CARGO_HOME:-$HOME/.cargo}/bin/cargo"
 if [ ! -x "$NETKIT_CARGO" ]; then NETKIT_CARGO=$(command -v cargo); fi
 mkdir -p build iosApp/.generated
@@ -22,10 +25,38 @@ cleanup() {
     kill -INT "$NETKIT_SERVER_PID" 2>/dev/null || true
     wait "$NETKIT_SERVER_PID" 2>/dev/null || true
   fi
+  if [ -n "$NETKIT_DISPOSABLE_DEVICE" ]; then
+    xcrun simctl shutdown "$NETKIT_DISPOSABLE_DEVICE" >/dev/null 2>&1 || true
+    xcrun simctl delete "$NETKIT_DISPOSABLE_DEVICE"
+  fi
 }
 trap cleanup EXIT
+if [ "$NETKIT_SCOPE" = delete-account ]; then
+  # Always start with a new simulator, including a fresh app container and Keychain.
+  NETKIT_DISPOSABLE_DEVICE=$(xcrun simctl create "Yap Delete account $(uuidgen)" "iPhone 17")
+  NETKIT_DEVICE="$NETKIT_DISPOSABLE_DEVICE"
+  xcrun simctl bootstatus "$NETKIT_DEVICE" -b
+fi
 "$NETKIT_CARGO" build --locked -p yappers-backend
-if [ "${NETKIT_TEST_SCOPE:-all}" = welcome ]; then
+if [ "$NETKIT_SCOPE" = delete-account ]; then
+    NETKIT_SERVER="$NETKIT_ROOT/build/rust/debug/yappers-server"
+    "$NETKIT_SERVER" init --network local --directory "$NETKIT_FIXTURE/home" > /dev/null
+    # Create a dedicated public community on a loopback-only Home with no federation peers.
+    home_id=$(python3 - "$NETKIT_FIXTURE/home/config.json" <<'PY_HOME'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+config = json.loads(path.read_text())
+[(community, token)] = config["communities"].items()
+home_id = community.split("/")[0]
+config["communities"] = {f"{home_id}/public": token}
+path.write_text(json.dumps(config))
+path.rename(path.with_name("public-home.json"))
+print(home_id)
+PY_HOME
+    )
+    YAP_USERNAME_DOMAINS="$home_id=neighborhood.test" "$NETKIT_SERVER" public-home \
+      --directory "$NETKIT_FIXTURE/home" --manifest "$NETKIT_FIXTURE/join-a.json" > "$NETKIT_FIXTURE/server.log" 2>&1 &
+elif [ "$NETKIT_SCOPE" = welcome ]; then
     "$NETKIT_ROOT/build/rust/debug/yappers-server" public-home --directory "$NETKIT_FIXTURE/home" --manifest "$NETKIT_FIXTURE/join-a.json" > "$NETKIT_FIXTURE/server.log" 2>&1 &
 elif [ "${NETKIT_TEST_SCOPE:-all}" = messaging ]; then
     "$NETKIT_ROOT/build/rust/debug/yappers-server" init --directory "$NETKIT_FIXTURE/home" > /dev/null
@@ -41,7 +72,7 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 if [ ! -f "$NETKIT_FIXTURE/join-a.json" ]; then echo 'Local federation fixture did not start' >&2; exit 1; fi
-if [ "${NETKIT_TEST_SCOPE:-all}" = welcome ]; then
+if [ "$NETKIT_SCOPE" = welcome ]; then
     kill -INT "$NETKIT_SERVER_PID"
     wait "$NETKIT_SERVER_PID"
     mv "$NETKIT_FIXTURE/join-a.json" "$NETKIT_FIXTURE/bootstrap.json"
@@ -54,7 +85,17 @@ if [ "${NETKIT_TEST_SCOPE:-all}" = welcome ]; then
         sleep .1
     done
 fi
-if [ "${NETKIT_TEST_SCOPE:-all}" = recovery ]; then
+if [ "$NETKIT_SCOPE" = delete-account ]; then
+  python3 - "$NETKIT_FIXTURE/join-a.json" > iosApp/.generated/NetkitTestJoin.json <<'PY_ENROLL'
+import json, sys
+with open(sys.argv[1]) as source:
+    manifest = json.load(source)
+# Public enrollment requires the normal n0 client. Keep the Home's pinned ID and loopback addresses.
+assert manifest["join"]["networkMode"] == "local"
+manifest["join"]["networkMode"] = "n0"
+print(json.dumps({"deleteAccountEnrollment": manifest}))
+PY_ENROLL
+elif [ "${NETKIT_TEST_SCOPE:-all}" = recovery ]; then
   python3 - "$NETKIT_FIXTURE" > iosApp/.generated/NetkitTestJoin.json <<'PY_FIXTURE'
 import json, pathlib, sys
 directory = pathlib.Path(sys.argv[1])
@@ -67,7 +108,9 @@ fi
 (cd iosApp && xcodegen generate)
 export JAVA_HOME=$(/usr/libexec/java_home -v 21)
 NETKIT_TEST_ARGS=(-only-testing:YappersUITests/YappersUITests/testLocalGroupsAutoFederation)
-if [ "${NETKIT_TEST_SCOPE:-all}" = welcome ]; then
+if [ "$NETKIT_SCOPE" = delete-account ]; then
+  NETKIT_TEST_ARGS=(-only-testing:YappersUITests/YappersUITests/testDeleteAccountCancelConfirmAndRestart)
+elif [ "${NETKIT_TEST_SCOPE:-all}" = welcome ]; then
   xcrun simctl addmedia "$NETKIT_DEVICE" "$NETKIT_ROOT/iosApp/iosApp/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
   NETKIT_TEST_ARGS=(-only-testing:YappersUITests/YappersUITests/testFirstVisitAndReturningAccount -only-testing:YappersUITests/YappersUITests/testRestoreMethodSelection)
 elif [ "${NETKIT_TEST_SCOPE:-all}" = recovery ]; then
@@ -94,6 +137,20 @@ xcodebuild -project iosApp/Yappers.xcodeproj -scheme Yappers -configuration Debu
   -destination "platform=iOS Simulator,id=$NETKIT_DEVICE" -derivedDataPath build/ios \
   -resultBundlePath "$NETKIT_FIXTURE/ui.xcresult" -parallel-testing-enabled NO \
   "${NETKIT_TEST_ARGS[@]}" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO test
+if [ "$NETKIT_SCOPE" = delete-account ]; then
+  # The new Home held exactly one post. An independent reader must see its deletion.
+  "$NETKIT_ROOT/build/rust/debug/yappers-server" feed --join "$NETKIT_FIXTURE/home/join-0.json" \
+    --identity "$NETKIT_FIXTURE/reader.json" > "$NETKIT_FIXTURE/after-delete.json"
+  python3 - "$NETKIT_FIXTURE/after-delete.json" <<'PY_DELETED'
+import json, sys
+with open(sys.argv[1]) as source:
+    feed = json.load(source)
+if feed["posts"] or len(feed["deleted"]) != 1:
+    sys.exit("Expected the Home to return an empty feed and one deleted post ID")
+print("PASS: independent Home reader verified the deleted post")
+PY_DELETED
+  exit 0
+fi
 if [ "${NETKIT_TEST_SCOPE:-all}" = welcome ] || [ "${NETKIT_TEST_SCOPE:-all}" = recovery ]; then exit 0; fi
 if [ "${NETKIT_TEST_SCOPE:-all}" = messaging ]; then
   wait "$NETKIT_ACTIVITY_PID"

@@ -8,12 +8,33 @@ private final class AppleInboxPush: NSObject, PushRegistration {
     let provider = "apns"
     private(set) var currentToken: String?
     private var completion: ((String?, String?) -> Void)?
+    private var generation = UUID()
+    private var suppressionKey: String {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--netkit-ui-test") { return "yap.pushDeleted.uitests" }
+        #endif
+        return "yap.pushDeleted"
+    }
+    var enabled: Bool { !UserDefaults.standard.bool(forKey: suppressionKey) }
+
+    func clearAccount() {
+        generation = UUID()
+        UserDefaults.standard.set(true, forKey: suppressionKey)
+        UIApplication.shared.unregisterForRemoteNotifications()
+        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+        UNUserNotificationCenter.current().setBadgeCount(0)
+        finish(token: nil, error: "Account deleted.")
+    }
 
     func requestToken(completion: @escaping (String?, String?) -> Void) {
         DispatchQueue.main.async {
+            UserDefaults.standard.removeObject(forKey: self.suppressionKey)
+            let generation = self.generation
             self.completion = completion
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { allowed, _ in
                 DispatchQueue.main.async {
+                    guard self.generation == generation else { return }
                     if allowed { UIApplication.shared.registerForRemoteNotifications() }
                     else { self.finish(token: nil, error: "Allow notifications for Yap in Settings.") }
                 }
@@ -22,10 +43,10 @@ private final class AppleInboxPush: NSObject, PushRegistration {
     }
 
     func finish(token: String?, error: String?) {
-        currentToken = token
+        currentToken = enabled ? token : nil
         let callback = completion
         completion = nil
-        callback?(token, error)
+        callback?(currentToken, error)
     }
 }
 
@@ -42,7 +63,7 @@ private final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotifica
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        if let route = response.notification.request.content.userInfo["route"] as? String {
+        if inboxPush.enabled, let route = response.notification.request.content.userInfo["route"] as? String {
             InboxPush.shared.open(route: route)
         }
         completionHandler()
@@ -50,7 +71,7 @@ private final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotifica
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner, .list])
+        completionHandler(inboxPush.enabled ? [.banner, .list] : [])
     }
 
     private let identifier = "app.yappers.prototype.refresh"
@@ -91,7 +112,19 @@ private final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotifica
     }
 
     lazy var nearby = AppleNearbyServices()
-    lazy var runtime = AppleSyncRuntime(storage: AppleNetkitStorage(), nearby: nearby)
+    lazy var runtime: AppleSyncRuntime = {
+        let store = AppleNetkitStorage()
+        store.stopAccountActivity = { [weak self] in
+            guard let self else { return }
+            self.cancelScheduled()
+            self.upload?.cancel()
+            if let id = self.uploadGeneration { self.endUploadTime(id) }
+            self.refresh?.cancel()
+            self.inboxPush.clearAccount()
+        }
+        return AppleSyncRuntime(storage: store, nearby: nearby)
+    }()
+    private var refresh: AppleRefresh?
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
@@ -100,7 +133,7 @@ private final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotifica
         center.delegate = self
         center.getNotificationSettings { settings in
             if settings.authorizationStatus == .authorized {
-                DispatchQueue.main.async { application.registerForRemoteNotifications() }
+                DispatchQueue.main.async { if self.inboxPush.enabled { application.registerForRemoteNotifications() } }
             }
         }
         let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: .main) { [self] task in
@@ -113,6 +146,7 @@ private final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotifica
                 finished = true
                 task.expirationHandler = nil
                 running = nil
+                self.refresh = nil
                 task.setTaskCompleted(success: success)
             }
             task.expirationHandler = {
@@ -126,6 +160,7 @@ private final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotifica
                 if !shouldRepeat.boolValue { self.cancelScheduled() }
                 finish(success.boolValue)
             }
+            refresh = running
         }
         if !registered { logger.error("Could not register background refresh") }
         return true

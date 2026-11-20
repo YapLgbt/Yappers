@@ -96,6 +96,14 @@ pub(crate) fn watch_deletes(db: &Connection) -> Result<()> {
         UPDATE state SET epoch=epoch+1;
         UPDATE deletion_epoch SET epoch=epoch+1;
         END;")?;
+    db.execute_batch(
+        "CREATE TEMP TRIGGER retire_account AFTER INSERT ON main.deleted_accounts BEGIN
+        INSERT INTO known_deleted_accounts VALUES(NEW.account,NEW.record_id);
+        DELETE FROM current_accounts WHERE account=NEW.account;
+        DELETE FROM opening_keys WHERE owner=NEW.account;
+        UPDATE state SET epoch=epoch+1; UPDATE deletion_epoch SET epoch=epoch+1;
+        END;",
+    )?;
     for op in ["INSERT", "UPDATE"] {
         db.execute_batch(&format!("CREATE TEMP TRIGGER remember_account_{op} AFTER {op} ON main.account_states BEGIN
             INSERT INTO current_accounts VALUES(NEW.account,NEW.chain) ON CONFLICT(account) DO UPDATE SET chain=excluded.chain;
@@ -242,6 +250,31 @@ pub(crate) fn recover_openings(copy: &mut Store, guard: &Connection) -> Result<(
                     [&e.event.id],
                 )?;
             } else {
+                if guard.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM known_deleted_accounts WHERE account=?)",
+                    [e.event.owner_id()],
+                    |r| r.get::<_, bool>(0),
+                )? {
+                    if !private {
+                        for sql in [
+                            "DELETE FROM inbox_arrivals WHERE event=?",
+                            "DELETE FROM inbox_reads WHERE kind='reply' AND target=?",
+                            "DELETE FROM inbox_mutes WHERE target=?",
+                            "DELETE FROM push_routes WHERE category='reply' AND target=?",
+                        ] {
+                            copy.db.execute(sql, [&e.event.id])?;
+                        }
+                    }
+                    copy.db.execute(
+                        &format!("DELETE FROM {table} WHERE {id_column}=?"),
+                        [&e.event.id],
+                    )?;
+                    copy.db.execute(
+                        "DELETE FROM username_receipts WHERE event_id=?",
+                        [&e.event.id],
+                    )?;
+                    continue;
+                }
                 let key:Vec<u8>=guard.query_row("SELECT key FROM opening_keys WHERE target=? AND owner=? AND community=? AND private=?",args,|r|r.get(0)).context("missing live opening key")?;
                 let encrypted: Vec<u8> = copy.db.query_row(
                     "SELECT ciphertext FROM backup_openings WHERE target=? AND private=?",
@@ -279,11 +312,32 @@ pub(crate) fn recover_openings(copy: &mut Store, guard: &Connection) -> Result<(
         let (private, raw) = row?;
         let proof: Envelope = serde_json::from_str(&raw)?;
         if private {
-            copy.import_personal_events(proof.event.owner_id(), std::slice::from_ref(&proof))?;
+            if crate::account_store::deleted_registration(&copy.db, proof.event.owner_id())?
+                .is_some()
+            {
+                Store::apply_deletion(&copy.db, &proof, true)?;
+            } else {
+                copy.import_personal_events(proof.event.owner_id(), std::slice::from_ref(&proof))?;
+            }
         } else {
             copy.accept(&proof)?;
         }
     }
+    let tx = copy.db.unchecked_transaction()?;
+    let mut retired = guard.prepare("SELECT account,record_id FROM known_deleted_accounts")?;
+    for row in retired.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let (account, record_id) = row?;
+        tx.execute(
+            "INSERT OR IGNORE INTO deleted_accounts VALUES(?,?)",
+            rusqlite::params![account, record_id],
+        )?;
+        ensure!(
+            crate::account_store::deleted_registration(&tx, &account)?.as_ref() == Some(&record_id),
+            "backup contradicts account deletion authority"
+        );
+        crate::account_erasure::purge(&tx, &account)?;
+    }
+    tx.commit()?;
     Ok(())
 }
 

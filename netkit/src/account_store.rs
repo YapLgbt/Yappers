@@ -10,7 +10,26 @@ use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use std::collections::BTreeMap;
 
+pub(crate) fn deleted_registration(db: &HomeDb, account: &str) -> Result<Option<String>> {
+    Ok(db
+        .query_row(
+            "SELECT record_id FROM deleted_accounts WHERE account=?",
+            [account],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+pub(crate) fn require_live(db: &HomeDb, account: &str) -> Result<()> {
+    ensure!(
+        deleted_registration(db, account)?.is_none(),
+        "account deleted"
+    );
+    Ok(())
+}
+
 fn account_chain(db: &HomeDb, account: &str) -> Result<Vec<AccountRecord>> {
+    require_live(db, account)?;
     let value: Option<String> = db
         .query_row(
             "SELECT chain FROM account_states WHERE account=?1",
@@ -105,6 +124,7 @@ impl Store {
     ) -> Result<()> {
         ensure!(events.len() <= 50, "personal import chunk too large");
         let tx = self.db.transaction()?;
+        require_live(&tx, account)?;
         for deletion in admitted_deletes {
             ensure!(
                 deletion.event.owner_id() == account

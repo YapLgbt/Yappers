@@ -7,6 +7,8 @@
 //! See `docs/netkit/` for architecture, canonical signing bytes, and operating limits.
 
 #[cfg(feature = "server")]
+mod account_erasure;
+#[cfg(feature = "server")]
 pub mod account_store;
 #[cfg(feature = "server")]
 pub mod backup;

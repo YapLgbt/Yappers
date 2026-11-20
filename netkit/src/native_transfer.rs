@@ -17,6 +17,7 @@ use std::{fs, path::Path};
 const DOMAIN: &[(&str, &str)] = &[
     ("peers", "id,generation,cursor,scope"),
     ("account_states", "account,chain"),
+    ("deleted_accounts", "account,record_id"),
     ("hidden", "id"),
     ("peer_deliveries", "peer,community,target"),
     ("public_groups", "id,record"),

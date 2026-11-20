@@ -44,6 +44,23 @@ internal class DesktopStorage(val directory: Path) : NetkitStorage, AutoCloseabl
     }
     override fun readSecret(key: String) = readFile(secretName(key)) ?: "null"
     override fun writeSecret(key: String, value: String) = writeFile(secretName(key), value)
+    @Synchronized override fun eraseDeletedAccount(recoveryKey: String) {
+        val owned = setOf("network.json", "demo.json", "identity-v1.json", "connection-v1.json",
+            "public-feed-route-v1.json", "groups-v1.json", "welcome-backup-v1.json", "welcome-device-v1.json")
+        val messages = Regex("""(?:direct-v1(?:-[0-9a-f]{64}){3}|private-groups-v1(?:-[0-9a-f]{64}){2})\.json""")
+        Files.newDirectoryStream(directory).use { entries ->
+            for (entry in entries) {
+                val name = entry.fileName.toString()
+                if (name in owned || messages.matches(name) || (name.startsWith(".write-") && name.endsWith(".tmp")))
+                    Files.delete(entry)
+            }
+        }
+        FileChannel.open(directory, StandardOpenOption.READ).use {
+            it.force(true)
+            Files.deleteIfExists(directory.resolve(secretName(ACCOUNT_DELETION_JOURNAL)))
+            it.force(true)
+        }
+    }
     val local = object : LocalStorage {
         override fun read() = readFile("demo.json")
         override fun write(value: String) = writeFile("demo.json", value)

@@ -67,8 +67,17 @@ internal val DarkColors = darkColorScheme(
     outlineVariant = Color(0xFF50425D)
 )
 
-internal class AppContentState(storage: LocalStorage) {
-    val repository = FeedRepository(storage)
+internal class AppContentState(storage: LocalStorage, networking: NetkitController? = null) {
+    private val generation = networking?.generation?.value
+    val repository = FeedRepository(object : LocalStorage {
+        override fun read() = storage.read()
+        override fun write(value: String) {
+            check(networking == null || (networking.generation.value == generation && networking.deletion.value == DeletionStatus.Idle)) {
+                "The account has changed."
+            }
+            storage.write(value)
+        }
+    })
     val localProfile = mutableStateOf(repository.snapshot)
     var feedReset by mutableIntStateOf(0)
 }
@@ -98,7 +107,41 @@ internal class PlatformNavigation(
 
 @Composable
 internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = null, foreground: Boolean = true, initialTab: String = "Nearby", photoLibrary: ProfilePhotoLibrary? = null, desktop: Boolean = false, recoveryFiles: RecoveryFiles? = null, nearbyServices: NearbyServices? = null, syncInView: Boolean = true, installationWelcome: Boolean = false, onWelcomeComplete: () -> Unit = {}, contentState: AppContentState? = null, platformNavigation: PlatformNavigation? = null) {
-    val session = contentState ?: remember(storage) { AppContentState(storage) }
+    val generation = networking?.generation?.collectAsState()?.value ?: 0L
+    val deletion = networking?.deletion?.collectAsState()?.value ?: DeletionStatus.Idle
+    val scope = rememberCoroutineScope()
+    var submitting by remember { mutableStateOf(false) }
+    var failure by remember { mutableStateOf<String?>(null) }
+    fun submit(confirmed: Boolean) {
+        if (submitting || networking == null) return
+        submitting = true
+        failure = null
+        scope.launch {
+            try { networking.deleteAccount(confirmed) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                failure = if (networking.deletion.value == DeletionStatus.Idle)
+                    "Yap couldn’t start deletion. Check your connection and try again. Your home may need an update."
+                else "Deletion is unfinished. Unlock your device, check your connection and retry."
+            } finally { submitting = false }
+        }
+    }
+    if (deletion != DeletionStatus.Idle) {
+        YapTheme { AccountDeletionProgress(deletion, submitting, failure) { submit(false) } }
+        return
+    }
+    if (failure != null) PlatformConfirmation("Couldn’t delete account", failure.orEmpty(), "OK",
+        onCancel = { failure = null }, cancel = "", destructive = false) { failure = null }
+    key(generation) {
+        AccountContent(storage, networking, foreground, initialTab, photoLibrary, desktop, recoveryFiles,
+            nearbyServices, syncInView, installationWelcome, onWelcomeComplete, contentState, platformNavigation,
+            onDeleteAccount = { submit(true) }, canSubmitDeletion = !submitting)
+    }
+}
+
+@Composable
+private fun AccountContent(storage: LocalStorage, networking: NetkitController?, foreground: Boolean, initialTab: String, photoLibrary: ProfilePhotoLibrary?, desktop: Boolean, recoveryFiles: RecoveryFiles?, nearbyServices: NearbyServices?, syncInView: Boolean, installationWelcome: Boolean, onWelcomeComplete: () -> Unit, contentState: AppContentState?, platformNavigation: PlatformNavigation?, onDeleteAccount: () -> Unit, canSubmitDeletion: Boolean) {
+    val session = contentState ?: remember(storage, networking) { AppContentState(storage, networking) }
     val repository = session.repository
     var demoState by session.localProfile
     val connection by (networking?.state ?: remember { kotlinx.coroutines.flow.MutableStateFlow(NetkitState()) }).collectAsState()
@@ -647,6 +690,7 @@ internal fun YappersApp(storage: LocalStorage, networking: NetkitController? = n
                                                 onHome = { networking?.openHomeFeed(); returnToNearby(); scope.launch { networking?.sync() } })
                                             visibleTab == "You" -> Profile(state, live = live, connection = connection, networking = networking,
                                                 recoveryFiles = recoveryFiles, listState = profileScroll,
+                                                onDeleteAccount = onDeleteAccount.takeIf { live && connection.ownershipReady }, canSubmitDeletion = canSubmitDeletion,
                                                 settingsOnly = platformNavigation?.profileSettings == true, onSettings = platformNavigation?.openProfileSettings,
                                                 onPrivacy = {
                                                     if (platformNavigation != null) platformNavigation.openInbox(InboxPage.Privacy, null)
@@ -1369,12 +1413,22 @@ private fun ComposeSheet(draft: PostDraft, namedIdentity: String, anonymous: Boo
 
 @Composable
 private fun Profile(state: FeedSnapshot, live: Boolean, connection: NetkitState, networking: NetkitController?,
-                    recoveryFiles: RecoveryFiles?, listState: LazyListState, settingsOnly: Boolean, onSettings: (() -> Unit)?, onEdit: () -> Unit,
+                    recoveryFiles: RecoveryFiles?, listState: LazyListState, onDeleteAccount: (() -> Unit)?, canSubmitDeletion: Boolean, settingsOnly: Boolean, onSettings: (() -> Unit)?, onEdit: () -> Unit,
                     onPrivacy: () -> Unit, onGuide: () -> Unit, onCompose: () -> Unit, onReset: () -> Unit, onPost: (Long) -> Unit,
                     onJoin: suspend (String) -> Unit, onDemo: () -> Unit, onSync: () -> Unit, onDiscard: () -> Unit, onError: (String) -> Unit) {
     val native = LocalFeedControl.current
     val android = LocalMaterialNavigation.current != null
     val nativeForm = LocalNativeForm.current
+    var confirmDelete by remember { mutableStateOf(false) }
+    if (confirmDelete && onDeleteAccount != null) {
+        PlatformConfirmation("Permanently delete account?",
+            "Your home will permanently delete your account and remove your posts and replies. After your home confirms, Yap will erase this account’s data from this device." +
+                if (nativeForm != null) " If you saved your recovery key in iCloud Keychain, it will be removed there too." else "",
+            "Delete account", onCancel = { confirmDelete = false }) {
+            confirmDelete = false
+            onDeleteAccount()
+        }
+    }
     var showAllPosts by rememberSaveable { mutableStateOf(false) }
     var showRecovery by rememberSaveable { mutableStateOf(false) }
     fun androidx.compose.foundation.lazy.LazyListScope.ownPosts() {
@@ -1521,6 +1575,17 @@ private fun Profile(state: FeedSnapshot, live: Boolean, connection: NetkitState,
             }
             nativeForm(NativeFormModel(sections = sections), "inline", Modifier.fillMaxWidth())
         } else ownPosts()
+        if (onDeleteAccount != null && (settingsOnly || android)) item(key = "delete-account") {
+            if (nativeForm != null) {
+                nativeForm(NativeFormModel(sections = listOf(FormSection("Account", listOf(
+                    FormRow("delete-account", "Delete account", destructive = true, identifier = "delete-account", enabled = canSubmitDeletion) { confirmDelete = true }
+                )))), "inline", Modifier.fillMaxWidth())
+            } else ProfileSection("Account") {
+                TextButton(onClick = { confirmDelete = true }, enabled = canSubmitDeletion, modifier = Modifier.testTag("delete-account")) {
+                    Text("Delete account", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        }
         if (!live && native == null) item {
             TextButton(onClick = onReset) { Text("Reset demo data") }
         }

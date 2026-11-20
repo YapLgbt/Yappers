@@ -4,7 +4,10 @@
 //! Callers must persist the returned next sequence and immutable event before submit.
 //! A failed/timed-out submit may already be accepted remotely: retry that exact event.
 
+#[path = "account_deletion_client.rs"]
+mod account_deletion;
 use crate::{model::*, transport};
+pub use account_deletion::PreparedDeletionBatch;
 use anyhow::{Context, Result, ensure};
 use ed25519_dalek::SigningKey;
 use iroh::Endpoint;
@@ -62,6 +65,19 @@ pub enum Command {
     },
     Prepare {
         action: Action,
+    },
+    PrepareAccountDeletion {
+        wallet: crate::portability::AccountWallet,
+    },
+    PrepareAccountDeletionBatch {
+        intent: crate::portability::AccountDeletionIntent,
+        targets: Vec<AccountDeleteTarget>,
+        #[serde(rename = "nextSequence")]
+        next_sequence: u64,
+    },
+    AccountDeletionStep {
+        intent: crate::portability::AccountDeletionIntent,
+        proofs: Vec<SignedEvent>,
     },
     AccountLookup {
         account: String,
@@ -541,6 +557,23 @@ impl Client {
             Command::AccountNotify { chain, address } => {
                 self.notify_account(address, &chain).await?;
                 Ok(serde_json::json!({"notified":true}))
+            }
+            Command::PrepareAccountDeletion { wallet } => {
+                let intent = self.prepare_account_deletion(&wallet)?;
+                self.check_account_deletion_availability(&intent).await?;
+                Ok(serde_json::json!({"intent": intent}))
+            }
+            Command::PrepareAccountDeletionBatch {
+                intent,
+                targets,
+                next_sequence,
+            } => Ok(serde_json::to_value(self.prepare_account_deletion_batch(
+                &intent,
+                &targets,
+                next_sequence,
+            )?)?),
+            Command::AccountDeletionStep { intent, proofs } => {
+                self.account_deletion_step_value(&intent, proofs).await
             }
             Command::AccountLookup { account } => {
                 Ok(serde_json::json!({"chain": self.lookup_account(&account).await?}))

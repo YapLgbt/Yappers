@@ -81,7 +81,16 @@ impl Store {
     }
     pub(crate) fn insert(db: &HomeDb, envelope: &Envelope) -> Result<()> {
         let envelope = &Self::reconcile(db, envelope, false)?;
-        crate::privacy::observe(db, envelope.event.owner_id())?;
+        if crate::account_store::deleted_registration(db, envelope.event.owner_id())?.is_some() {
+            if envelope.deletion.is_none()
+                && !matches!(envelope.event.payload.action, Action::Delete { .. })
+            {
+                // Consume a late federation page without recreating the account or its content.
+                return Ok(());
+            }
+        } else {
+            crate::privacy::observe(db, envelope.event.owner_id())?;
+        }
         let existing: Option<String> = db
             .query_row(
                 "SELECT envelope FROM events WHERE id=?1",

@@ -14,6 +14,7 @@ use yappers_netkit::{
 
 struct Device {
     client: Client,
+    wallet: AccountWallet,
     state: Value,
 }
 
@@ -32,6 +33,7 @@ impl Device {
         client.register_account(&wallet).await.unwrap();
         Self {
             client,
+            wallet,
             state: Value::Null,
         }
     }
@@ -228,4 +230,94 @@ async fn private_groups_enforce_membership_history_and_rotate_pending_posts() {
         ],
     )
     .unwrap();
+}
+
+#[tokio::test]
+async fn deleting_room_owner_preserves_other_members_encrypted_history() -> anyhow::Result<()> {
+    use yappers_netkit::{Response, backup, store::Store};
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("home");
+    let cfg = ServerConfig {
+        public_replica_feeds: Default::default(),
+        private_key: new_secret(),
+        database_path: path.clone(),
+        communities: BTreeMap::from([("home".into(), new_secret())]),
+        peers: vec![],
+        network_mode: NetworkMode::Local,
+        auto_federation: AutoFederationConfig::default(),
+    };
+    let home = Server::start(cfg.clone()).await?;
+    let join = home.join("home", NetworkMode::Local)?;
+    let mut owner = Device::open(join.clone()).await;
+    let mut member = Device::open(join).await;
+    let solo = owner
+        .step(json!({"kind":"create","name":"Owner alone"}))
+        .await;
+    let shared = owner
+        .step(json!({"kind":"create","name":"Shared room"}))
+        .await;
+    let invite = owner.view(&shared).await["invitation"].clone();
+    member
+        .step(json!({"kind":"import","invitation":invite}))
+        .await;
+    let request = member.view(&shared).await["joinRequest"].clone();
+    owner
+        .step(json!({"kind":"approve","group":shared,"request":request}))
+        .await;
+    owner.prepare(&shared, "owner post", None).await;
+    let original = owner.publish(&shared).await;
+    member
+        .prepare(&shared, "member reply survives", Some(&original))
+        .await;
+    let reply = member.publish(&shared).await;
+    let archive = dir.path().join("old.backup");
+    Store::open(&path)?.backup(&archive)?;
+    let intent = owner.client.prepare_account_deletion(&owner.wallet)?;
+    let ack = owner.client.account_deletion_step(&intent, vec![]).await?;
+    assert!(matches!(ack,Response::AccountDeleted{account} if account==intent.account));
+    // The client re-downloads the ciphertext, signed roster and Olm session
+    // envelope to decrypt this reply. Saved group state contains no post cache.
+    let posts = member.view(&shared).await["posts"].clone();
+    assert_eq!(posts.as_array().unwrap().len(), 1);
+    assert_eq!(posts[0]["id"], reply);
+    assert_eq!(posts[0]["body"], "member reply survives");
+    let raw = support::primary(&path).await?;
+    assert!(
+        raw.query(
+            "SELECT 1 FROM private_groups WHERE id=?",
+            [solo.as_str().unwrap()]
+        )
+        .await?
+        .next()
+        .await?
+        .is_none()
+    );
+    drop(raw);
+    owner.client.close().await;
+    member.client.close().await;
+    home.close().await;
+
+    let restored = dir.path().join("restored");
+    backup::restore(
+        &path.with_added_extension("deletion-guard"),
+        &archive,
+        &restored,
+    )?;
+    let home = Server::start(ServerConfig {
+        database_path: restored,
+        ..cfg
+    })
+    .await?;
+    member.client = Client::open(ClientConfig {
+        full_home_standby: None,
+        join: home.join("home", NetworkMode::Local)?,
+        author_secret: member.wallet.device_secret.clone(),
+        next_sequence: member.wallet.next_sequence,
+        account_chain: member.wallet.chain.clone(),
+    })
+    .await?;
+    assert_eq!(member.view(&shared).await["posts"], posts);
+    member.client.close().await;
+    home.close().await;
+    Ok(())
 }

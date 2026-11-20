@@ -53,6 +53,11 @@ final class YapTabBarController: UITabBarController, UITabBarControllerDelegate,
         delegate = self
         viewControllers = Destination.allCases.map(makeStack)
         selectTab(session.initialTab)
+        session.onAccountReset { [weak self] in
+            guard let self else { return }
+            for navigation in self.stacks.values { navigation.popToRootViewController(animated: false) }
+            self.selectTab(Destination.nearby.rawValue, returningToRoot: true)
+        }
     }
 
     private func makeStack(_ destination: Destination) -> UINavigationController {

@@ -46,6 +46,9 @@ impl Store {
         record: ProfileRecord,
     ) -> Result<()> {
         record.validate()?;
+        if crate::account_store::deleted_registration(&self.db, owner)?.is_some() {
+            return Ok(());
+        }
         self.db.execute("INSERT INTO public_profiles(home,owner,revision,name,profile) VALUES(?,?,?,?,?)
             ON CONFLICT(home,owner) DO UPDATE SET revision=excluded.revision,name=excluded.name,profile=excluded.profile
             WHERE excluded.revision > public_profiles.revision",

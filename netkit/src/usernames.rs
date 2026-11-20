@@ -178,6 +178,9 @@ impl Store {
         receipt: &UsernameReceipt,
     ) -> Result<()> {
         receipt.validate(event)?;
+        if crate::account_store::deleted_registration(db, event.owner_id())?.is_some() {
+            return Ok(());
+        }
         if db.query_row("SELECT EXISTS(SELECT 1 FROM events WHERE id=? AND json_extract(envelope,'$.deletion') IS NOT NULL)", [&event.id], |r|r.get::<_,bool>(0))? {return Ok(())}
         if let Some(known) = stored_receipt(db, &event.id)? {
             ensure!(known == *receipt, "conflicting signed username");

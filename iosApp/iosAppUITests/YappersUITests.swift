@@ -127,6 +127,91 @@ final class YappersUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Create an account"].waitForExistence(timeout: 5))
     }
 
+    func testDeleteAccountCancelConfirmAndRestart() throws {
+        #if targetEnvironment(simulator)
+        let file = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "NetkitTestJoin", withExtension: "json"))
+        let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        guard let enrollment = fixture["deleteAccountEnrollment"] as? [String: Any] else {
+            throw XCTSkip("Run NETKIT_TEST_SCOPE=delete-account scripts/test-netkit-ios.sh for a fresh simulator and Home.")
+        }
+        let app = XCUIApplication()
+        app.launchArguments = ["--netkit-ui-test", "--welcome-ui-test"]
+        app.launchEnvironment["YAP_TEST_ENROLLMENT"] = String(decoding: try JSONSerialization.data(withJSONObject: enrollment), as: UTF8.self)
+        app.launch()
+        let create = app.buttons["Create an account"]
+        XCTAssertTrue(create.waitForExistence(timeout: 20))
+        create.tap()
+        app.buttons["Name and pronouns"].tap()
+        app.cells["Suggest a name"].tap()
+        app.navigationBars.buttons["Done"].tap()
+        app.buttons["Continue to username"].tap()
+        enter("delete_test", into: app.textFields["onboarding-username"], app: app)
+        app.buttons["Dismiss keyboard"].tap()
+        let claim = app.buttons["Claim username"]
+        reveal(claim, in: app)
+        XCTAssertTrue(claim.wait(for: \.isEnabled, toEqual: true, timeout: 35))
+        claim.tap()
+        let getKey = app.buttons["Get recovery key"]
+        XCTAssertTrue(getKey.waitForExistence(timeout: 35))
+        getKey.tap()
+        let saveKey = app.cells["Save to Keychain"]
+        XCTAssertTrue(saveKey.waitForExistence(timeout: 10))
+        saveKey.tap()
+        XCTAssertTrue(app.staticTexts["Saved to Keychain"].waitForExistence(timeout: 8))
+        app.buttons["Done"].tap()
+        app.buttons["Enter neighborhood"].tap()
+
+        let you = app.tabBars.buttons["You"]
+        XCTAssertTrue(you.waitForExistence(timeout: 20))
+        you.tap()
+        openProfileSettings(in: app)
+        let delete = app.cells["delete-account"]
+        reveal(delete, in: app)
+        delete.tap()
+        let confirm = app.alerts["Permanently delete account?"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 8))
+        confirm.buttons["Cancel"].tap()
+        XCTAssertTrue(confirm.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Settings"].exists)
+
+        // A successful publish after cancellation proves this account can still write to its Home.
+        app.navigationBars["Settings"].buttons.firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["delete_test@neighborhood.test"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Nearby"].tap()
+        app.buttons["Post"].tap()
+        let body = "A post from the disposable deletion account."
+        writePost(body, app: app)
+        app.buttons["Dismiss keyboard"].tap()
+        app.buttons["Post to community"].tap()
+        let published = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", body)).firstMatch
+        XCTAssertTrue(published.waitForExistence(timeout: 20))
+        XCTAssertTrue(app.descendants(matching: .any)["updated-community-feed"].firstMatch.waitForExistence(timeout: 30))
+
+        you.tap()
+        openProfileSettings(in: app)
+        reveal(delete, in: app)
+        delete.tap()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 8))
+        confirm.buttons["Delete account"].tap()
+        let welcome = app.staticTexts["Welcome to Yap"]
+        XCTAssertTrue(welcome.waitForExistence(timeout: 60))
+        XCTAssertTrue(create.exists)
+        XCTAssertFalse(you.exists)
+
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(welcome.waitForExistence(timeout: 20))
+        XCTAssertTrue(create.isHittable)
+        XCTAssertFalse(app.buttons["Continue with my account"].exists)
+        XCTAssertFalse(you.exists)
+        app.buttons["Restore an existing account"].tap()
+        app.buttons["Use a key from Keychain"].tap()
+        XCTAssertTrue(app.staticTexts["No Yap recovery keys in this Keychain yet."].waitForExistence(timeout: 8))
+        #else
+        throw XCTSkip("Account deletion uses a disposable simulator.")
+        #endif
+    }
+
     func testFirstVisitAndReturningAccount() throws {
         let fixture = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "NetkitTestJoin", withExtension: "json"))
         let data = try Data(contentsOf: fixture)

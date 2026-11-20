@@ -50,13 +50,16 @@ class YapApplication : Application() {
         super.onCreate()
         AndroidAbi.initialize(this)
     }
-    internal fun scheduleSync(pending: Boolean) {
+    internal fun scheduleSync(pending: Boolean) = synchronized(storage) {
+        if (storage.readSecret(ACCOUNT_DELETION_JOURNAL) != "null" ||
+            storage.readSecret("connection-v1") == "null") return@synchronized
         val constraints = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
         val work = WorkManager.getInstance(this)
         work.enqueueUniquePeriodicWork("yap-refresh", ExistingPeriodicWorkPolicy.KEEP,
             PeriodicWorkRequestBuilder<YapWorker>(15, TimeUnit.MINUTES).setConstraints(constraints).build())
         if (pending) work.enqueueUniqueWork("yap-delivery", ExistingWorkPolicy.KEEP,
             OneTimeWorkRequestBuilder<YapWorker>().setConstraints(constraints).build())
+        Unit
     }
 }
 

@@ -18,7 +18,14 @@ interface NetkitStorage {
     fun readSecret(key: String): String
     @Throws(Exception::class)
     fun writeSecret(key: String, value: String)
+    /** After a verified remote acknowledgement, wipe this account and its local drafts.
+     * Keep the confirmed deletion journal readable until other cleanup has succeeded.
+     * May be called again after an interruption. */
+    @Throws(Exception::class)
+    fun eraseDeletedAccount(recoveryKey: String)
 }
+
+internal const val ACCOUNT_DELETION_JOURNAL = "account-deletion-v1"
 
 /**
  * Application-specific Rust ABI, expressed as JSON to keep Rust layouts out of Kotlin.

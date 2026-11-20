@@ -58,8 +58,17 @@ private data class ConnectionPreference(val enabled: Boolean, val join: JsonObje
 class NetkitController(private val storage: NetkitStorage, private val engine: NetkitEngine,
                        private val defaultHome: (suspend () -> String)? = null) {
     private val json = Json { encodeDefaults = true }
+    private val accountDeletion = AccountDeletion(storage, engine)
+    private fun deletionStatusOnDisk(): DeletionStatus = try {
+        if (storage.readSecret(ACCOUNT_DELETION_JOURNAL) == MISSING_VALUE) DeletionStatus.Idle else DeletionStatus.Retry
+    } catch (_: Exception) { DeletionStatus.StorageLocked }
+    private val mutableDeletion = MutableStateFlow(deletionStatusOnDisk())
+    internal val deletion = mutableDeletion.asStateFlow()
+    private val accountGeneration = MutableStateFlow(0L)
+    internal val generation = accountGeneration.asStateFlow()
+
     // A v5 invitation for the retired public home cannot deliver its pending events to v6.
-    private val retiredPublicInstall = run {
+    private val retiredPublicInstall = mutableDeletion.value == DeletionStatus.Idle && run {
         val previous = runCatching { json.decodeFromString<ConnectionPreference>(storage.readSecret(CONNECTION_KEY)) }.getOrNull()
         val join = previous?.join
         val retired = join?.get("serverAddr")?.jsonObject?.get("id")?.jsonPrimitive?.content ==
@@ -76,6 +85,14 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
     }
 
     private val mutex = Mutex()
+    private suspend inline fun <T> withAccount(action: () -> T): T {
+        val original = generation.value
+        return mutex.withLock {
+            check(deletion.value == DeletionStatus.Idle && original == generation.value) { "Account deletion is in progress." }
+            action()
+        }
+    }
+
     private val foreground = MutableStateFlow(true)
     private val openInboxItem = MutableStateFlow<InboxItem?>(null)
     private var handle: Long? = null
@@ -135,7 +152,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
                 .filterIsInstance<JsonObject>()
         }.distinctBy { it["id"] }
 
-    private val mutableState = MutableStateFlow(NetkitState(
+    private fun initialState() = NetkitState(
         awaitingDefault = defaultHome != null,
         snapshot = cache.snapshot.copy(posts = emptyList()),
         pendingCount = cache.outbox.size,
@@ -148,7 +165,8 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         locality = groupPreferences.locality,
         hasHomeFeed = groupPreferences.home != null,
         groupsStatus = groupsLoadError.orEmpty()
-    ))
+    )
+    private val mutableState = MutableStateFlow(initialState())
     val state: StateFlow<NetkitState> = mutableState.asStateFlow()
 
     /** Stop new RPCs between operations without waiting for the connection mutex. */
@@ -250,8 +268,8 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
     internal var finishingRestore = false
         private set
 
-    internal suspend fun checkWelcomeUsername(retry: Boolean = false) = mutex.withLock {
-        if (!retry && mutableWelcomeUsername.value != WelcomeUsername.Unchecked) return@withLock
+    internal suspend fun checkWelcomeUsername(retry: Boolean = false) = withAccount {
+        if (!retry && mutableWelcomeUsername.value != WelcomeUsername.Unchecked) return@withAccount
         val active = checkNotNull(handle) { "Reconnect to your community to verify your username." }
         val feed = engine.request(active, buildJsonObject { put("type", "feed") })
         val result = if (feed["privacy"]?.jsonPrimitive?.booleanOrNull == true) {
@@ -263,7 +281,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         val domain = result?.get("usernameDomain")?.jsonPrimitive?.contentOrNull
         if (domain.isNullOrBlank()) {
             mutableWelcomeUsername.value = WelcomeUsername.Unsupported
-            return@withLock
+            return@withAccount
         }
         val username = result["username"]?.jsonPrimitive?.contentOrNull
         check(username == null || username.substringAfter('@', "") == domain && validUsername(username.substringBefore('@'))) {
@@ -276,7 +294,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
     private val mutableBackupStep = MutableStateFlow(false)
     internal val backupStep = mutableBackupStep.asStateFlow()
 
-    internal suspend fun enterNeighborhood() = mutex.withLock {
+    internal suspend fun enterNeighborhood() = withAccount {
         check(!mutableBackupStep.value || mutableWelcomeUsername.value == WelcomeUsername.Confirmed) { "Claim a username before entering the neighborhood." }
         if (mutableBackupStep.value && !finishingRestore) {
             adoptOrCreateProfile(cache.snapshot.alias, cache.snapshot.profile)
@@ -290,7 +308,10 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
     internal val welcome: StateFlow<Boolean> = mutableWelcome.asStateFlow()
 
     /** Called once by the platform before starting its foreground poller. */
+    private var existingLocalProfile: Boolean? = null
+
     internal fun prepareWelcome(hasLocalProfile: Boolean) {
+        existingLocalProfile = hasLocalProfile
         val stage = runCatching { storage.readSecret(WELCOME_STAGE_KEY) }.getOrNull()
         finishingRestore = stage == "restore"
         mutableBackupStep.value = stage == "pending" || finishingRestore || stage?.startsWith(PROFILE_STAGE_PREFIX) == true
@@ -299,8 +320,8 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         }.getOrDefault(false)
     }
 
-    internal suspend fun persistWelcomeProfile(save: (WelcomeProfile, String?) -> Unit) = mutex.withLock {
-        val stage = secret(WELCOME_STAGE_KEY) ?: return@withLock
+    internal suspend fun persistWelcomeProfile(save: (WelcomeProfile, String?) -> Unit) = withAccount {
+        val stage = secret(WELCOME_STAGE_KEY) ?: return@withAccount
         if (stage.startsWith(PROFILE_STAGE_PREFIX)) {
             val draft = json.decodeFromString<WelcomeProfile>(stage.removePrefix(PROFILE_STAGE_PREFIX))
             commit(cache.copy(snapshot = cache.snapshot.copy(alias = draft.name, profile = draft.profile)))
@@ -313,7 +334,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
     internal suspend fun finishWelcome(alias: String, recoveryKey: String? = null, profile: CommunityProfile? = null, namedPosting: Boolean = false) {
         require(alias.trim().length in 2..30) { "Choose a display name between 2 and 30 characters." }
         val enrollment = publicEnrollment(checkNotNull(defaultHome).invoke())
-        mutex.withLock {
+        withAccount {
             check(mutableWelcome.value && !state.value.enabled) { "Your account is already open." }
             check(secret(CONNECTION_KEY) == null && (recoveryKey == null || secret(IDENTITY_KEY) == null)) {
                 "There is already an account on this device. Reopen Yap to continue."
@@ -372,7 +393,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         return engine.portability(buildJsonObject { put("type", "recoveryKey"); put("wallet", wallet) }).getValue("key").jsonPrimitive.content
     }
 
-    internal suspend fun recoveryKey(): String = mutex.withLock {
+    internal suspend fun recoveryKey(): String = withAccount {
         val wallet = checkNotNull(identity?.wallet) { "Connect to your account first." }
         engine.request(checkNotNull(handle), buildJsonObject { put("type", "accountRegister"); put("wallet", wallet) })
         engine.portability(buildJsonObject { put("type", "recoveryKey"); put("wallet", wallet) }).getValue("key").jsonPrimitive.content
@@ -380,8 +401,11 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
 
     /** Restore only an explicitly enabled preference; corrupted credentials never mint a replacement. */
     suspend fun restore(alias: String = cache.snapshot.alias) {
+        val original = generation.value
+        if (welcome.value || deletion.value != DeletionStatus.Idle) return
         try {
-            val shouldEnroll = mutex.withLock {
+            val shouldEnroll = withAccount {
+                if (welcome.value || original != generation.value) return
                 val preference = connectionPreference()
                 when {
                     preference?.enabled == true -> {
@@ -400,9 +424,9 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
             }
             if (shouldEnroll) {
                 val enrollment = publicEnrollment(checkNotNull(defaultHome).invoke())
-                mutex.withLock {
+                withAccount {
                     // A manual invitation or demo choice made during discovery takes precedence.
-                    if (connectionPreference() == null) {
+                    if (original == generation.value && !welcome.value && connectionPreference() == null) {
                         connectLocked(enrollment.join.toString(), alias, homeLabel = AppBrand.domain)
                         installPublicRoute(enrollment)
                     }
@@ -410,6 +434,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
             }
         } catch (failure: Exception) {
             if (failure is CancellationException) throw failure
+            if (original != generation.value || welcome.value || deletion.value != DeletionStatus.Idle) return
             mutableState.update { it.copy(feedUnavailable = true, status = if (it.awaitingDefault)
                 "Couldn’t connect to your home. Check your connection and retry."
                 else "Could not restore your saved connection. Unlock your device and reopen Yap.") }
@@ -421,9 +446,10 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
     val offersDefaultHome: Boolean get() = defaultHome != null
 
     suspend fun joinDefaultHome(alias: String) {
+        val original = generation.value
         val enrollment = publicEnrollment(checkNotNull(defaultHome).invoke())
-        mutex.withLock {
-            check(!state.value.enabled) { "Return to your local demo before changing homes." }
+        withAccount {
+            check(original == generation.value && !state.value.enabled) { "Account changed while joining the home." }
             connectLocked(enrollment.join.toString(), alias, homeLabel = AppBrand.domain)
             installPublicRoute(enrollment)
         }
@@ -438,7 +464,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
     })
 
     /** Stage a validated connection; never transfer an old community's outbox to a new home. */
-    suspend fun connect(joinText: String, alias: String) = mutex.withLock {
+    suspend fun connect(joinText: String, alias: String) = withAccount {
         connectLocked(joinText, alias)
     }
 
@@ -512,8 +538,85 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         }
     }
 
+    /** Resume only the durable journal. A retry must never initiate deletion of a new identity. */
+    internal suspend fun deleteAccount(confirmedByUser: Boolean) = mutex.withLock {
+        val saved = accountDeletion.read()
+        if (saved == null && !confirmedByUser) {
+            if (deletion.value == DeletionStatus.Retry) {
+                // Platform storage can finish the last local cleanup when it reopens the journal.
+                resetDeletedAccount()
+            } else if (deletion.value == DeletionStatus.StorageLocked) {
+                loadError = null
+                groupsLoadError = null
+                cache = loadCache()
+                groupPreferences = loadGroupPreferences()
+                mutableState.value = initialState()
+                existingLocalProfile?.let(::prepareWelcome)
+            }
+            mutableDeletion.value = DeletionStatus.Idle
+            return@withLock
+        }
+        val record = saved ?: run {
+            val current = checkNotNull(identity) { "Reconnect to your account to delete it." }
+            val wallet = checkNotNull(current.wallet) { "This account has no portable identity." }
+            val join = checkNotNull(connectionPreference()).join
+            check(join.getValue("serverAddr").jsonObject.getValue("id") ==
+                wallet.getValue("chain").jsonArray.last().jsonObject.getValue("payload").jsonObject.getValue("home")) {
+                "Reconnect to your account’s home to delete it."
+            }
+            val prepared = accountDeletion.prepare(checkNotNull(handle), join, publicRoute?.standbyFor(join), wallet, current.nextSequence)
+            withContext(NonCancellable) {
+                try { accountDeletion.persist(prepared) }
+                catch (failure: Exception) {
+                    mutableDeletion.value = deletionStatusOnDisk()
+                    throw failure
+                }
+                mutableDeletion.value = DeletionStatus.Working
+            }
+            prepared
+        }
+        mutableDeletion.value = DeletionStatus.Working
+        try {
+            withContext(NonCancellable) { closeActiveHandle() }
+            val recoveryKey = accountDeletion.acknowledgedKey(record)
+            withContext(NonCancellable) {
+                withContext(Dispatchers.Default) { storage.eraseDeletedAccount(recoveryKey) }
+                resetDeletedAccount()
+            }
+        } finally {
+            if (deletion.value == DeletionStatus.Working) mutableDeletion.value = DeletionStatus.Retry
+        }
+    }
+
+    private fun resetDeletedAccount() {
+        identity = null
+        activeDevice = null
+        publicRoute = null
+        lastDiscovery = null
+        loadError = null
+        groupsLoadError = null
+        groupPreferences = GroupPreferences()
+        cache = NetkitCache(snapshot = FeedSnapshot(emptyList(), alias = suggestName()))
+        archives = emptyMap()
+        policies = emptyMap()
+        privacyScope = null
+        history = emptyList()
+        waiting = emptyList()
+        nearby = NearbyPreference()
+        checkMailboxRegistration = true
+        openInboxItem.value = null
+        InboxPush.clear()
+        finishingRestore = false
+        mutableWelcomeUsername.value = WelcomeUsername.Unchecked
+        mutableBackupStep.value = false
+        mutableWelcome.value = true
+        mutableState.value = NetkitState(snapshot = cache.snapshot)
+        accountGeneration.value++
+        mutableDeletion.value = DeletionStatus.Idle
+    }
+
     /** Disable automatic restore without deleting cached content or pending uploads. */
-    suspend fun useDemo() = mutex.withLock {
+    suspend fun useDemo() = withAccount {
         val preference = connectionPreference()
         withContext(NonCancellable) {
             writeSecret(CONNECTION_KEY, json.encodeToString(ConnectionPreference(false, preference?.join ?: buildJsonObject {})))
@@ -555,13 +658,13 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
     }
 
     /** City selection stays local; only public-group membership can reveal a city interest. */
-    suspend fun selectLocality(locality: GroupLocality?) = mutex.withLock {
+    suspend fun selectLocality(locality: GroupLocality?) = withAccount {
         commitGroups(groupPreferences.copy(locality = locality))
     }
 
-    suspend fun refreshGroups() = mutex.withLock {
+    suspend fun refreshGroups() = withAccount {
         // An activity can recreate while the previous window is closing its handle.
-        val active = handle?.takeIf { state.value.enabled } ?: return@withLock
+        val active = handle?.takeIf { state.value.enabled } ?: return@withAccount
         mutableState.update { it.copy(groupsBusy = true, groupsStatus = "Finding your people…") }
         try {
             val result = engine.request(active, buildJsonObject { put("type", "groups") })
@@ -574,14 +677,14 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
     }
 
     /** Enrollment is remote, but active feed switching still preserves the old durable outbox. */
-    suspend fun joinGroup(group: GroupSummary) = mutex.withLock {
+    suspend fun joinGroup(group: GroupSummary) = withAccount {
         checkGroupSwitch()
         val active = checkNotNull(handle) { "Connect a home first." }
         val result = engine.request(active, buildJsonObject { put("type", "joinGroup"); put("group", group.id) })
         installGroup(result)
     }
 
-    suspend fun openGroup(id: String) = mutex.withLock {
+    suspend fun openGroup(id: String) = withAccount {
         loadError?.let { error(it) }
         groupsLoadError?.let { error(it) }
         val saved = groupPreferences.joined[id] ?: error("Join this group first.")
@@ -589,14 +692,14 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
     }
 
     /** Return to the private/home feed retained before group navigation. */
-    suspend fun openHomeFeed() = mutex.withLock {
+    suspend fun openHomeFeed() = withAccount {
         loadError?.let { error(it) }
         groupsLoadError?.let { error(it) }
         val home = groupPreferences.home ?: error("Connect a home first.")
         connectLocked(home.toString(), cache.snapshot.alias)
     }
 
-    suspend fun createGroup(name: String, description: String, category: String, locality: GroupLocality?) = mutex.withLock {
+    suspend fun createGroup(name: String, description: String, category: String, locality: GroupLocality?) = withAccount {
         checkGroupSwitch()
         val active = checkNotNull(handle) { "Connect a home first." }
         val result = engine.request(active, buildJsonObject {
@@ -629,7 +732,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         mutableState.update { current -> current.copy(groups = current.groups.filterNot { it.id == group.id } + group) }
     }
 
-    private suspend fun enqueue(action: JsonObject) = mutex.withLock {
+    private suspend fun enqueue(action: JsonObject) = withAccount {
         val active = checkNotNull(handle) { "Join an instance first." }
         check(state.value.enabled) { "Live mode is not enabled." }
         val named = when (action["kind"]?.jsonPrimitive?.content) {
@@ -658,7 +761,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
      * neither passphrase nor plaintext is written to the network cache or logs.
      * localData can carry the caller's profile; group references and preferences are included.
      */
-    suspend fun exportRecovery(passphrase: String, localData: JsonObject = buildJsonObject {}, refreshFromHome: Boolean = false): String = mutex.withLock {
+    suspend fun exportRecovery(passphrase: String, localData: JsonObject = buildJsonObject {}, refreshFromHome: Boolean = false): String = withAccount {
         val savedIdentity = identity ?: secret(IDENTITY_KEY)?.let { json.decodeFromString<Identity>(it) }
         val wallet = checkNotNull(savedIdentity?.wallet) { "Reconnect with an empty outbox to enable portable identity." }
         val owned = (archives.values + cache).flatMap { it.ownedEvents }.toMutableList()
@@ -706,7 +809,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
      * with that exact device/revision. Keep the encrypted source until every page succeeds.
      * Returns caller-owned profile/local data for explicit application by the UI host.
      */
-    suspend fun importRecovery(ciphertext: String, passphrase: String, joinText: String, alias: String, pendingAsDrafts: Boolean = false): JsonObject = mutex.withLock {
+    suspend fun importRecovery(ciphertext: String, passphrase: String, joinText: String, alias: String, pendingAsDrafts: Boolean = false): JsonObject = withAccount {
         check(cache.outbox.isEmpty()) { "Deliver pending uploads before importing another home." }
         val bundle = engine.portability(buildJsonObject {
             put("type", "decrypt"); put("ciphertext", ciphertext); put("passphrase", passphrase)
@@ -833,7 +936,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         })
     }
 
-    suspend fun save(id: Long) = mutex.withLock {
+    suspend fun save(id: Long) = withAccount {
         val post = cache.snapshot.posts.first { it.id == id }
         val remote = requireNotNull(post.remoteId)
         val bookmarks = if (remote in cache.bookmarks) cache.bookmarks - remote else cache.bookmarks + remote
@@ -841,13 +944,13 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         commit(cache.copy(bookmarks = bookmarks, snapshot = cache.snapshot.copy(posts = posts)))
     }
 
-    suspend fun hide(id: Long) = mutex.withLock {
+    suspend fun hide(id: Long) = withAccount {
         val remote = requireNotNull(cache.snapshot.posts.first { it.id == id }.remoteId)
         val posts = cache.snapshot.posts.map { if (it.id == id) it.copy(hidden = true) else it }
         commit(cache.copy(hidden = cache.hidden + remote, snapshot = cache.snapshot.copy(posts = posts)))
     }
 
-    private suspend fun reportRequest(type: String, fields: JsonObjectBuilder.() -> Unit = {}): JsonObject = mutex.withLock {
+    private suspend fun reportRequest(type: String, fields: JsonObjectBuilder.() -> Unit = {}): JsonObject = withAccount {
         engine.request(checkNotNull(handle) { "Reconnect to your home first." }, buildJsonObject {
             put("type", type)
             fields()
@@ -867,7 +970,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
             put("op", buildJsonObject { put("kind", kind); fields() })
         })
 
-    internal suspend fun claimUsername(name: String) = mutex.withLock {
+    internal suspend fun claimUsername(name: String) = withAccount {
         val wallet = checkNotNull(identity?.wallet) { "Reconnect to claim your username." }
         engine.request(checkNotNull(handle), buildJsonObject { put("type", "accountRegister"); put("wallet", wallet) })
         val result = social("claimUsername") { put("name", name) }
@@ -877,7 +980,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         if (mutableWelcomeUsername.value == WelcomeUsername.Required) mutableWelcomeUsername.value = WelcomeUsername.Confirmed
     }
 
-    suspend fun messageContact(event: String): MessageContact = mutex.withLock {
+    suspend fun messageContact(event: String): MessageContact = withAccount {
         json.decodeFromJsonElement(social("contact") { put("event", event) })
     }
 
@@ -886,7 +989,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         mutableState.update { it.copy(blockedAccounts = blocks) }
     }
 
-    suspend fun refreshBlocks() = mutex.withLock { refreshBlocksLocked() }
+    suspend fun refreshBlocks() = withAccount { refreshBlocksLocked() }
 
     private suspend fun savePolicy(next: DevicePrivacy) {
         val key = checkNotNull(privacyScope) { "Connect to your home first." }
@@ -894,17 +997,17 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         mutableState.update { it.withPrivacy(policy, cache.snapshot, history, waiting) }
     }
 
-    suspend fun setPrivacy(update: (PrivacySettings) -> PrivacySettings) = mutex.withLock {
+    suspend fun setPrivacy(update: (PrivacySettings) -> PrivacySettings) = withAccount {
         savePolicy(policy.copy(settings = update(policy.settings), pendingSettings = true))
     }
 
-    suspend fun readNotification(category: String, item: InboxItem) = mutex.withLock {
+    suspend fun readNotification(category: String, item: InboxItem) = withAccount {
         val key = "$category/${item.target}"
         savePolicy(policy.copy(notifications = policy.notifications.read(category, item.target, item.through),
             pendingReads = policy.pendingReads + (key to maxOf(item.through, policy.pendingReads[key] ?: 0))))
     }
 
-    suspend fun dismissRequest(peer: String) = mutex.withLock {
+    suspend fun dismissRequest(peer: String) = withAccount {
         social("dismissRequest") { put("peer", peer) }
         waiting = waiting - peer
         savePolicy(policy.copy(notifications = policy.notifications.copy(requests = policy.notifications.requests.filterNot { it.target == peer })))
@@ -915,7 +1018,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         val scope = state.value.messagingScope
         val provider = checkNotNull(InboxPush.registration).provider
         val token = if (categories.isEmpty()) null else InboxPush.token()
-        mutex.withLock {
+        withAccount {
             check(state.value.messagingScope == scope && scope != null) { "Your account changed. Reopen Inbox." }
             social("setPush") {
                 put("provider",provider); put("subscription",token?.let(::JsonPrimitive) ?: JsonNull)
@@ -925,12 +1028,12 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         }
     }
 
-    internal suspend fun resolvePush(route: String): Pair<String, InboxItem>? = mutex.withLock {
+    internal suspend fun resolvePush(route: String): Pair<String, InboxItem>? = withAccount {
         // OpenPush can return null for deleted, expired or blocked destinations.
         val active = checkNotNull(handle)
         val result = engine.request(active, buildJsonObject { put("type","social")
             put("op",buildJsonObject {put("kind","openPush");put("route",route)}) })
-        val item = result["item"] ?: return@withLock null
+        val item = result["item"] ?: return@withAccount null
         result.getValue("category").jsonPrimitive.content to json.decodeFromJsonElement<InboxItem>(item)
     }
 
@@ -938,7 +1041,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         openInboxItem.update { item -> item?.takeUnless { it.target == target } }
     }
 
-    suspend fun openActivityThread(item: InboxItem): Pair<Post, Long> = mutex.withLock {
+    suspend fun openActivityThread(item: InboxItem): Pair<Post, Long> = withAccount {
         if (cache.target?.substringAfter('/') != item.scope) {
             val join = groupPreferences.joined[item.scope]?.join ?: groupPreferences.home?.takeIf {
                 it["community"]?.jsonPrimitive?.content == item.scope
@@ -949,7 +1052,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         val cached=cache.snapshot.posts.firstOrNull { it.remoteId==item.target && !it.hidden && it.replies.any { r->r.remoteId==item.first } }
         if (!state.value.online && cached != null) {
             openInboxItem.value = item
-            return@withLock cached to item.firstThrough
+            return@withAccount cached to item.firstThrough
         }
         val value=social("notificationThread") {put("target",item.target);put("anchor",item.first)}
         val wire=json.decodeFromJsonElement<WirePost>(value.getValue("post"))
@@ -960,12 +1063,12 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         post to minOf(item.through, value.getValue("through").jsonPrimitive.long)
     }
 
-    suspend fun muteThread(id: String, title: String?) = mutex.withLock {
+    suspend fun muteThread(id: String, title: String?) = withAccount {
         val muted = if (title == null) policy.mutedThreads - id else policy.mutedThreads + (id to title)
         savePolicy(policy.copy(mutedThreads = muted, pendingMutes = policy.pendingMutes + (id to (title != null))))
     }
 
-    suspend fun blockAccount(value: String, byEvent: Boolean, label: String = "Blocked account", peer: String? = null) = mutex.withLock {
+    suspend fun blockAccount(value: String, byEvent: Boolean, label: String = "Blocked account", peer: String? = null) = withAccount {
         val account = if (byEvent) peer else value
         if (policy.blocks.none { it.value == value || account != null && it.peer == account }) {
             val block = DeviceBlock(value, byEvent, label, account, cache.target)
@@ -974,7 +1077,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         }
     }
 
-    suspend fun unblockAccount(id: String) = mutex.withLock {
+    suspend fun unblockAccount(id: String) = withAccount {
         val local = policy.blocks.find { it.handle == id || "local-" + it.value == id }
         val handle = local?.handle ?: id.takeUnless { it.startsWith("local-") }
         savePolicy(policy.copy(blocks = policy.blocks - listOfNotNull(local),
@@ -982,7 +1085,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         mutableState.update { state -> state.copy(blockedAccounts = state.blockedAccounts.filterNot { it.id == id }) }
     }
 
-    suspend fun approveContact(peer: String) = mutex.withLock {
+    suspend fun approveContact(peer: String) = withAccount {
         check(peer !in policy.blockedPeers) { "Unblock this account first." }
         savePolicy(policy.copy(revoked = policy.revoked - peer, approved = policy.approved + peer, pendingApprovals = policy.pendingApprovals + peer))
     }
@@ -1087,7 +1190,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         return complete
     }
 
-    internal suspend fun privateGroupAction(action: JsonObject): JsonElement = mutex.withLock {
+    internal suspend fun privateGroupAction(action: JsonObject): JsonElement = withAccount {
         val active = checkNotNull(handle) { "Connect to your home to use private groups." }
         check(state.value.enabled) { "Connect to your home to use private groups." }
         val device = checkNotNull(activeDevice) { "Open your account to use private groups." }
@@ -1131,7 +1234,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         }) }
     }
 
-    suspend fun sendMessage(contact: MessageContact, body: String) = mutex.withLock {
+    suspend fun sendMessage(contact: MessageContact, body: String) = withAccount {
         check(!state.value.mailboxElsewhere) { OTHER_MESSAGING_DEVICE }
         check(state.value.directAvailable) { "Connect to a home that supports private messages." }
         check(contact.peer !in policy.blockedPeers) { "Unblock this account first." }
@@ -1163,11 +1266,11 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         if (record != null) applyProfile(record) else writeProfile(alias, profile, 0)
     }
 
-    suspend fun restorePublicProfile(alias: String, profile: CommunityProfile) = mutex.withLock {
+    suspend fun restorePublicProfile(alias: String, profile: CommunityProfile) = withAccount {
         adoptOrCreateProfile(alias, profile)
     }
 
-    suspend fun setPublicProfile(alias: String, profile: CommunityProfile, expected: Long) = mutex.withLock {
+    suspend fun setPublicProfile(alias: String, profile: CommunityProfile, expected: Long) = withAccount {
         try {
             writeProfile(alias, profile, expected)
         } catch (failure: Exception) {
@@ -1177,7 +1280,7 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
         }
     }
 
-    suspend fun discardPending() = mutex.withLock {
+    suspend fun discardPending() = withAccount {
         check(loadError == null) { "Restore the unreadable network cache before changing it." }
         val posts = cache.snapshot.posts.filterNot { it.pending }
         commit(cache.copy(outbox = emptyList(), snapshot = cache.snapshot.copy(posts = posts)))
@@ -1186,16 +1289,19 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
 
     /** Upload a bounded batch and refresh the authenticated home view; errors retain exact retry IDs. */
     private var nearby = NearbyPreference()
-    suspend fun setNearby(value: NearbyPreference) = mutex.withLock { nearby = value }
+    suspend fun setNearby(value: NearbyPreference) = mutex.withLock {
+        if (deletion.value == DeletionStatus.Idle) nearby = value
+    }
 
     suspend fun sync() = mutex.withLock {
-        if (state.value.enabled && foreground.value && handle != null) syncLocked(background = false)
+        if (deletion.value == DeletionStatus.Idle && state.value.enabled && foreground.value && handle != null) syncLocked(background = false)
         Unit
     }
 
     /** A single OS-granted pass. Cold launches use only an existing enabled connection and
      * its persisted identity. The foreground loop and this worker always share the same lock. */
     suspend fun backgroundRefresh(preference: NearbyPreference): Boolean? = mutex.withLock {
+        if (deletion.value != DeletionStatus.Idle || welcome.value) return@withLock null
         val saved = connectionPreference()
         if (saved?.enabled != true) return@withLock null
         val openedHere = handle == null
@@ -1358,9 +1464,10 @@ class NetkitController(private val storage: NetkitStorage, private val engine: N
 
 /** The desktop poller belongs to the application, so hiding its last window keeps it alive. */
 internal suspend fun NetkitController.pollWhileOpen(snapshot: () -> FeedSnapshot, windowFocused: StateFlow<Boolean>? = null) {
+    deletion.first { it == DeletionStatus.Idle }
+    welcome.first { pending -> !pending }
     val initial = snapshot()
     setNearby(initial.nearby)
-    welcome.first { pending -> !pending }
     if (!hasOpenConnection()) restore(initial.alias)
     while (currentCoroutineContext().isActive) {
         if (state.value.enabled) sync()

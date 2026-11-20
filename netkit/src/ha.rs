@@ -243,7 +243,7 @@ impl Ledger {
                 }
                 tx.execute("INSERT INTO seed_receipt VALUES(?)", [digest])?;
                 tx.execute("INSERT INTO head VALUES(1,1,?1)", [&image])?;
-                remember_guard_state(&tx, &image)?;
+                remember_guard_state(&tx, &image, true)?;
                 for deletion in deletion_set(&image)? {
                     deletion.remember(&tx)?;
                 }
@@ -326,14 +326,14 @@ impl Ledger {
                         "invalid candidate image"
                     );
                     let old: Vec<u8> = tx.query_row("SELECT image FROM head", [], |r| r.get(0))?;
-                    remember_guard_state(&tx, &image)?;
+                    let retired = remember_guard_state(&tx, &image, false)?;
                     let before = deletion_set(&old)?;
                     let after = deletion_set(&image)?;
                     ensure!(
                         before.is_subset(&after),
                         "candidate rolls back a known deletion"
                     );
-                    if before != after {
+                    if before != after || retired {
                         for deletion in after.difference(&before) {
                             deletion.remember(&tx)?;
                         }
@@ -364,21 +364,77 @@ impl Ledger {
     }
 }
 
-fn remember_guard_state(ledger: &Connection, image: &[u8]) -> Result<()> {
+fn remember_guard_state(ledger: &Connection, image: &[u8], seed: bool) -> Result<bool> {
     let mut db = Connection::open_in_memory()?;
     db.deserialize_read_exact(rusqlite::MAIN_DB, image, image.len(), true)?;
+    let read_retired = |db: &Connection, sql: &str| -> Result<BTreeSet<(String, String)>> {
+        Ok(db
+            .prepare(sql)?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    };
+    let known = read_retired(
+        ledger,
+        "SELECT account,record_id FROM guard.known_deleted_accounts",
+    )?;
+    // Older authority images acquire the new main table on their first staging restore.
+    let next = if db.table_exists(Some(rusqlite::MAIN_DB), c"deleted_accounts")? {
+        read_retired(&db, "SELECT account,record_id FROM deleted_accounts")?
+    } else {
+        BTreeSet::new()
+    };
+    ensure!(
+        known.is_subset(&next),
+        "candidate rolls back a deleted account"
+    );
+    for (account, record) in next.difference(&known) {
+        if !seed {
+            let raw: String = ledger.query_row(
+                "SELECT chain FROM guard.current_accounts WHERE account=?",
+                [account],
+                |r| r.get(0),
+            )?;
+            let chain: Vec<crate::portability::AccountRecord> = serde_json::from_str(&raw)?;
+            let current = crate::portability::validate_chain(&chain)?;
+            ensure!(
+                current.payload.account == *account && current.id()? == *record,
+                "HA deletion does not match current guard registration"
+            );
+        }
+        ledger.execute(
+            "INSERT INTO guard.known_deleted_accounts VALUES(?,?)",
+            params![account, record],
+        )?;
+        ledger.execute(
+            "DELETE FROM guard.current_accounts WHERE account=?",
+            [account],
+        )?;
+        ledger.execute("DELETE FROM guard.opening_keys WHERE owner=?", [account])?;
+    }
+    let retired = next != known;
+    let retired_ids: BTreeSet<_> = next.iter().map(|(id, _)| id.as_str()).collect();
     let mut stmt = db.prepare("SELECT account,chain FROM account_states")?;
-    let mut changed =
+    let deliveries =
         crate::backup::copy_deliveries(&db, ledger, "peer_deliveries", "guard.known_deliveries")?;
+    let mut changed = 0;
     for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
         let (account, chain) = row?;
+        ensure!(
+            !retired_ids.contains(account.as_str()),
+            "candidate resurrects a deleted account"
+        );
         changed+=ledger.execute("INSERT INTO guard.current_accounts VALUES (?,?) ON CONFLICT(account) DO UPDATE SET chain=excluded.chain WHERE chain<>excluded.chain",params![account,chain])?;
     }
     if changed > 0 {
+        // A retry of a read-only preflight must not certify a superseded registration.
+        ledger.execute("UPDATE receipts SET response=? WHERE json_valid(response) AND json_extract(response,'$.type')='accountDeleteAvailable'",
+            [r#"{"type":"error","code":"expired","message":"Account changed; refresh"}"#])?;
+    }
+    if changed > 0 || deliveries > 0 || retired {
         ledger.execute("UPDATE guard.state SET epoch=epoch+1", [])?;
         ledger.execute("UPDATE deletion_epoch SET epoch=epoch+1", [])?;
     }
-    Ok(())
+    Ok(retired)
 }
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct RetainedDeletion {
@@ -937,6 +993,56 @@ mod tests {
         assert!(!health(800).has_headroom());
         assert!(!health(1000).has_headroom());
     }
+    #[test]
+    fn account_retirement_fences_ha_receipts_and_snapshot_rollback() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let route = grant();
+        let wallet = crate::portability::AccountWallet::create(new_secret(), route.home.clone())?;
+        let account = &wallet.validate()?.payload.account;
+        let record = wallet.validate()?.id()?;
+        let mut seed = Store::open(&dir.path().join("seed"))?;
+        seed.register_account(&wallet.chain)?;
+        let old = seed.snapshot()?;
+        let mut ledger = Ledger::open(&dir.path().join("ledger"), &route)?;
+        ledger.exchange(true, Control::Seed, old.clone())?;
+        let read = Operation::new("reader", new_secret(), b"feed")?;
+        let (lease, _) = begin(&mut ledger, true, &read);
+        ledger.exchange(true, commit(&read, &lease), vec![])?;
+        let mut store = Store::from_sqlite(Connection::open_in_memory()?);
+        store.restore_snapshot(&old)?;
+        store
+            .db
+            .execute("DELETE FROM account_states WHERE account=?", [account])?;
+        store.db.execute(
+            "INSERT INTO deleted_accounts VALUES(?,?)",
+            [account, &record],
+        )?;
+        let delete = Operation::new("device", new_secret(), b"retire")?;
+        let (lease, _) = begin(&mut ledger, false, &delete);
+        ledger.exchange(false, commit(&delete, &lease), store.snapshot()?)?;
+        let replay = ledger
+            .exchange(
+                true,
+                Control::Open {
+                    op: read,
+                    known: None,
+                },
+                vec![],
+            )?
+            .0;
+        assert!(matches!(replay,Answer::Committed { result,.. } if result.contains("expired")));
+        let stale = Operation::new("worker", new_secret(), b"older image")?;
+        let (lease, _) = begin(&mut ledger, true, &stale);
+        assert!(ledger.exchange(true, commit(&stale, &lease), old).is_err());
+        let pinned: String = ledger.db.query_row(
+            "SELECT record_id FROM guard.known_deleted_accounts WHERE account=?",
+            [account],
+            |r| r.get(0),
+        )?;
+        assert_eq!(pinned, record);
+        Ok(())
+    }
+
     #[test]
     fn expired_restarted_wrong_node_and_stale_tokens_cannot_commit() -> Result<()> {
         let tmp = tempfile::tempdir()?;

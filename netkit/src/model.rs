@@ -614,6 +614,14 @@ pub enum NetworkMode {
     Local,
     N0,
 }
+pub const ACCOUNT_DELETE_BATCH: usize = 16;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AccountDeleteTarget {
+    pub community: String,
+    pub id: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Request {
@@ -678,6 +686,21 @@ pub enum Request {
         community: String,
         chain: Vec<crate::portability::AccountRecord>,
         proof: crate::portability::AccountProof,
+    },
+    AccountDeleteAvailability {
+        token: String,
+        community: String,
+        chain: Vec<crate::portability::AccountRecord>,
+        intent: crate::portability::AccountDeletionIntent,
+        proof: crate::portability::AccountProof,
+    },
+    AccountDelete {
+        token: String,
+        community: String,
+        chain: Vec<crate::portability::AccountRecord>,
+        intent: crate::portability::AccountDeletionIntent,
+        proof: crate::portability::AccountProof,
+        deletes: Vec<SignedEvent>,
     },
     AccountExport {
         token: String,
@@ -771,6 +794,15 @@ pub enum Response {
     ProjectionUnchanged,
     Social {
         result: serde_json::Value,
+    },
+    AccountDeleteAvailable {
+        account: String,
+    },
+    AccountDeletePending {
+        targets: Vec<AccountDeleteTarget>,
+    },
+    AccountDeleted {
+        account: String,
     },
     AccountState {
         #[serde(default)]

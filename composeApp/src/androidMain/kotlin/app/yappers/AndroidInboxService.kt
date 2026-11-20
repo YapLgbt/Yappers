@@ -25,10 +25,33 @@ private fun Context.createInboxChannel() =
 internal class AndroidPush(val activity: YapActivity) : PushRegistration {
     companion object {
         fun configured(context: Context) = FirebaseApp.getApps(context).isNotEmpty()
+        private var generation = 0L
+        @Synchronized fun clearAccount(context: Context) {
+            generation++
+            check(context.preferences().edit().clear().putBoolean("disabledAfterDeletion", true).commit())
+            context.manager().cancelAll()
+            if (configured(context)) {
+                FirebaseMessaging.getInstance().isAutoInitEnabled = false
+                FirebaseMessaging.getInstance().deleteToken()
+            }
+        }
+        @Synchronized private fun beginRegistration(context: Context): Long {
+            check(context.preferences().edit().remove("disabledAfterDeletion").commit())
+            return generation
+        }
+        @Synchronized fun ifActive(context: Context, action: () -> Unit) {
+            if (!context.preferences().getBoolean("disabledAfterDeletion", false)) action()
+        }
+        @Synchronized private fun storeToken(context: Context, token: String, revision: Long): Boolean {
+            if (generation != revision || context.preferences().getBoolean("disabledAfterDeletion", false)) return false
+            context.preferences().edit().putString("token", token).apply()
+            return true
+        }
     }
     override val provider = "fcm"
     override val currentToken get() = activity.preferences().getString("token", null)
     private var callback: ((String?, String?) -> Unit)? = null
+    private var registrationGeneration = 0L
     private val permission = activity.registerForActivityResult(ActivityResultContracts.RequestPermission()) { allowed ->
         if (allowed) fetch() else finish(null, "Allow notifications in Android settings to receive Inbox updates.")
     }
@@ -43,16 +66,18 @@ internal class AndroidPush(val activity: YapActivity) : PushRegistration {
             finish(null, "Allow Inbox notifications in Android settings.")
             return
         }
+        val revision = registrationGeneration
         FirebaseMessaging.getInstance().token.addOnCompleteListener { result ->
-            if (result.isSuccessful) {
-                activity.preferences().edit().putString("token", result.result).apply()
+            if (result.isSuccessful && storeToken(activity, result.result, revision)) {
                 finish(result.result, null)
             } else finish(null, "Couldn’t register this device. Try again.")
         }
     }
     override fun requestToken(completion: (String?, String?) -> Unit) {
+        val revision = beginRegistration(activity)
         activity.runOnUiThread {
             callback = completion
+            registrationGeneration = revision
             activity.createInboxChannel()
             if (Build.VERSION.SDK_INT >= 33 && activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) permission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -65,9 +90,12 @@ class AndroidInboxService : FirebaseMessagingService() {
     companion object { internal const val OPEN = "app.yappers.OPEN_INBOX" }
 
     override fun onNewToken(token: String) {
-        preferences().edit().putString("token", token).apply()
+        AndroidPush.ifActive(this) { preferences().edit().putString("token", token).apply() }
     }
     override fun onMessageReceived(message: RemoteMessage) {
+        AndroidPush.ifActive(this) { showInboxUpdate(message) }
+    }
+    private fun showInboxUpdate(message: RemoteMessage) {
         val route = message.data["route"]?.takeIf { Regex("[a-f0-9]{64}").matches(it) } ?: return
         val revision = message.data["revision"]?.toLongOrNull() ?: return
         createInboxChannel()

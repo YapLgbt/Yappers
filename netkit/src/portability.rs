@@ -350,6 +350,63 @@ impl PersonalArchive {
     }
 }
 
+/// Root authorization for this Home to delete exactly one registration using its named device.
+/// The intent survives restarts; each step also needs a fresh device request proof.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountDeletionIntent {
+    pub account: String,
+    pub home: String,
+    pub record_id: String,
+    pub device: String,
+    pub signature: String,
+}
+
+impl AccountDeletionIntent {
+    fn bytes(&self) -> Result<Vec<u8>> {
+        Ok(serde_json::to_vec(&(
+            "yap/account-deletion/v1",
+            &self.account,
+            &self.home,
+            &self.record_id,
+            &self.device,
+        ))?)
+    }
+
+    pub fn create(wallet: &AccountWallet) -> Result<Self> {
+        let record = wallet.validate()?;
+        let mut intent = Self {
+            account: record.payload.account.clone(),
+            home: record.payload.home.clone(),
+            record_id: record.id()?,
+            device: hex::encode(
+                signing_key(&wallet.device_secret)?
+                    .verifying_key()
+                    .as_bytes(),
+            ),
+            signature: String::new(),
+        };
+        intent.signature = hex::encode(
+            signing_key(&wallet.root_secret)?
+                .sign(&intent.bytes()?)
+                .to_bytes(),
+        );
+        Ok(intent)
+    }
+
+    pub fn validate(&self, record: &AccountRecord) -> Result<()> {
+        record.validate()?;
+        ensure!(
+            record.payload.account == self.account
+                && record.payload.home == self.home
+                && record.id()? == self.record_id
+                && record.payload.devices.contains(&self.device),
+            "account deletion registration or device mismatch"
+        );
+        verify(&self.account, &self.bytes()?, &self.signature)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountProof {

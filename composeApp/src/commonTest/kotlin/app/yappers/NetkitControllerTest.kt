@@ -12,6 +12,10 @@ class NetkitControllerTest {
         val secrets = mutableMapOf<String, String>()
         var failNextStateWrite = false
         var failNextSecretWrite = false
+        override fun eraseDeletedAccount(recoveryKey: String) {
+            data = null
+            secrets.clear()
+        }
         override fun readState() = data ?: "null"
         override fun writeState(value: String) {
             if (failNextStateWrite) { failNextStateWrite = false; error("Disk unavailable") }

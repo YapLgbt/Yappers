@@ -3,13 +3,15 @@
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, MAIN_DB, TransactionBehavior};
 
-const STEPS: &[fn(&Connection) -> Result<()>] = &[baseline, peer_scope, mail_requests, inbox];
+const STEPS: &[fn(&Connection) -> Result<()>] =
+    &[baseline, peer_scope, mail_requests, inbox, deleted_accounts];
 pub(crate) const CURRENT_VERSION: i64 = STEPS.len() as i64;
 
 // Version zero includes guards retained from releases before versioned migrations.
 const GUARD_STEPS: &[&str] = &[
     include_str!("../migrations/guard/0001_guard.sql"),
     include_str!("../migrations/guard/0002_native_head.sql"),
+    include_str!("../migrations/guard/0003_deleted_accounts.sql"),
 ];
 
 pub(crate) fn guard_version(db: &Connection, schema: &str) -> Result<usize> {
@@ -105,6 +107,11 @@ fn check_unversioned(db: &Connection) -> Result<()> {
     ensure!(rows.next()?.is_none() && tokens.split_ascii_whitespace().eq(
         "create table peers ( id text primary key , generation text not null , cursor integer not null )".split(' ')
     ), "unrecognized Home database without schema version");
+    Ok(())
+}
+
+fn deleted_accounts(db: &Connection) -> Result<()> {
+    db.execute_batch(include_str!("../migrations/0005_deleted_accounts.sql"))?;
     Ok(())
 }
 
