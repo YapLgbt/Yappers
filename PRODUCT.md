@@ -15,7 +15,7 @@ The [PWA parity notes](docs/web-app.md#parity-with-ios-and-android) describe con
 
 ## Homes and identity
 
-Your home accepts signed posts and shares them with peers authorized for that community. Yap operates the default public home at yap.lgbt. Independent operators can run the server. Outside peering with the Yap-operated home is closed. The [peering covenant](https://yap.lgbt/peering/) describes the admission terms.
+Your home accepts signed posts and shares them with peers authorized for that community. Yap operates the default public Home at yap.lgbt. Independent operators can run a Home and join the public Yap network by signing the peering covenant. [Run your own Home](docs/run-home.md) · [Peering covenant](https://yap.lgbt/peering/)
 
 Named posts can include a snapshot of your profile. Anonymous posts omit the profile, but homes can link posts by their signing identifiers. When you share a posting area, Yap rounds the coordinates before sending them. Choosing **All cities** omits location on new posts. [Profiles](docs/profiles-and-posts.md) · [Location sharing](docs/public-home.md#location-behavior)
 

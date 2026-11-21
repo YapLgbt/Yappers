@@ -4,6 +4,8 @@ Homes in the Yap public network automatically admit a Home that proves possessio
 
 ## Join as an independent operator
 
+If you run a Home with Docker Compose, follow the [published image and covenant walkthrough](../../docs/run-home.md#optional-join-the-public-yap-network).
+
 Run these commands as the Home’s service user. Obtain the current covenant, source offer, and bootstrap identity from the network operator’s published discovery information. For yap.lgbt, the public enrollment document contains the bootstrap address. Extract just the address for configuration.
 
 ```sh
