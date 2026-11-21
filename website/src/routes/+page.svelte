@@ -28,10 +28,14 @@
       <div class="intro">
         <h1 id="welcome">Queer life, <em>around here.</em></h1>
         <p>Yap is a local conversation app for Queer folks. Find a reading buddy, plan a potluck, plan a date, or say hello to the person you keep seeing at the café.</p>
-        <a class="primary" href="https://discord.gg/GZMMvk2d3q">
-          Join Discord for testing
-          <svg class="link-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h15m-6-6 6 6-6 6" /></svg>
-        </a>
+        <div class="hero-actions">
+          <a class="primary" href="https://github.com/YapLgbt/Yappers/releases/download/android-inbox-test5/Yap-Android-0.1.0-test5.apk" aria-describedby="android-requirements">
+            Download Android APK
+            <svg class="link-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v15m-6-6 6 6 6-6" /></svg>
+          </a>
+          <a class="testing-link" href="https://discord.gg/GZMMvk2d3q">Join Discord for testing</a>
+        </div>
+        <p class="android-requirements" id="android-requirements">Test build for 64-bit devices with Android 9 or later.</p>
       </div>
       <figure class="flag-print hero-art">
         <svg width="0" height="0" class="print-edge-defs" aria-hidden="true" focusable="false"><defs>

@@ -176,13 +176,20 @@ h1 em, h2 em { color: var(--plum); }
   line-height: 1.55;
 }
 
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .25rem 1.25rem;
+  margin-block-start: 1.5rem;
+}
+
 .primary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: .875rem;
   min-block-size: 3rem;
-  margin-block-start: 1.5rem;
   border-radius: 999px;
   padding: .625rem 1.25rem;
   background: var(--plum);
@@ -193,6 +200,20 @@ h1 em, h2 em { color: var(--plum); }
 
 .primary:hover { background: color-mix(in srgb, var(--plum) 89%, var(--ink)); }
 .primary:active { background: color-mix(in srgb, var(--plum) 84%, var(--ink)); }
+
+.testing-link {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: 3rem;
+  color: var(--plum);
+  font: var(--label-type);
+  text-underline-offset: .25em;
+}
+
+.intro > .android-requirements {
+  margin-block-start: .5rem;
+  font-size: .875rem;
+}
 
 .link-arrow {
   flex: none;
