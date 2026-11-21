@@ -415,6 +415,7 @@ class NetkitControllerTest {
         controller.publish("Queued in this city", "Friends", true, "Neighbor")
         assertFailsWith<IllegalStateException> { controller.joinGroup(worldwide) }
         assertFailsWith<IllegalStateException> { controller.createGroup("New group", "A new group", "Friends", null) }
+        assertFailsWith<IllegalStateException> { controller.openHomeFeed() }
         assertEquals(1, controller.state.value.pendingCount)
         controller.useDemo(); controller.openGroup(local.id)
         assertEquals(1, controller.state.value.pendingCount)

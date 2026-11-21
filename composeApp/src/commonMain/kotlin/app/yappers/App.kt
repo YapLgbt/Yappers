@@ -292,6 +292,24 @@ private fun AccountContent(storage: LocalStorage, networking: NetkitController?,
         if (platformNavigation != null) session.feedReset++
         navigate("Nearby")
     }
+    suspend fun returnToHomeFeed() {
+        networking?.openHomeFeed()
+        returnToNearby()
+        scope.launch { networking?.sync() }
+    }
+    val canReturnToHomeFeed = materialNavigation != null && live && connection.activeGroup != null && connection.hasHomeFeed
+    var returningHome by remember { mutableStateOf(false) }
+    fun leavePublicGroup() {
+        if (returningHome) return
+        if (connection.pendingCount > 0) {
+            inform(GROUP_SWITCH_PENDING_MESSAGE)
+            return
+        }
+        returningHome = true
+        act {
+            try { returnToHomeFeed() } finally { returningHome = false }
+        }
+    }
     fun vote(post: Post, value: Int) {
         if (live) act { networking.vote(post.id, value); networking.sync() }
         else change { repository.vote(post.id, value) }
@@ -318,6 +336,7 @@ private fun AccountContent(storage: LocalStorage, networking: NetkitController?,
             inbox -> inbox = false
             selectedId != null -> selectedId = null
             privateGroupsOpen -> privateGroupsOpen = false
+            tab == "Nearby" && canReturnToHomeFeed -> leavePublicGroup()
             else -> navigate("Nearby")
         }
     }
@@ -340,7 +359,7 @@ private fun AccountContent(storage: LocalStorage, networking: NetkitController?,
     // NavDisplay owns detail Back events, including interactive gesture progress.
     val handleSharedBack = if (materialNavigation == null)
         dmContact != null || inbox || privacyOpen || selectedId != null || tab != "Nearby"
-    else materialStack.size == 1 && tab != "Nearby"
+    else materialStack.size == 1 && (tab != "Nearby" || canReturnToHomeFeed)
     AppBackHandler(!editingProfile && handleSharedBack, ::goBack)
     AppBackHandler(revisitGuide && materialNavigation == null) { revisitGuide = false }
     val firstVisit = networking?.welcome?.collectAsState()?.value == true
@@ -570,6 +589,15 @@ private fun AccountContent(storage: LocalStorage, networking: NetkitController?,
                                     }
                                 }
                                 if (materialNavigation != null && !detail) {
+                                    val showHomeUp = visibleTab == "Nearby" && canReturnToHomeFeed
+                                    val inboxButton: @Composable (Modifier) -> Unit = { modifier ->
+                                        FilledTonalIconButton(onClick = { inbox = true; dmContact = null }, modifier = modifier) {
+                                            val count=connection.privacy.notifications.count
+                                            BadgedBox(badge={if(count>0) Badge {Text(count.toString())}}) {
+                                                LineIcon("inbox", if(count>0) "Inbox, $count unread" else "Inbox", tint=LocalContentColor.current)
+                                            }
+                                        }
+                                    }
                                     CenterAlignedTopAppBar(
                                         title = { YapWordmark(Modifier.semantics {
                                             if (canRefresh && !refreshing) customActions = listOf(
@@ -577,13 +605,11 @@ private fun AccountContent(storage: LocalStorage, networking: NetkitController?,
                                             )
                                         }) },
                                         navigationIcon = {
-                                            FilledTonalIconButton(onClick = { inbox = true; dmContact = null }, modifier = Modifier.padding(start = 8.dp)) {
-                                                val count=connection.privacy.notifications.count
-                                                BadgedBox(badge={if(count>0) Badge {Text(count.toString())}}) {
-                                                    LineIcon("inbox", if(count>0) "Inbox, $count unread" else "Inbox", tint=LocalContentColor.current)
-                                                }
-                                            }
+                                            if (showHomeUp) IconButton(onClick = ::leavePublicGroup, enabled = !returningHome) {
+                                                LineIcon("back", "Back to Home feed", tint = LocalContentColor.current)
+                                            } else inboxButton(Modifier.padding(start = 8.dp))
                                         },
+                                        actions = { if (showHomeUp) inboxButton(Modifier.padding(end = 8.dp)) },
                                         windowInsets = WindowInsets(0)
                                     )
                                 } else if (materialNavigation == null && platformNavigation == null) Row(
@@ -690,7 +716,7 @@ private fun AccountContent(storage: LocalStorage, networking: NetkitController?,
                                                     networking?.createGroup(name, description, category, locality)
                                                     returnToNearby(); scope.launch { networking?.sync() }
                                                 }, onError = { error = it },
-                                                onHome = { networking?.openHomeFeed(); returnToNearby(); scope.launch { networking?.sync() } })
+                                                onHome = ::returnToHomeFeed)
                                             visibleTab == "You" -> Profile(state, live = live, connection = connection, networking = networking,
                                                 recoveryFiles = recoveryFiles, listState = profileScroll,
                                                 onDeleteAccount = onDeleteAccount.takeIf { live && connection.ownershipReady }, canSubmitDeletion = canSubmitDeletion,

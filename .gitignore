@@ -30,6 +30,7 @@ __pycache__/
 # IntelliJ creates the module and artifact definitions on Gradle import.
 /.idea/*
 !/.idea/codeStyles/
+/composeApp/bin/
 
 # Local credentials and database recovery material
 .env

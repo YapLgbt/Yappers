@@ -19,6 +19,8 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
+internal const val GROUP_SWITCH_PENDING_MESSAGE = "Your posts are still sending. You can switch groups when they finish."
+
 /** Public catalog UI. Search and city selection filter the downloaded catalog on-device. */
 @Composable
 fun GroupsScreen(
@@ -108,7 +110,7 @@ fun GroupsScreen(
                     }
                 } else add(FormRow("connect", "Community settings", kind = "disclosure",
                     detail = "Join a community to browse groups.", onTap = onConnect))
-            }, footer = if (connection.pendingCount > 0) "Your posts are still sending. You can switch groups when they finish." else ""))
+            }, footer = if (connection.pendingCount > 0) GROUP_SWITCH_PENDING_MESSAGE else ""))
             add(FormSection(rows = buildList {
                 add(FormRow("scope", "Group scope", "segments", value = tab,
                     choices = scopes.map { value -> FormChoice(value, selected = value == tab) { selectScope(value) } }))
@@ -157,7 +159,7 @@ fun GroupsScreen(
                     Text("Join a community to browse groups.", style = MaterialTheme.typography.bodyMedium)
                     YapButton(onClick = onConnect) { Text("Community settings") }
                 }
-                if (connection.pendingCount > 0) Text("Your posts are still sending. You can switch groups when they finish.",
+                if (connection.pendingCount > 0) Text(GROUP_SWITCH_PENDING_MESSAGE,
                     style = MaterialTheme.typography.bodyMedium)
                 BoxWithConstraints(Modifier.fillMaxWidth()) {
                     if (maxWidth >= 324.dp * LocalDensity.current.fontScale) {
