@@ -968,7 +968,7 @@ export async function importArchive(file, passphrase, invitation, allowDrafts) {
       }
     }
     const dest = join?.serverAddr?.id;
-    if (!dest || join.community !== dest + '/public')
+    if (!dest || !/^[a-f0-9]{64}\/public$/.test(join.community))
       throw new Error('Choose a public home invitation.');
     const sameHome = dest === current.join.serverAddr.id;
     const route = {

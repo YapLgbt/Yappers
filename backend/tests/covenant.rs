@@ -242,3 +242,104 @@ async fn deployed_covenant() -> Result<()> {
     observer.close().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn dedicated_home_policy_admits_current_covenant_without_a_manual_peer_entry() -> Result<()> {
+    use yappers_netkit::server::CovenantPeer;
+
+    let dir = std::env::temp_dir().join(format!("yap-automatic-policy-test-{}", new_secret()));
+    fs::create_dir(&dir)?;
+    let mut fixture = Fixture { dir, process: None };
+    let key = signing_key(&new_secret())?;
+    let main_home = hex::encode(key.verifying_key().as_bytes());
+    let main = format!("{main_home}/public");
+    let path = fixture.dir.join("store.sqlite");
+    let mut settings: ServerConfig =
+        serde_json::from_value(config(&hex::encode(key.to_bytes()), &path))?;
+    let sign = |key: &_| {
+        Acceptance::sign(
+            key,
+            "Test operator".into(),
+            "ops@example.org".into(),
+            "https://example.org/source/archive.tar.gz".into(),
+            "a".repeat(64),
+        )
+    };
+    settings.enable_covenant(main_home.clone(), sign(&key)?, vec![])?;
+    fs::write(
+        fixture.dir.join("home.json"),
+        serde_json::to_vec(&settings)?,
+    )?;
+    let event = Envelope::accept(
+        SignedEvent::create(
+            &key,
+            main_home.clone(),
+            main.clone(),
+            1,
+            Action::Post {
+                body: "Fixture public post".into(),
+                topic: "Chatter".into(),
+                anonymous: true,
+                display_name: "Anonymous neighbor".into(),
+            },
+        )?,
+        &key,
+    )?;
+    Store::open(&path)?.accept(&event)?;
+    let join = fixture
+        .start(&json!({"managedHomes":[main_home],"peers":[]}))
+        .await?;
+    let remote_key = signing_key(&new_secret())?;
+    let remote = Server::start(serde_json::from_value(config(
+        &hex::encode(remote_key.to_bytes()),
+        &fixture.dir.join("peer.sqlite"),
+    ))?)
+    .await?;
+    let pull = Request::Pull {
+        after: 0,
+        generation: None,
+        limit: 100,
+    };
+    assert!(
+        transport::rpc(&remote.endpoint, join.server_addr.clone(), &pull)
+            .await
+            .is_err()
+    );
+    let receipt = sign(&remote_key)?;
+    let mut tampered = serde_json::to_value(&receipt)?;
+    tampered["statement"]["operator"] = json!("Changed after signing");
+    let request = |acceptance| Request::CovenantPeers {
+        network: main_home.clone(),
+        peer: CovenantPeer {
+            acceptance,
+            local_addresses: vec![],
+        },
+        after: None,
+    };
+    assert!(
+        transport::rpc(
+            &remote.endpoint,
+            join.server_addr.clone(),
+            &request(serde_json::from_value(tampered)?)
+        )
+        .await
+        .is_err()
+    );
+    for _ in 0..2 {
+        assert!(matches!(
+            transport::rpc(
+                &remote.endpoint,
+                join.server_addr.clone(),
+                &request(receipt.clone())
+            )
+            .await?,
+            Response::CovenantPeers { .. }
+        ));
+    }
+    let page = transport::rpc(&remote.endpoint, join.server_addr, &pull).await?;
+    assert!(
+        matches!(&page, Response::Page { entries, .. } if entries.len() == 1 && entries[0].envelope.event.id == event.event.id)
+    );
+    remote.close().await;
+    Ok(())
+}

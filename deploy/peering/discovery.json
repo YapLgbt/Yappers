@@ -1,1 +1,1 @@
-{"version":1,"externalAdmissions":"closed","covenantVersion":"1","covenantUrl":"https://yap.lgbt/peering/v1.txt","sourceUrl":"https://yap.lgbt/source/@REVISION@.tar.gz","sourceSha256":"@REVISION@"}
+{"version":1,"externalAdmissions":"automatic","covenantVersion":"2","covenantUrl":"https://yap.lgbt/peering/v2.txt","homeEnrollmentUrl":"https://yap.lgbt/.well-known/yap-home.json","sourceUrl":"https://yap.lgbt/source/@REVISION@.tar.gz","sourceSha256":"@REVISION@"}

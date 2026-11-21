@@ -19,6 +19,7 @@ fn config(path: &Path) -> ServerConfig {
         peers: vec![],
         network_mode: NetworkMode::Local,
         auto_federation: AutoFederationConfig {
+            covenant: None,
             enabled: true,
             ..Default::default()
         },
@@ -382,5 +383,252 @@ async fn home_can_create_and_browse_more_than_64_public_groups() -> anyhow::Resu
     assert_eq!(seen.len(), 65);
     reader.close().await;
     server.close().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn covenant_admits_homes_to_shared_feed_and_groups_and_preserves_deletions()
+-> anyhow::Result<()> {
+    use yappers_netkit::{
+        peering::Acceptance,
+        server::{CovenantFederation, CovenantPeer},
+    };
+
+    let dir = tempfile::tempdir()?;
+    let owner_key = signing_key(&new_secret())?;
+    let main_home = hex::encode(owner_key.verifying_key().as_bytes());
+    let main = format!("{main_home}/public");
+    let setup = |name: &str, secret: String| -> anyhow::Result<ServerConfig> {
+        let mut settings = config(&dir.path().join(format!("{name}.sqlite")));
+        let acceptance = Acceptance::sign(
+            &signing_key(&secret)?,
+            name.into(),
+            "test@example.org".into(),
+            "https://example.org/source/release.tar.gz".into(),
+            "a".repeat(64),
+        )?;
+        settings.private_key = secret;
+        settings.communities.insert(main.clone(), new_secret());
+        settings.auto_federation.covenant = Some(CovenantFederation {
+            main_home: main_home.clone(),
+            acceptance,
+            admit_new: true,
+        });
+        Ok(settings)
+    };
+    let a_config = setup("Yap", hex::encode(owner_key.to_bytes()))?;
+    let a = Server::start(a_config.clone()).await?;
+    let mut b_config = setup("Second operator", new_secret())?;
+    b_config.auto_federation.seeds = vec![a.public_address()];
+    let b = Server::start(b_config.clone()).await?;
+    let mut c_config = setup("Third operator", new_secret())?;
+    c_config.auto_federation.seeds = vec![b.public_address()];
+    let c = Server::start(c_config.clone()).await?;
+    let b_id = b.endpoint.id().to_string();
+    let c_id = c.endpoint.id().to_string();
+
+    let receipt = b_config
+        .auto_federation
+        .covenant
+        .as_ref()
+        .unwrap()
+        .acceptance
+        .clone();
+    let outsider = transport::bind(NetworkMode::Local, None, false).await?;
+    let spoof = Request::CovenantPeers {
+        network: main_home.clone(),
+        peer: CovenantPeer {
+            acceptance: receipt.clone(),
+            local_addresses: vec![],
+        },
+        after: None,
+    };
+    assert!(
+        transport::rpc(&outsider, a.public_address(), &spoof)
+            .await
+            .is_err()
+    );
+    assert!(
+        transport::rpc(
+            &outsider,
+            a.public_address(),
+            &Request::Pull {
+                after: 0,
+                generation: None,
+                limit: 100
+            }
+        )
+        .await
+        .is_err()
+    );
+    outsider.close().await;
+
+    b.sync_once().await?;
+    c.sync_once().await?;
+    b.sync_once().await?;
+    b.sync_once().await?;
+    let peers = Store::live_peers(&b_config.database_path)?;
+    assert!(
+        peers
+            .iter()
+            .any(|peer| peer.id == main_home && peer.status == "active")
+    );
+    assert!(
+        peers
+            .iter()
+            .any(|peer| peer.id == c_id && peer.status == "active")
+    );
+    assert!(
+        peers
+            .iter()
+            .all(|peer| !peer.communities.contains("private-home"))
+    );
+
+    let ca = client(a.join(&main, NetworkMode::Local)?).await;
+    let wallet = yappers_netkit::portability::AccountWallet::create(new_secret(), b_id.clone())?;
+    let cb = Client::open(ClientConfig {
+        full_home_standby: None,
+        join: b.join(&main, NetworkMode::Local)?,
+        author_secret: wallet.device_secret,
+        next_sequence: 1,
+        account_chain: wallet.chain,
+    })
+    .await?;
+    let cc = client(c.join(&main, NetworkMode::Local)?).await;
+    let first = cb.prepare(post("Published from the second Home"))?.event;
+    cb.submit(first.clone()).await?;
+    a.sync_once().await?;
+    c.sync_once().await?;
+    assert_eq!(posts(&ca).await[0].id, first.id);
+    assert_eq!(posts(&cc).await[0].id, first.id);
+    ca.submit(
+        ca.prepare(Action::Reply {
+            parent: first.id.clone(),
+            body: "Main feed reply".into(),
+            display_name: "Yap neighbor".into(),
+        })?
+        .event,
+    )
+    .await?;
+    b.sync_once().await?;
+    assert_eq!(posts(&cb).await[0].replies.len(), 1);
+
+    let hidden = client(a.join("private-home", NetworkMode::Local)?).await;
+    let private_post = hidden.prepare(post("Only on this Home"))?.event;
+    hidden.submit(private_post.clone()).await?;
+    hidden.close().await;
+    b.sync_once().await?;
+    assert!(
+        !Store::open(&b_config.database_path)?
+            .events("private-home")?
+            .iter()
+            .any(|entry| entry.event.id == private_post.id)
+    );
+
+    let group = a.create_group(details("Covenant readers", false))?;
+    b.sync_once().await?;
+    let group_b = client(b.join_group(&group.id).await?).await;
+    let group_a = client(a.join_group(&group.id).await?).await;
+    let group_post = group_b.prepare(post("Same group across Homes"))?.event;
+    group_b.submit(group_post.clone()).await?;
+    a.sync_once().await?;
+    assert_eq!(posts(&group_a).await[0].id, group_post.id);
+    group_a.close().await;
+    group_b.close().await;
+
+    let delivered = ca.prepare(post("Delivered before suspension"))?.event;
+    ca.submit(delivered.clone()).await?;
+    b.sync_once().await?;
+    assert!(posts(&cb).await.iter().any(|post| post.id == delivered.id));
+    Store::stop_live_peering(&a_config.database_path, &b_id)?;
+    assert!(
+        Store::live_peers(&a_config.database_path)?
+            .iter()
+            .any(|peer| peer.id == b_id && peer.status == "suspended")
+    );
+    assert!(
+        transport::rpc(&b.endpoint, a.public_address(), &spoof)
+            .await
+            .is_err()
+    );
+    let after = cb.prepare(post("Published after suspension"))?.event;
+    cb.submit(after.clone()).await?;
+    c.sync_once().await?;
+    let _ = a.sync_once().await;
+    assert!(!posts(&ca).await.iter().any(|post| post.id == after.id));
+    ca.submit(
+        ca.prepare(Action::Delete {
+            target: delivered.id.clone(),
+        })?
+        .event,
+    )
+    .await?;
+    cb.submit(
+        cb.prepare(Action::Delete {
+            target: first.id.clone(),
+        })?
+        .event,
+    )
+    .await?;
+    let _ = a.sync_once().await;
+    let _ = b.sync_once().await;
+    assert!(!posts(&ca).await.iter().any(|post| post.id == first.id));
+    assert!(!posts(&cb).await.iter().any(|post| post.id == delivered.id));
+
+    ca.close().await;
+    cb.close().await;
+    cc.close().await;
+    a.close().await;
+    let mut a_config = a_config;
+    a_config
+        .auto_federation
+        .covenant
+        .as_mut()
+        .unwrap()
+        .admit_new = false;
+    let a = Server::start(a_config.clone()).await?;
+    assert!(
+        Store::live_peers(&a_config.database_path)?
+            .iter()
+            .any(|peer| peer.id == b_id && peer.status == "suspended")
+    );
+    assert!(
+        transport::rpc(&b.endpoint, a.public_address(), &spoof)
+            .await
+            .is_err()
+    );
+    let current = Request::CovenantPeers {
+        network: main_home.clone(),
+        peer: CovenantPeer {
+            acceptance: c_config.auto_federation.covenant.unwrap().acceptance,
+            local_addresses: vec![],
+        },
+        after: None,
+    };
+    assert!(
+        transport::rpc(&c.endpoint, a.public_address(), &current)
+            .await
+            .is_ok()
+    );
+    let fresh_key = signing_key(&new_secret())?;
+    let fresh = setup("New operator", hex::encode(fresh_key.to_bytes()))?;
+    let d = Server::start(fresh.clone()).await?;
+    let new = Request::CovenantPeers {
+        network: main_home.clone(),
+        peer: CovenantPeer {
+            acceptance: fresh.auto_federation.covenant.unwrap().acceptance,
+            local_addresses: vec![],
+        },
+        after: None,
+    };
+    assert!(
+        transport::rpc(&d.endpoint, a.public_address(), &new)
+            .await
+            .is_err()
+    );
+    d.close().await;
+    a.close().await;
+    b.close().await;
+    c.close().await;
     Ok(())
 }

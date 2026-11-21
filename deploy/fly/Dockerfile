@@ -11,4 +11,5 @@ RUN npm run check && npm run build
 FROM caddy:2
 COPY --from=site /site/dist /srv/yap-site
 COPY netkit/peering/covenant-v1.txt /srv/yap-site/peering/v1.txt
+COPY netkit/peering/covenant-v2.txt /srv/yap-site/peering/v2.txt
 COPY deploy/fly/Caddyfile /etc/caddy/Caddyfile

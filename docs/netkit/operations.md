@@ -68,6 +68,42 @@ To federate independent instances, configure the same community string on both; 
 
 Configuration shape is `ServerConfig` in `netkit/src/server.rs`: `privateKey`, `databasePath`, `communities` map, `peers` list of `{address, communities}`, and `networkMode` (`local` or `n0`). CLI-created database paths are absolute. For manual config, relative paths resolve from the process working directory. Server config changes currently require restart.
 
+### Browser admin
+
+Build the SvelteKit admin frontend with Node 24. The Compose image builds and bundles it automatically.
+
+```sh
+cd website
+npm ci
+npm run build:admin
+```
+
+Run these commands from the repository root as the Home's service user. Give the panel the running standalone Home's config path. If you run from another directory, pass `--assets` with the path to the built `dist-admin` directory. Relative paths inside the Home configuration resolve from the current working directory.
+
+```sh
+yappers-server admin serve --config netkit-data/home/config.json
+# In a separate terminal
+yappers-server admin code --config netkit-data/home/config.json
+```
+
+Open `http://127.0.0.1:8787` and paste the code. Each code is valid for five minutes and can be used once. The panel allows one signed-in browser session at a time. A session lasts up to 30 minutes, and reloading the page asks for a new code. Stop the admin process when finished. The Home continues to serve independently.
+
+On a remote server, forward the loopback address and open the same URL locally. If you used `--port`, use that port on both sides of the forward.
+
+```sh
+ssh -N -L 127.0.0.1:8787:127.0.0.1:8787 operator@home-host
+```
+
+The panel reads Home identity and configuration, checks the live storage socket, and retrieves the per-community join files. Moderation applies to the selected standalone Home. The backup action saves a protected feed archive under `backups/` beside the Home config. On Compose, use `docker compose cp home:/var/lib/yap/home/backups/<filename> <destination>` to retrieve it. The [protected backup and restore procedure](deletion.md#storage-and-backup) describes the independent deletion guard and restore requirements.
+
+**Federation peers** shows the Homes and scopes the running service knows about. **Stop peering** suspends new exchange with that Home immediately and preserves eligible deletion delivery. The decision survives a restart. [Covenant enrollment and state backups](../../deploy/peering/OPERATIONS.md)
+
+Use **Moderation** to look up a post or reply by event ID, hide it on this Home, or restore it from **Hidden events**. You can also hide an ID before its event arrives. Other Homes make their own moderation decisions.
+
+Compose enables reporting by default. The Home creates `/var/lib/yap-reports/reports.sqlite` on the separate `report-inbox` volume, which both services mount. Existing Compose Homes get the inbox when their services are rebuilt and recreated. Set `YAP_REPORT_INBOX=` in the Compose environment and recreate both services to disable intake and review. Existing cases stay on the volume. For installations outside Compose, set the same `YAP_REPORT_INBOX` on both processes or pass the inbox to the admin with `--report-inbox`.
+
+When a report references a post or reply, review the submitted evidence alongside the event stored on your Home and hide the matching event from the case. Closing a case is a separate action that records the outcome and erases the submitted evidence. [Report handling](../../deploy/peering/REPORTS.md)
+
 ## The yap.lgbt deployment
 
 The dedicated Linux server runs the primary Iroh home. Fly hosts the website, enrollment document and PWA. See [public home operations](../public-home.md) for service names, state paths, enrollment and deployment checks.

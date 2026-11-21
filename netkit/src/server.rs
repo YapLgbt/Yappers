@@ -23,6 +23,10 @@ use tokio::{sync::Semaphore, task::JoinHandle};
 #[path = "auto_federation.rs"]
 mod auto_federation;
 pub use auto_federation::AutoFederationConfig;
+#[path = "covenant_network.rs"]
+mod covenant_network;
+pub use covenant_network::{CovenantFederation, CovenantPeer};
+use covenant_network::{CovenantRegistry, canonical_id, public_group_scope};
 use std::sync::atomic::AtomicUsize;
 
 const MAX_COMMUNITIES: usize = 32;
@@ -37,6 +41,15 @@ const RATE_WINDOW_SECS: i64 = 60;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PeerConfig {
     pub address: EndpointAddr,
+    pub communities: BTreeSet<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerSummary {
+    pub id: String,
+    pub operator: Option<String>,
+    pub status: String,
     pub communities: BTreeSet<String>,
 }
 /// Private operator configuration. Do not log or derive Debug: it contains credentials.
@@ -177,9 +190,10 @@ impl Response {
     }
 }
 
-struct State {
+pub(crate) struct State {
     reports: Option<Mutex<crate::report_inbox::Inbox>>,
     peering: Option<Policy>,
+    covenants: CovenantRegistry,
     _process_lock: std::fs::File,
     _guard_lock: Option<std::fs::File>,
     ha: Option<ha::Ha>,
@@ -199,6 +213,53 @@ struct State {
     peers: RwLock<Vec<PeerConfig>>,
 }
 impl State {
+    pub(crate) fn admin_peers(&self) -> Result<Vec<PeerSummary>> {
+        self.operation(|op| {
+            let mut entries: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+            for peer in op.auto_peers()?.iter().chain(op.peers) {
+                entries
+                    .entry(peer.address.id.to_string())
+                    .or_default()
+                    .extend(peer.communities.clone());
+            }
+            Ok(entries
+                .into_iter()
+                .map(|(id, communities)| {
+                    let status = if op.auto.blocked_hosts.contains(&id) {
+                        "blocked"
+                    } else if communities
+                        .iter()
+                        .any(|scope| op.access(&id, scope) == Some(Access::Active))
+                    {
+                        "active"
+                    } else if op.covenants.stopped(&id)
+                        || communities
+                            .iter()
+                            .any(|scope| op.access(&id, scope) == Some(Access::Suspended))
+                    {
+                        "suspended"
+                    } else {
+                        "unapproved"
+                    };
+                    PeerSummary {
+                        operator: op.covenants.operator(&id),
+                        id,
+                        status: status.into(),
+                        communities,
+                    }
+                })
+                .collect())
+        })
+    }
+
+    pub(crate) fn stop_peer(&self, id: &str) -> Result<()> {
+        ensure!(
+            canonical_id(id) && self.admin_peers()?.iter().any(|peer| peer.id == id),
+            "unknown peer"
+        );
+        self.disclosure.restrict(|| self.covenants.stop(id))
+    }
+
     fn stamped_operation<T>(
         &self,
         mut work: impl FnMut(&mut CatalogOp<'_>) -> Result<T>,
@@ -269,12 +330,34 @@ impl State {
     }
 
     fn access(&self, id: &str, community: &str) -> Option<Access> {
-        match &self.peering {
-            Some(policy) if id != self.logical_addr().id.to_string() => {
-                policy.access(id, community)
-            }
-            _ => Some(Access::Active),
+        if id == self.logical_addr().id.to_string() {
+            return Some(Access::Active);
         }
+        let covenant_scope = self.auto.covenant.as_ref().is_some_and(|covenant| {
+            community == covenant.scope()
+                || (!self.communities.contains_key(community) && public_group_scope(community))
+        });
+        let allowed = match self
+            .peering
+            .as_ref()
+            .and_then(|policy| policy.access(id, community))
+        {
+            Some(access) => access,
+            None if covenant_scope && self.covenants.admits(id) => Access::Active,
+            None if !covenant_scope && self.peering.is_none() => Access::Active,
+            None => return None,
+        };
+        Some(if self.covenants.stopped(id) {
+            Access::Suspended
+        } else {
+            allowed
+        })
+    }
+
+    fn active_covenant_peer(&self, id: &str) -> bool {
+        self.covenants.confirmed(id)
+            && !self.covenants.stopped(id)
+            && !self.auto.blocked_hosts.contains(id)
     }
     fn logical_addr(&self) -> EndpointAddr {
         let logical = iroh::SecretKey::from_bytes(&self.key.to_bytes()).public();
@@ -296,6 +379,19 @@ impl State {
         call: Request,
     ) -> Result<(Response, u64)> {
         match call {
+            Request::CovenantPeers {
+                network,
+                peer,
+                after,
+            } => {
+                let remote = remote.to_owned();
+                self.spawn_job(move |state| {
+                    state.disclosure.shared(|| {
+                        state.exchange_covenants(&remote, &network, peer, after.as_deref())
+                    })
+                })
+                .await
+            }
             Request::JoinGroup {
                 token,
                 community,
@@ -498,6 +594,16 @@ impl CatalogOp<'_> {
             self.communities.contains_key(community),
             "community not hosted here"
         );
+        if self
+            .auto
+            .covenant
+            .as_ref()
+            .is_some_and(|covenant| covenant.scope() == *community)
+            && self.covenants.admits(origin)
+        {
+            // The envelope proves the signing origin even when its content arrived through another peer.
+            return Ok(());
+        }
         if *origin != hex::encode(self.key.verifying_key().as_bytes()) {
             ensure!(
                 self.peer_for_pull(origin)?
@@ -609,6 +715,50 @@ impl CatalogOp<'_> {
             }
             _ => bail!("expected a feed or social operation"),
         }
+    }
+
+    fn pull(
+        &mut self,
+        remote: &str,
+        after: u64,
+        generation: Option<String>,
+        limit: u32,
+        requested_deletions: bool,
+    ) -> Result<Response> {
+        let peer = self.peer_for_pull(remote)?;
+        let deletions_only = requested_deletions
+            || peer
+                .communities
+                .iter()
+                .all(|scope| self.access(remote, scope) == Some(Access::Suspended));
+        let store = &*self.store;
+        let page = store.peer_page(
+            if generation.as_deref() == Some(&self.generation) {
+                after
+            } else {
+                0
+            },
+            limit,
+            &peer.communities,
+            &self.generation,
+            deletions_only.then_some(remote),
+        )?;
+        if !deletions_only && let Response::Page { entries, .. } = &page {
+            store.remember_deliveries(
+                remote,
+                entries
+                    .iter()
+                    .map(|e| &e.envelope.event)
+                    .filter(|e| {
+                        matches!(
+                            e.payload.action,
+                            Action::Post { .. } | Action::PostV2 { .. } | Action::Reply { .. }
+                        )
+                    })
+                    .map(|e| (e.payload.community.as_str(), e.id.as_str())),
+            )?;
+        }
+        Ok(page)
     }
 
     fn handle(&mut self, remote: &str, request: Request) -> Result<Response> {
@@ -860,6 +1010,11 @@ impl CatalogOp<'_> {
                 })
             }
             Request::Directory { snapshot } => {
+                ensure!(
+                    !self.covenants.stopped(remote)
+                        && (self.auto.covenant.is_none() || self.active_covenant_peer(remote)),
+                    "current covenant acceptance required"
+                );
                 self.import_public_directory(&snapshot)?;
                 Ok(Response::Directory {
                     snapshot: self.advertised_directory()?,
@@ -868,6 +1023,9 @@ impl CatalogOp<'_> {
             Request::EnrollHost { group } => Ok(Response::HostPermit {
                 permit: self.enroll(remote, &group)?,
             }),
+            Request::CovenantPeers { .. } => {
+                bail!("covenant exchange requires separate admission dispatch")
+            }
             Request::Groups { token, community } => self.group_page(&community, &token, ""),
             Request::GroupsAfter {
                 token,
@@ -948,46 +1106,12 @@ impl CatalogOp<'_> {
                 after,
                 generation,
                 limit,
-            } => {
-                let peer = self.peer_for_pull(remote)?;
-                let deletions_only = peer
-                    .communities
-                    .iter()
-                    .all(|scope| self.access(remote, scope) == Some(Access::Suspended));
-                let store = &*self.store;
-                let page = store.peer_page(
-                    if generation.as_deref() == Some(&self.generation) {
-                        after
-                    } else {
-                        0
-                    },
-                    limit,
-                    &peer.communities,
-                    &self.generation,
-                    deletions_only.then_some(remote),
-                )?;
-                if !deletions_only
-                    && self.peering.as_ref().is_some_and(|p| p.external(remote))
-                    && let Response::Page { entries, .. } = &page
-                {
-                    store.remember_deliveries(
-                        remote,
-                        entries
-                            .iter()
-                            .map(|e| &e.envelope.event)
-                            .filter(|e| {
-                                matches!(
-                                    e.payload.action,
-                                    Action::Post { .. }
-                                        | Action::PostV2 { .. }
-                                        | Action::Reply { .. }
-                                )
-                            })
-                            .map(|e| (e.payload.community.as_str(), e.id.as_str())),
-                    )?;
-                }
-                Ok(page)
-            }
+            } => self.pull(remote, after, generation, limit, false),
+            Request::PullDeletions {
+                after,
+                generation,
+                limit,
+            } => self.pull(remote, after, generation, limit, true),
             Request::Submit {
                 token,
                 event,
@@ -1285,6 +1409,17 @@ impl Server {
         );
         let key = signing_key(&config.private_key)?;
         let own_id = hex::encode(key.verifying_key().as_bytes());
+        if let Some(covenant) = &config.auto_federation.covenant {
+            covenant.acceptance.validate()?;
+            ensure!(
+                options.is_none()
+                    && config.auto_federation.enabled
+                    && canonical_id(&covenant.main_home)
+                    && covenant.acceptance.home() == own_id
+                    && config.communities.contains_key(&covenant.scope()),
+                "covenant federation requires a signed standalone Home and its shared main-feed scope"
+            );
+        }
         validate_peers(&config.peers, &own_id, &config.communities)?;
         for community in &config.public_replica_feeds {
             ensure!(
@@ -1320,8 +1455,9 @@ impl Server {
             }
         }
         let home = own_id.clone();
-        let (config, workers, disclosure, process_lock, guard_lock, peering, ha) = tokio::task::spawn_blocking(move || {
+        let (config, workers, disclosure, process_lock, guard_lock, peering, covenants, ha) = tokio::task::spawn_blocking(move || {
             let process_lock = lock_server(&config.database_path)?;
+            let covenants = CovenantRegistry::open(&config.database_path, config.auto_federation.covenant.as_ref().map(|c| c.main_home.as_str()), config.network_mode)?;
             let mut store = if options.is_some() {
                 ensure!(
                     !config.database_path.exists(),
@@ -1353,16 +1489,16 @@ impl Server {
             }
             let disclosure = store.db.native_home().map(|home| home.disclosure.clone()).unwrap_or_default();
             let workers = StoreWorkers::new(store, ha.is_none())?;
-            anyhow::Ok((config, workers, disclosure, process_lock, guard_lock, peering, ha))
+            anyhow::Ok((config, workers, disclosure, process_lock, guard_lock, peering, covenants, ha))
         }).await??;
         let secret = iroh::SecretKey::from_bytes(&transport_key.to_bytes());
         let endpoint = transport::bind(config.network_mode, Some(secret), true).await?;
         let reports = if endpoint.id().to_string() == own_id
-            && let Some(path) = std::env::var_os("YAP_REPORT_INBOX")
+            && let Some(path) = crate::report_inbox::Inbox::configured_path()
         {
             Some(Mutex::new(
                 tokio::task::spawn_blocking(move || {
-                    crate::report_inbox::Inbox::open(std::path::Path::new(&path), Some(&own_id))
+                    crate::report_inbox::Inbox::open(&path, Some(&own_id))
                 })
                 .await??,
             ))
@@ -1374,6 +1510,7 @@ impl Server {
             disclosure,
             reports,
             peering,
+            covenants,
             _process_lock: process_lock,
             _guard_lock: guard_lock,
             ha,
@@ -1390,6 +1527,12 @@ impl Server {
             communities: config.communities,
             peers: RwLock::new(config.peers),
         });
+        state.workers.checkout(|store| {
+            if let Some(home) = store.db.native_home() {
+                *home.peering_server.lock().expect("Home peering control") = Arc::downgrade(&state);
+            }
+            Ok(())
+        })?;
         let accept_endpoint = endpoint.clone();
         let accept_state = state.clone();
         let work = Arc::new(Semaphore::new(server_streams::MAX_WORK));
@@ -1571,6 +1714,9 @@ impl Server {
     async fn sync_inner(&self) -> Result<usize> {
         let mut imported = 0;
         let mut errors = Vec::new();
+        if let Err(error) = self.discover_covenants().await {
+            errors.push(format!("{error:#}"));
+        }
         if let Err(error) = self.discover_once().await {
             errors.push(format!("discovery: {error:#}"));
         }
@@ -1640,27 +1786,36 @@ impl Server {
             .state
             .blocking(move |state| {
                 let current = state.peer_for_pull(&remote)?;
-                let scope = blake3::hash(&serde_json::to_vec(&(
+                let policy = (
                     &current.communities,
                     &state.auto.blocked_hosts,
                     &state.peering,
-                ))?)
-                .to_hex()
-                .to_string();
+                );
+                let revision = state.covenants.revision();
+                let scope = if revision == 0 {
+                    serde_json::to_vec(&policy)?
+                } else {
+                    serde_json::to_vec(&(policy, revision))?
+                };
+                let scope = blake3::hash(&scope).to_hex().to_string();
                 let (known_generation, after) = state.store.scoped_cursor(&remote, &scope)?;
                 Ok((current, scope, known_generation, after))
             })
             .await?;
-        let response = transport::rpc(
-            &self.endpoint,
-            peer.address.clone(),
-            &Request::Pull {
+        let request = if self.state.covenants.stopped(&id) {
+            Request::PullDeletions {
                 after,
                 generation: known_generation.clone(),
                 limit: MAX_PAGE_ENTRIES,
-            },
-        )
-        .await?;
+            }
+        } else {
+            Request::Pull {
+                after,
+                generation: known_generation.clone(),
+                limit: MAX_PAGE_ENTRIES,
+            }
+        };
+        let response = transport::rpc(&self.endpoint, peer.address.clone(), &request).await?;
         self.state
             .blocking(move |state| {
                 let Response::Page {

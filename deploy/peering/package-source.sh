@@ -7,7 +7,10 @@ mkdir -p "$out"
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf "$out/home.tar" \
     Cargo.toml Cargo.lock rust-toolchain.toml LICENSING.md LICENSES \
     backend/Cargo.toml backend/src backend/tests netkit/Cargo.toml netkit/src netkit/tests netkit/migrations netkit/peering \
-    deploy/fly deploy/systemd deploy/peering deploy/push/package.json deploy/push/package-lock.json deploy/push/send.cjs fly.toml .dockerignore
+    website/static/app/fonts/geist-sans.woff2 website/static/app/fonts/OFL.txt \
+    website/package.json website/package-lock.json website/vite.admin.config.ts website/tsconfig.json \
+    website/src/app.html website/src/admin website/src/lib/ActionButton.svelte website/src/routes/app/skeleton.css website/scripts/ui-notices.mjs \
+    compose.yaml deploy/compose deploy/fly deploy/systemd deploy/peering deploy/push/package.json deploy/push/package-lock.json deploy/push/send.cjs fly.toml .dockerignore
 gzip -n "$out/home.tar"
 digest=$(sha256sum "$out/home.tar.gz" | cut -d' ' -f1)
 mv "$out/home.tar.gz" "$out/$digest.tar.gz"

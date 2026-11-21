@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Operator acceptance is evidence. Access comes from the local operator's reviewed policy.
+//! Signed operator acceptance and explicit scopes for manually managed peering.
 use crate::model::{now, public_key, verify};
 use anyhow::{Context, Result, ensure};
 use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-pub const COVENANT: &str = include_str!("../peering/covenant-v1.txt");
-pub const VERSION: &str = "1";
-const DOMAIN: &[u8] = b"yap:peer-covenant:v1\0";
+pub const COVENANT: &str = include_str!("../peering/covenant-v2.txt");
+pub const VERSION: &str = "2";
+const LEGACY_COVENANT: &str = include_str!("../peering/covenant-v1.txt");
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Statement {
     version: String,
@@ -22,7 +22,7 @@ pub struct Statement {
     revision: String,
     accepted_at: i64,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Acceptance {
     statement: Statement,
@@ -30,7 +30,8 @@ pub struct Acceptance {
 }
 impl Statement {
     fn bytes(&self) -> Result<Vec<u8>> {
-        Ok([DOMAIN, serde_json::to_vec(self)?.as_slice()].concat())
+        let domain = format!("yap:peer-covenant:v{}\0", self.version);
+        Ok([domain.as_bytes(), serde_json::to_vec(self)?.as_slice()].concat())
     }
 }
 impl Acceptance {
@@ -60,10 +61,14 @@ impl Acceptance {
         Ok(receipt)
     }
     pub fn validate(&self) -> Result<()> {
+        self.validate_version(VERSION, COVENANT)
+    }
+
+    fn validate_version(&self, version: &str, covenant: &str) -> Result<()> {
         let s = &self.statement;
         ensure!(
-            s.version == VERSION
-                && s.covenant_digest == blake3::hash(COVENANT.as_bytes()).to_hex().as_str(),
+            s.version == version
+                && s.covenant_digest == blake3::hash(covenant.as_bytes()).to_hex().as_str(),
             "different covenant text or version"
         );
         ensure!(
@@ -95,6 +100,26 @@ impl Acceptance {
             "use a full Git commit or SHA-256 archive digest"
         );
         verify(&s.home, &s.bytes()?, &self.signature)
+    }
+
+    pub fn home(&self) -> &str {
+        &self.statement.home
+    }
+
+    pub(crate) fn operator(&self) -> &str {
+        &self.statement.operator
+    }
+
+    pub(crate) fn issued_at(&self) -> i64 {
+        self.statement.accepted_at
+    }
+}
+
+impl std::fmt::Debug for Acceptance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Acceptance")
+            .field("home", &self.home())
+            .finish_non_exhaustive()
     }
 }
 
@@ -133,7 +158,11 @@ impl Policy {
             public_key(home)?;
         }
         for peer in &self.peers {
-            peer.acceptance.validate()?;
+            if peer.acceptance.statement.version == "1" {
+                peer.acceptance.validate_version("1", LEGACY_COVENANT)?;
+            } else {
+                peer.acceptance.validate()?;
+            }
             ensure!(
                 seen.insert(peer.acceptance.statement.home.clone()),
                 "duplicate peering identity"
@@ -148,11 +177,6 @@ impl Policy {
             );
         }
         Ok(())
-    }
-    pub(crate) fn external(&self, home: &str) -> bool {
-        self.peers
-            .iter()
-            .any(|p| p.acceptance.statement.home == home)
     }
     pub(crate) fn access(&self, home: &str, community: &str) -> Option<Access> {
         if self.managed_homes.contains(home) {

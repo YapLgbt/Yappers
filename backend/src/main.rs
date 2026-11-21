@@ -6,6 +6,7 @@
 //! See docs/netkit/operations.md for trust configuration, backup, and recovery rules.
 
 mod account;
+mod admin;
 mod health;
 mod private_file;
 
@@ -51,6 +52,11 @@ enum ReportOperation {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Open a loopback operator panel or issue a private one-time login code.
+    Admin {
+        #[command(subcommand)]
+        operation: admin::Operation,
+    },
     /// Review the private report inbox on this machine. Requires read/write access to its file.
     Reports {
         #[arg(long)]
@@ -81,6 +87,18 @@ enum Commands {
     CovenantVerify {
         #[arg(long)]
         receipt: PathBuf,
+    },
+    /// Configure automatic peering for an existing standalone Home.
+    CovenantEnable {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        receipt: PathBuf,
+        #[arg(long)]
+        main_home: String,
+        /// Public address.json from a reachable Home in the same network.
+        #[arg(long)]
+        bootstrap: Vec<PathBuf>,
     },
     /// Sign a private-service delegation with the logical home signing key.
     HaAuthorize {
@@ -428,6 +446,11 @@ async fn serve_one(path: PathBuf, public_manifest: Option<PathBuf>) -> Result<()
     let config: ServerConfig = serde_json::from_slice(&fs::read(&path)?)?;
     let mode = config.network_mode;
     let communities: Vec<_> = config.communities.keys().cloned().collect();
+    let shared_feed = config
+        .auto_federation
+        .covenant
+        .as_ref()
+        .map(|covenant| covenant.scope());
     let server = Server::start(config).await?;
     health::listen(&server).await?;
     private_json(
@@ -438,6 +461,12 @@ async fn serve_one(path: PathBuf, public_manifest: Option<PathBuf>) -> Result<()
         private_json(
             &path.with_file_name(format!("join-{index}.json")),
             &server.join(community, mode)?,
+        )?;
+    }
+    if let Some(scope) = shared_feed {
+        private_json(
+            &path.with_file_name("join-shared.json"),
+            &server.join(&scope, mode)?,
         )?;
     }
     println!(
@@ -577,6 +606,7 @@ async fn demo(directory: PathBuf) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     match Args::parse().command {
+        Commands::Admin { operation } => admin::execute(operation).await?,
         Commands::Reports { inbox, operation } => {
             let mut inbox = yappers_netkit::report_inbox::Inbox::open(&inbox, None)?;
             match operation {
@@ -627,8 +657,27 @@ async fn main() -> Result<()> {
                 serde_json::from_slice(&fs::read(receipt)?)?;
             acceptance.validate()?;
             println!(
-                "Signature and covenant verified. Operator identity, source and behavior require review."
+                "Signature and covenant verified. The receipt contains the operator’s signed declarations."
             );
+        }
+        Commands::CovenantEnable {
+            config,
+            receipt,
+            main_home,
+            bootstrap,
+        } => {
+            let config = config.canonicalize()?;
+            let _lock = PrivateFileLock::acquire(&config.with_file_name("covenant-config.lock"))?;
+            let mut settings: ServerConfig = serde_json::from_slice(&fs::read(&config)?)?;
+            let acceptance: yappers_netkit::peering::Acceptance =
+                serde_json::from_slice(&fs::read(receipt)?)?;
+            let seeds = bootstrap
+                .iter()
+                .map(|path| Ok(serde_json::from_slice(&fs::read(path)?)?))
+                .collect::<Result<_>>()?;
+            settings.enable_covenant(main_home, acceptance, seeds)?;
+            private_json(&config, &settings)?;
+            println!("Covenant federation configured. Restart the Home to apply it.");
         }
         Commands::HaAuthorize {
             config,

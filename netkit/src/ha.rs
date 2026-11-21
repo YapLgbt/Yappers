@@ -165,12 +165,14 @@ impl ReceiptPolicy {
             | Request::AccountRegister { .. }
             | Request::AccountExport { .. }
             | Request::Directory { .. }
+            | Request::CovenantPeers { .. }
             | Request::EnrollHost { .. }
             | Request::CreateGroup { .. }
             | Request::JoinGroup { .. }
             | Request::Groups { .. }
             | Request::GroupsAfter { .. }
             | Request::PullPublicProjection { .. }
+            | Request::PullDeletions { .. }
             | Request::Pull { .. } => Self::ReadAndWrite,
             Request::AccountDelete { .. } => Self::AccountDeletion,
             Request::AccountImport { .. }

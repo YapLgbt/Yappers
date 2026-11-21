@@ -5,6 +5,7 @@ import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'parse5';
+import { writeUiNotices } from './ui-notices.mjs';
 
 const dist = fileURLToPath(new URL('../dist/', import.meta.url));
 function* descendants(node) {
@@ -28,12 +29,7 @@ async function externalizeBootstrap(shell) {
 await Promise.all(['app/index.html','app/demo/index.html'].map(path=>externalizeBootstrap(join(dist,path))));
 
 // Distribute the notices alongside the components in the static release.
-const kitPackages = ['@skeletonlabs/skeleton', '@skeletonlabs/skeleton-common', '@skeletonlabs/skeleton-svelte', 'tailwindcss'];
-const kitNotices = await Promise.all(kitPackages.map(async name => {
-  const license = await readFile(new URL('../node_modules/' + name + '/LICENSE', import.meta.url), 'utf8');
-  return name + '\n' + license;
-}));
-await writeFile(join(dist, 'app', 'skeleton-notices.txt'), kitNotices.join('\n'));
+await writeUiNotices(join(dist, 'app', 'skeleton-notices.txt'));
 
 async function tree(path) {
   const entries = await readdir(path, { withFileTypes: true });

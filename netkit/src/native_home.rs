@@ -31,6 +31,7 @@ pub(crate) struct NativeHome {
     pub(crate) catalog_id: String,
     pub(crate) disclosure: Arc<crate::server::DisclosureFence>,
     pub(crate) feed_replies: crate::feed_replies::FeedReplies,
+    pub(crate) peering_server: Mutex<Weak<crate::server::State>>,
     admin: OnceLock<crate::native_admin::Admin>,
     _owner: File,
 }
@@ -126,6 +127,7 @@ impl NativeHome {
             catalog_id: catalog_id.to_owned(),
             disclosure: Arc::default(),
             feed_replies: Default::default(),
+            peering_server: Mutex::default(),
             admin: OnceLock::new(),
             _owner: owner,
         }))

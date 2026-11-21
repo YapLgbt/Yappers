@@ -8,7 +8,7 @@ The dedicated Linux host runs a single standalone Home with the [systemd unit](.
 
 Fly runs Caddy and serves the compiled website, PWA, public enrollment and source downloads from the image. To publish enrollment, copy only the public `version` and `join` from the dedicated service’s generated `enrollment.json` into `website/static/.well-known/yap-home.json`. Keep relay addresses for public discovery and omit transient IP hints. Deploy the site from the repository root with `fly deploy --ha=false`. Verify a fresh client can load the PWA and read the dedicated feed.
 
-The dedicated Home uses the closed admission policy in `deploy/peering/yap.json`. See the [operator procedure](../deploy/peering/OPERATIONS.md) for outside peering.
+The dedicated Home loads the explicit scopes in `deploy/peering/yap.json`. See the [covenant operator procedure](../deploy/peering/OPERATIONS.md) to prepare and activate automatic admission.
 
 ## Cloudflare
 

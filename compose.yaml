@@ -1,0 +1,49 @@
+name: yap-home
+
+services:
+  home:
+    build: &home-build
+      context: .
+      dockerfile: deploy/compose/Dockerfile
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        umask 077
+        if [ ! -e config.json ]; then
+          yappers-server init --directory /var/lib/yap/home --network n0
+        fi
+        touch /tmp/yap-home-started
+        exec yappers-server run --config config.json
+    volumes:
+      - home-data:/var/lib/yap
+      - report-inbox:/var/lib/yap-reports
+    environment: &report-environment
+      YAP_REPORT_INBOX: "${YAP_REPORT_INBOX-/var/lib/yap-reports/reports.sqlite}"
+    healthcheck:
+      # The server refreshes the invitation after storage and Iroh are ready.
+      test: [CMD-SHELL, test -s join-0.json && test join-0.json -nt /tmp/yap-home-started]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    stop_signal: SIGINT
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+  admin:
+    profiles: [admin]
+    build: *home-build
+    network_mode: host
+    command: [yappers-server, admin, serve, --config, /var/lib/yap/home/config.json, --assets, /usr/local/share/yap/admin, --port, "${YAP_ADMIN_PORT:-8787}"]
+    depends_on:
+      home:
+        condition: service_healthy
+    volumes:
+      - home-data:/var/lib/yap
+      - report-inbox:/var/lib/yap-reports
+    environment: *report-environment
+
+volumes:
+  home-data:
+  report-inbox:

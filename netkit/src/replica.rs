@@ -46,15 +46,13 @@ impl CatalogOp<'_> {
         if known == Some(fingerprint(&posts, event_count)?.as_str()) {
             return Ok(Response::ProjectionUnchanged);
         }
-        if self.peering.as_ref().is_some_and(|p| p.external(remote)) {
-            store.remember_deliveries(
-                remote,
-                posts.iter().flat_map(|p| {
-                    std::iter::once((community, p.id.as_str()))
-                        .chain(p.replies.iter().map(|r| (community, r.id.as_str())))
-                }),
-            )?;
-        }
+        store.remember_deliveries(
+            remote,
+            posts.iter().flat_map(|p| {
+                std::iter::once((community, p.id.as_str()))
+                    .chain(p.replies.iter().map(|r| (community, r.id.as_str())))
+            }),
+        )?;
         Ok(Response::PublicReplicaFeed {
             deleted,
             posts,

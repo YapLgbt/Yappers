@@ -1,6 +1,6 @@
 # Handling a safety report
 
-Reporting is opt-in per primary home. Enable it when a moderator can check the queue and respond. Assign the primary process an absolute `YAP_REPORT_INBOX` path inside a private, owner-only directory. Use a separate file for each home. Exclude that directory from backups, filesystem snapshots, crash dumps and log collection. Keep the inbox on an encrypted volume. It contains the submitted evidence in readable form for the operator. The server creates the file with mode 0600 and rejects group- or world-accessible files.
+Compose Homes enable reporting by default and put the inbox on a separate private volume. For other installations, enable reporting on a primary by assigning its process an absolute `YAP_REPORT_INBOX` path inside a private, owner-only directory. Use a separate file for each Home. Exclude the inbox directory from backups, filesystem snapshots, crash dumps and log collection. Keep the inbox on encrypted storage. It contains the submitted evidence in readable form for the operator. The server creates the file with mode 0600 and rejects group- or world-accessible files.
 
 Clients contact the enrolled primary directly. If that route is unavailable, the client can retry with the same receipt. Sending a report does not block its subject. The receipt contains the primary home ID, a draft timestamp and a random 256-bit capability. Its holder can check the outcome. A moderator with the database can read a case but cannot derive the private receipt from the case ID.
 

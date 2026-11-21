@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build && node scripts/offline-build.mjs",
+    "build:admin": "vite build --config vite.admin.config.ts && node scripts/ui-notices.mjs dist-admin/ui-notices.txt",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "preview": "vite preview"
   },

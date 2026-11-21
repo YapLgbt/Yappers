@@ -2,7 +2,9 @@
 //! Route local maintenance to the process that owns the MVCC database.
 //! The backup is published by the CLI under the operator's credentials.
 use crate::{
-    backup, native_transfer,
+    backup,
+    model::Action,
+    native_transfer,
     store::{NativeHome, Store},
 };
 use anyhow::{Context, Result, ensure};
@@ -25,7 +27,106 @@ use std::{
 #[derive(Serialize, Deserialize)]
 enum Command {
     Backup,
-    Moderate { id: String, hide: bool },
+    Moderate {
+        id: String,
+        hide: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<ModerationKind>,
+    },
+    ModerationEvent {
+        id: String,
+    },
+    HiddenEvents {
+        after: Option<String>,
+    },
+    Status,
+    Peers,
+    StopPeer {
+        id: String,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModerationKind {
+    Post,
+    Reply,
+}
+
+impl ModerationKind {
+    fn of(action: &Action) -> Option<Self> {
+        match action {
+            Action::Post { .. } | Action::PostV2 { .. } => Some(Self::Post),
+            Action::Reply { .. } => Some(Self::Reply),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ModerationContent {
+    kind: ModerationKind,
+    community: String,
+    headline: Option<String>,
+    body: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ModerationEvent {
+    hidden: bool,
+    content: Option<ModerationContent>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct HiddenEvents {
+    ids: Vec<String>,
+    next: Option<String>,
+}
+
+impl Store {
+    fn moderation_event(&self, id: &str) -> Result<ModerationEvent> {
+        let hidden = self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM hidden WHERE id=?1)",
+            [id],
+            |row| row.get(0),
+        )?;
+        let content = self.existing(id)?.and_then(|envelope| {
+            let payload = envelope.event.payload;
+            let kind = ModerationKind::of(&payload.action)?;
+            let (headline, body) = match payload.action {
+                Action::PostV2 { headline, body, .. } => (Some(headline), body),
+                Action::Post { body, .. } | Action::Reply { body, .. } => (None, body),
+                _ => return None,
+            };
+            Some(ModerationContent {
+                kind,
+                community: payload.community,
+                headline,
+                body,
+            })
+        });
+        Ok(ModerationEvent { hidden, content })
+    }
+
+    fn hidden_events_page(&self, after: Option<&str>) -> Result<HiddenEvents> {
+        const PAGE_SIZE: usize = 20;
+        let mut query = self
+            .db
+            .prepare("SELECT id FROM hidden WHERE id > ?1 ORDER BY id LIMIT ?2")?;
+        let mut ids = query
+            .query_map(
+                rusqlite::params![after.unwrap_or_default(), PAGE_SIZE as i64 + 1],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        let next = if ids.len() > PAGE_SIZE {
+            ids.pop();
+            ids.last().cloned()
+        } else {
+            None
+        };
+        Ok(HiddenEvents { ids, next })
+    }
 }
 
 fn socket_path(path: &Path) -> Result<PathBuf> {
@@ -157,17 +258,54 @@ fn serve(listener: UnixListener, stop: UnixStream, home: Weak<NativeHome>) {
             authorize(&peer)?;
             peer.set_read_timeout(Some(Duration::from_secs(3)))?;
             let request = frame(&mut peer, Some(4096))?;
-            let mut store = home.connection()?;
             match serde_json::from_slice::<Command>(&request)? {
-                Command::Backup => native_transfer::archive(&store),
-                Command::Moderate { id, hide } => {
+                Command::Backup => native_transfer::archive(&home.connection()?),
+                Command::Status => {
+                    home.connection()?;
+                    Ok(Vec::new())
+                }
+                Command::ModerationEvent { id } => {
+                    let mut store = home.connection()?;
+                    let event = store.operation(|store| store.moderation_event(&id))?;
+                    Ok(serde_json::to_vec(&event)?)
+                }
+                Command::HiddenEvents { after } => Ok(serde_json::to_vec(
+                    &home.connection()?.hidden_events_page(after.as_deref())?,
+                )?),
+                Command::Moderate { id, hide, kind } => {
+                    let mut store = home.connection()?;
                     if hide {
-                        home.disclosure
-                            .restrict(|| store.operation(|store| store.moderate(&id, true)))?;
+                        home.disclosure.restrict(|| {
+                            store.operation(|store| {
+                                if let Some(kind) = kind {
+                                    ensure!(
+                                        store.existing(&id)?.and_then(|entry| ModerationKind::of(
+                                            &entry.event.payload.action
+                                        )) == Some(kind),
+                                        "the expected post or reply is unavailable"
+                                    );
+                                }
+                                store.moderate(&id, true)
+                            })
+                        })?;
                     } else {
                         store.operation(|store| store.moderate(&id, false))?;
                     }
                     Ok(Vec::new())
+                }
+                operation @ (Command::Peers | Command::StopPeer { .. }) => {
+                    let server = home
+                        .peering_server
+                        .lock()
+                        .expect("Home peering control")
+                        .upgrade()
+                        .context("Home service is offline")?;
+                    if let Command::StopPeer { id } = operation {
+                        server.stop_peer(&id)?;
+                        Ok(Vec::new())
+                    } else {
+                        Ok(serde_json::to_vec(&server.admin_peers()?)?)
+                    }
                 }
             }
         })();
@@ -219,9 +357,7 @@ pub(crate) fn backup_existing(path: &Path, output: &Path) -> Result<bool> {
     if !NativeHome::is_locator(path)? {
         return Ok(false);
     }
-    if let Some(archive) = remote(path, &Command::Backup)? {
-        backup::publish(&archive, output)?;
-    } else {
+    if !backup_live(path, output)? {
         let store = Store::open(path)?;
         let _authority = backup::lock_authority(path)?;
         store.backup(output)?;
@@ -229,19 +365,87 @@ pub(crate) fn backup_existing(path: &Path, output: &Path) -> Result<bool> {
     Ok(true)
 }
 
+fn backup_live(path: &Path, output: &Path) -> Result<bool> {
+    let Some(archive) = remote(path, &Command::Backup)? else {
+        return Ok(false);
+    };
+    backup::publish(&archive, output)?;
+    Ok(true)
+}
+
+fn moderate_live(path: &Path, id: &str, hide: bool, kind: Option<ModerationKind>) -> Result<bool> {
+    Ok(remote(
+        path,
+        &Command::Moderate {
+            id: id.to_owned(),
+            hide,
+            kind,
+        },
+    )?
+    .is_some())
+}
+
 impl Store {
-    pub fn moderate_existing(path: &Path, id: &str, hide: bool) -> Result<()> {
-        if path.is_file()
+    pub fn live_moderation_event(path: &Path, id: &str) -> Result<ModerationEvent> {
+        let payload = remote(path, &Command::ModerationEvent { id: id.to_owned() })?
+            .context("Home service is offline")?;
+        Ok(serde_json::from_slice(&payload)?)
+    }
+
+    pub fn live_hidden_events(path: &Path, after: Option<String>) -> Result<HiddenEvents> {
+        let payload =
+            remote(path, &Command::HiddenEvents { after })?.context("Home service is offline")?;
+        Ok(serde_json::from_slice(&payload)?)
+    }
+
+    pub fn live_peers(path: &Path) -> Result<Vec<crate::server::PeerSummary>> {
+        let payload = remote(path, &Command::Peers)?.context("Home service is offline")?;
+        Ok(serde_json::from_slice(&payload)?)
+    }
+
+    pub fn stop_live_peering(path: &Path, id: &str) -> Result<()> {
+        remote(path, &Command::StopPeer { id: id.to_owned() })?
+            .context("Home service is offline")?;
+        Ok(())
+    }
+
+    pub fn live_admin_available(path: &Path) -> Result<bool> {
+        Ok(path.is_file()
             && NativeHome::is_locator(path)?
-            && remote(
-                path,
-                &Command::Moderate {
-                    id: id.to_owned(),
-                    hide,
-                },
-            )?
-            .is_some()
-        {
+            && remote(path, &Command::Status)?.is_some())
+    }
+
+    pub fn backup_live(path: &Path, output: &Path) -> Result<()> {
+        ensure!(
+            !path.with_added_extension("ha-managed").try_exists()?,
+            "use ha-export for an HA home"
+        );
+        ensure!(
+            path.is_file() && NativeHome::is_locator(path)? && backup_live(path, output)?,
+            "Home storage is offline"
+        );
+        Ok(())
+    }
+
+    pub fn moderate_live(path: &Path, id: &str, hide: bool) -> Result<()> {
+        Self::moderate_content_live(path, id, hide, None)
+    }
+
+    pub fn moderate_content_live(
+        path: &Path,
+        id: &str,
+        hide: bool,
+        kind: Option<ModerationKind>,
+    ) -> Result<()> {
+        ensure!(
+            path.is_file() && NativeHome::is_locator(path)? && moderate_live(path, id, hide, kind)?,
+            "Home storage is offline"
+        );
+        Ok(())
+    }
+
+    pub fn moderate_existing(path: &Path, id: &str, hide: bool) -> Result<()> {
+        if path.is_file() && NativeHome::is_locator(path)? && moderate_live(path, id, hide, None)? {
             return Ok(());
         }
         let mut store = Self::open(path).context("open Home for moderation")?;

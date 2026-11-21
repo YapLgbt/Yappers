@@ -14,13 +14,18 @@ netkit-data/
 
 __pycache__/
 
+# Generated codebase graph
+/graphify-out/
+
 # Local design workflow and review captures
 /.impeccable/
 
 # SvelteKit build and local dependencies
 /website/node_modules/
 /website/.svelte-kit/
+/website/.svelte-kit-admin/
 /website/dist/
+/website/dist-admin/
 
 # IntelliJ creates the module and artifact definitions on Gradle import.
 /.idea/*

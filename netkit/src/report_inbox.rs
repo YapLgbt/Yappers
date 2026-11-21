@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::{
     fs::OpenOptions,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 pub struct Inbox {
@@ -18,7 +18,21 @@ pub struct Inbox {
 }
 const DAY: i64 = 86400;
 impl Inbox {
+    pub fn configured_path() -> Option<PathBuf> {
+        std::env::var_os("YAP_REPORT_INBOX")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+    }
+
     pub fn open(path: &Path, home: Option<&str>) -> Result<Self> {
+        Self::open_inner(path, home, home.is_some())
+    }
+
+    pub fn open_existing_for_home(path: &Path, home: &str) -> Result<Self> {
+        Self::open_inner(path, Some(home), false)
+    }
+
+    fn open_inner(path: &Path, home: Option<&str>, create: bool) -> Result<Self> {
         // Resolve directory aliases such as macOS /var, while refusing symlinks at the file.
         let directory = path
             .parent()
@@ -30,7 +44,7 @@ impl Inbox {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
-            .create(home.is_some())
+            .create(create)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(&path)?;
@@ -49,9 +63,11 @@ impl Inbox {
         ensure!(!other, "report inbox must have a dedicated file");
         db.execute_batch("PRAGMA secure_delete=ON; PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA; PRAGMA temp_store=MEMORY;")?;
         if let Some(home) = home {
-            db.execute_batch("CREATE TABLE IF NOT EXISTS report_home(id INTEGER PRIMARY KEY CHECK(id=1),home TEXT NOT NULL);
+            if create {
+                db.execute_batch("CREATE TABLE IF NOT EXISTS report_home(id INTEGER PRIMARY KEY CHECK(id=1),home TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS report_cases(id TEXT PRIMARY KEY, created INTEGER NOT NULL, status TEXT NOT NULL, closed INTEGER, evidence TEXT);")?;
-            db.execute("INSERT OR IGNORE INTO report_home VALUES(1,?)", [home])?;
+                db.execute("INSERT OR IGNORE INTO report_home VALUES(1,?)", [home])?;
+            }
             let bound: String =
                 db.query_row("SELECT home FROM report_home WHERE id=1", [], |r| r.get(0))?;
             ensure!(bound == home, "report inbox belongs to another home");

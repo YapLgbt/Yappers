@@ -6,6 +6,7 @@
 //! A conflicting envelope or reused author sequence must roll back the whole page.
 
 use crate::home_sql::HomeDb;
+pub use crate::native_admin::{HiddenEvents, ModerationEvent, ModerationKind};
 use crate::{MAX_FRAME, MAX_PAGE_ENTRIES, model::*};
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};

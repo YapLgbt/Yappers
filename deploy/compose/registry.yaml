@@ -1,0 +1,7 @@
+services:
+  home:
+    build: !reset null
+    image: ${YAP_HOME_IMAGE:?Set YAP_HOME_IMAGE to the Yap Home image tag or digest}
+  admin:
+    build: !reset null
+    image: ${YAP_HOME_IMAGE:?Set YAP_HOME_IMAGE to the Yap Home image tag or digest}

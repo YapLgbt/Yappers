@@ -727,6 +727,12 @@ pub enum Request {
     Directory {
         snapshot: crate::groups::DirectorySnapshot,
     },
+    #[cfg(feature = "server")]
+    CovenantPeers {
+        network: String,
+        peer: crate::server::CovenantPeer,
+        after: Option<String>,
+    },
     EnrollHost {
         group: String,
     },
@@ -763,6 +769,12 @@ pub enum Request {
         account_chain: Vec<crate::portability::AccountRecord>,
     },
     Pull {
+        after: u64,
+        generation: Option<String>,
+        limit: u32,
+    },
+    #[cfg(feature = "server")]
+    PullDeletions {
         after: u64,
         generation: Option<String>,
         limit: u32,
@@ -830,6 +842,12 @@ pub enum Response {
 
     Directory {
         snapshot: crate::groups::DirectorySnapshot,
+    },
+    #[cfg(feature = "server")]
+    CovenantPeers {
+        peer: crate::server::CovenantPeer,
+        peers: Vec<crate::server::CovenantPeer>,
+        next: Option<String>,
     },
     HostPermit {
         permit: crate::groups::HostPermit,

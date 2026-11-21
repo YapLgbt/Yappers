@@ -1,0 +1,16 @@
+Yap Peering Covenant
+Version 2
+
+This covenant is between Yap and the operator identified in the acceptance record. By accepting, I confirm that I am authorized to act for that operator and agree to these commitments for the identified home. Homes on the Yap public network use a valid acceptance to admit the signing home automatically. The acceptance may be shared with Homes in this network so they can verify the signature and contact the operator. Admission covers the shared public feed and participation in public groups under the group authority’s host permits.
+
+1. Publish the running source
+We will provide a public link, without login or payment, to the exact revision of our home implementation under an open-source license. We will include our modifications, build instructions, and custom components that copy, log, back up or delete federated content. We will update the link and our signed acceptance when we change the deployed revision. Credentials, signing keys and user data stay private.
+
+2. Use content to provide the service
+We will disclose which providers process federated content and explain how our backups work. We take responsibility for copies held by those providers. We will use federated content to operate the service. We will neither sell it nor use it for advertising, model training or a separate archive of deleted content.
+
+3. Honor deletion and prevent replay
+Once we receive a valid signed deletion, we will stop serving the payload, remove its plaintext and salt from storage under our control, and make them unrecoverable from managed backups. This includes attachments, thumbnails, logs, caches, indexes, replicas and raw snapshots. We will preserve the signed deletion, reject replay of the original payload, and apply known deletions before exposing a restored database. An offline home must catch up on deletions when it reconnects. If we discover a failure, we will promptly notify affected peers and remedy it. Our duties for content already received continue after peering ends.
+
+4. Be accountable to peers
+We will identify the responsible operator and keep a working contact for peering and deletion incidents. We permit checks using disposable content, including signed creation, deletion and stale replay. Yap may decline peering or suspend new deliveries when a home fails its checks or breaches this covenant. A suspended operator must continue processing valid deletions within its former peering scope. An operator must accept a new covenant version before Yap grants admission under that version.

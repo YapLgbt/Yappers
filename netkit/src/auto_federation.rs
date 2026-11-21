@@ -16,6 +16,8 @@ pub struct AutoFederationConfig {
     pub seeds: Vec<EndpointAddr>,
     #[serde(default)]
     pub blocked_hosts: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covenant: Option<CovenantFederation>,
 }
 impl State {
     pub(super) fn group_token(&self, group: &str) -> String {
@@ -114,6 +116,7 @@ impl CatalogOp<'_> {
             .group_summaries()?
             .into_iter()
             .filter(|g| g.id.as_str() > after)
+            .filter(|g| self.covenant_visible(&g.owner, &g.id))
         {
             bytes += serde_json::to_vec(&group)?.len() + 1;
             if bytes > MAX_FRAME - 1024 {
@@ -126,6 +129,7 @@ impl CatalogOp<'_> {
 
     pub(super) fn advertised_directory(&mut self) -> Result<DirectorySnapshot> {
         let mut snapshot = self.local_directory()?;
+        self.filter_covenant_directory(&mut snapshot);
         if snapshot.groups.len() <= MAX_GROUPS
             && snapshot.permits.len() <= MAX_PROVIDERS
             && snapshot.hosts.len() <= MAX_PROVIDERS
@@ -154,6 +158,7 @@ impl CatalogOp<'_> {
     pub(super) fn import_public_directory(&mut self, snapshot: &DirectorySnapshot) -> Result<()> {
         ensure!(self.state.auto.enabled, "automatic federation is disabled");
         let mut filtered = snapshot.clone();
+        self.filter_covenant_directory(&mut filtered);
         filtered
             .permits
             .retain(|p| !self.state.auto.blocked_hosts.contains(&p.host));
@@ -166,10 +171,50 @@ impl CatalogOp<'_> {
         self.store
             .merge_directory(&filtered, Some(&self.state.logical_addr().id.to_string()))
     }
+
+    fn covenant_visible(&self, home: &str, group: &str) -> bool {
+        self.auto.covenant.is_none()
+            || (!self.auto.blocked_hosts.contains(home)
+                && self.access(home, group) == Some(Access::Active))
+    }
+
+    fn filter_covenant_directory(&self, snapshot: &mut DirectorySnapshot) {
+        if self.auto.covenant.is_none() {
+            return;
+        }
+        snapshot
+            .groups
+            .retain(|group| self.covenant_visible(&group.payload.owner, &group.id));
+        let groups: BTreeSet<_> = snapshot
+            .groups
+            .iter()
+            .map(|group| group.id.as_str())
+            .collect();
+        snapshot.permits.retain(|permit| {
+            groups.contains(permit.group.as_str())
+                && self.covenant_visible(&permit.host, &permit.group)
+        });
+        let permits: BTreeSet<_> = snapshot
+            .permits
+            .iter()
+            .map(|permit| (permit.group.as_str(), permit.host.as_str()))
+            .collect();
+        snapshot.hosts.retain(|host| {
+            permits.contains(&(
+                host.payload.group.as_str(),
+                host.payload.address.id.to_string().as_str(),
+            ))
+        });
+    }
     pub(super) fn automatic_scopes(&self, id: &str) -> Result<BTreeSet<String>> {
         let mut scopes = BTreeSet::new();
         if !self.state.auto.enabled || self.state.auto.blocked_hosts.contains(id) {
             return Ok(scopes);
+        }
+        if let Some(covenant) = &self.auto.covenant
+            && self.covenants.confirmed(id)
+        {
+            scopes.insert(covenant.scope());
         }
         let store = &*self.store;
         for group in store.hosted_groups()? {
@@ -185,7 +230,10 @@ impl CatalogOp<'_> {
         if communities.is_empty() {
             return Ok(None);
         }
-        let address = EndpointAddr::new(id.parse()?);
+        let address = self
+            .covenants
+            .address(id)?
+            .unwrap_or(EndpointAddr::new(id.parse()?));
         Ok(Some(PeerConfig {
             address,
             communities,
@@ -195,6 +243,7 @@ impl CatalogOp<'_> {
         ensure!(
             self.state.auto.enabled
                 && !self.state.auto.blocked_hosts.contains(id)
+                && (self.auto.covenant.is_none() || self.active_covenant_peer(id))
                 && self.access(id, group) == Some(Access::Active),
             "host enrollment disabled or blocked"
         );
@@ -290,9 +339,16 @@ impl State {
                         && h.payload.address.id.to_string() == descriptor.payload.owner
                 })
                 .context("group authority is offline; try again later")?;
+            let address = if self.auto.covenant.is_some() {
+                self.covenants
+                    .address(&descriptor.payload.owner)?
+                    .context("group authority has not registered a covenant")?
+            } else {
+                authority.payload.address.clone()
+            };
             let response = transport::rpc(
                 &self.endpoint,
-                authority.payload.address.clone(),
+                address,
                 &Request::EnrollHost {
                     group: group.into(),
                 },
@@ -359,7 +415,14 @@ impl Server {
     }
     pub fn groups(&self) -> Result<Vec<GroupSummary>> {
         ensure!(self.state.ha.is_none(), "use the fenced HA group RPC");
-        self.state.operation(|op| op.store.group_summaries())
+        self.state.operation(|op| {
+            Ok(op
+                .store
+                .group_summaries()?
+                .into_iter()
+                .filter(|group| op.covenant_visible(&group.owner, &group.id))
+                .collect())
+        })
     }
 
     pub(super) async fn discover_once(&self) -> Result<()> {
@@ -375,14 +438,26 @@ impl Server {
             .iter()
             .map(|a| (a.id, a.clone()))
             .collect();
-        for host in self.state.blocking(|op| op.local_directory()).await?.hosts {
-            destinations
-                .entry(host.payload.address.id)
-                .or_insert(host.payload.address);
+        if self.state.auto.covenant.is_some() {
+            for address in self.state.covenants.addresses()? {
+                destinations.entry(address.id).or_insert(address);
+            }
+        } else {
+            for host in self.state.blocking(|op| op.local_directory()).await?.hosts {
+                destinations
+                    .entry(host.payload.address.id)
+                    .or_insert(host.payload.address);
+            }
         }
         let destinations: Vec<_> = destinations
             .into_values()
-            .filter(|a| a.id != own && !self.state.auto.blocked_hosts.contains(&a.id.to_string()))
+            .filter(|a| {
+                let id = a.id.to_string();
+                a.id != own
+                    && !self.state.auto.blocked_hosts.contains(&id)
+                    && !self.state.covenants.stopped(&id)
+                    && (self.state.auto.covenant.is_none() || self.state.active_covenant_peer(&id))
+            })
             .collect();
         let mut errors = Vec::new();
         let round = self
@@ -423,34 +498,77 @@ impl Server {
 }
 
 impl CatalogOp<'_> {
+    fn covenant_addresses(&self) -> Result<Vec<EndpointAddr>> {
+        let mut addresses: BTreeMap<_, _> = self
+            .covenants
+            .addresses()?
+            .into_iter()
+            .filter(|address| {
+                let id = address.id.to_string();
+                self.covenants.confirmed(&id) && !self.auto.blocked_hosts.contains(&id)
+            })
+            .map(|address| (address.id, address))
+            .collect();
+        for seed in self
+            .seeds
+            .read()
+            .map_err(|_| anyhow::anyhow!("seed policy unavailable"))?
+            .iter()
+        {
+            if let Some(address) = addresses.get_mut(&seed.id) {
+                *address = seed.clone();
+            }
+        }
+        Ok(addresses.into_values().collect())
+    }
+
+    fn automatic_peer_at(&self, address: EndpointAddr) -> Result<Option<PeerConfig>> {
+        let id = address.id.to_string();
+        if address.id == self.endpoint.id() || self.auto.blocked_hosts.contains(&id) {
+            return Ok(None);
+        }
+        let mut communities = self.automatic_scopes(&id)?;
+        communities.retain(|scope| self.access(&id, scope).is_some());
+        Ok((!communities.is_empty()).then_some(PeerConfig {
+            address,
+            communities,
+        }))
+    }
+
     pub(super) fn auto_peers(&mut self) -> Result<Vec<PeerConfig>> {
         if !self.auto.enabled {
             return Ok(vec![]);
         }
-        let snapshot = self.local_directory()?;
-        let mut by_host: BTreeMap<String, PeerConfig> = BTreeMap::new();
-        for host in snapshot.hosts {
-            let id = host.payload.address.id.to_string();
-            if id == self.endpoint.id().to_string() || self.auto.blocked_hosts.contains(&id) {
-                continue;
+        let addresses = if self.auto.covenant.is_some() {
+            self.covenant_addresses()?
+        } else {
+            let snapshot = self.local_directory()?;
+            let mut addresses = BTreeMap::new();
+            for host in snapshot.hosts {
+                addresses
+                    .entry(host.payload.address.id)
+                    .or_insert(host.payload.address);
             }
-            let mut scopes = self.automatic_scopes(&id)?;
-            scopes.retain(|c| self.access(&id, c) == Some(Access::Active));
-            if scopes.is_empty() {
-                continue;
-            }
-            by_host.entry(id).or_insert(PeerConfig {
-                address: host.payload.address,
-                communities: scopes,
-            });
-        }
-        Ok(by_host.into_values().collect())
+            addresses.into_values().collect()
+        };
+        addresses
+            .into_iter()
+            .filter_map(|address| self.automatic_peer_at(address).transpose())
+            .collect()
     }
+
     pub(super) fn select_auto_peers(&mut self) -> Result<Vec<PeerConfig>> {
-        let peers = self.auto_peers()?;
         let round = self
             .replication_round
             .fetch_add(AUTO_SYNC_FANOUT, Ordering::Relaxed);
+        if self.auto.covenant.is_some() {
+            let addresses = self.covenant_addresses()?;
+            return (0..addresses.len().min(AUTO_SYNC_FANOUT))
+                .map(|i| addresses[round.wrapping_add(i) % addresses.len()].clone())
+                .filter_map(|address| self.automatic_peer_at(address).transpose())
+                .collect();
+        }
+        let peers = self.auto_peers()?;
         Ok((0..peers.len().min(AUTO_SYNC_FANOUT))
             .map(|i| peers[round.wrapping_add(i) % peers.len()].clone())
             .collect())

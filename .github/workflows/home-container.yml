@@ -1,0 +1,48 @@
+name: Publish Yap Home container
+
+on:
+  push:
+    tags:
+      - 'home-v*'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/yaplgbt/yappers-home
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build the release image
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME#home-v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          source_dir="$(mktemp -d)"
+          sh deploy/peering/package-source.sh "$source_dir"
+          revision="$(cat "$source_dir/revision.txt")"
+          docker build -f deploy/compose/Dockerfile \
+            --build-arg "YAP_BUILD_SOURCE_SHA256=$revision" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.version=$version" \
+            --tag "$IMAGE:$version" .
+          printf 'HOME_IMAGE=%s:%s\n' "$IMAGE" "$version" >> "$GITHUB_ENV"
+      - name: Check the packaged server and admin
+        run: |
+          docker run --rm --network none "$HOME_IMAGE" sh -ec '
+            test -s /usr/local/share/yap/admin/index.html
+            test -w /var/lib/yap-reports
+            yappers-server covenant-show >/dev/null
+          '
+      - name: Push the release image
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker push "$HOME_IMAGE"
