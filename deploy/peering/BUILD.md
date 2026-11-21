@@ -6,7 +6,7 @@ For a dedicated Home release, package the source on Linux and embed its digest i
 
 ```sh
 out=$(mktemp -d)
-release=home-v0.1.0
+release=home-v0.1.1
 sh deploy/peering/package-source.sh "$out" "$release"
 revision=$(cat "$out/revision.txt")
 YAP_BUILD_SOURCE_SHA256="$revision" cargo build --locked --release --bin yappers-server

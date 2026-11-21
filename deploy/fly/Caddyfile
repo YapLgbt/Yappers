@@ -1,6 +1,6 @@
 :8080 {
     @sourceIndex path /source /source/ /source/index.html
-    redir @sourceIndex https://github.com/YapLgbt/Yappers/releases/tag/home-v0.1.0 302
+    redir @sourceIndex https://github.com/YapLgbt/Yappers/releases/tag/home-v0.1.1 302
     @sourceArchive path_regexp legacySource ^/source/([a-f0-9]{64}\.tar\.gz)$
     redir @sourceArchive https://github.com/YapLgbt/Yappers/releases/download/home-v0.1.0/{re.legacySource.1} 302
 

@@ -184,16 +184,16 @@
     });
   }
 
-  function downloadInvitation(community: string, index: number) {
+  function downloadInvitation(index: number | 'home') {
     return perform(`invite-${index}`, 'invitation', async () => {
       const invitation = await api<unknown>(`invitations/${index}`);
       const url = URL.createObjectURL(new Blob([JSON.stringify(invitation, null, 2)], { type: 'application/json' }));
       const download = document.createElement('a');
       download.href = url;
-      download.download = `yap-invitation-${index}.json`;
+      download.download = index === 'home' ? 'yap-home-invitation.json' : `yap-invitation-${index}.json`;
       download.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      notice('invitation', `Invitation downloaded for ${community.split('/').at(-1)}.`);
+      notice('invitation', 'Invitation downloaded.');
     });
   }
 
@@ -373,6 +373,7 @@
         <ActionButton variant="outlined" type="button" disabled={busy.home || busy.close || busy.peers || moderationBusy} onclick={loadHome}>Refresh</ActionButton>
       </div>
       {#if home}
+        {@const defaultScope = home.sharedFeed ?? home.communities[0]}
         <dl class="home-facts">
           <div class="home-id"><dt>Home ID</dt><dd><code>{home.id}</code></dd></div>
           <div><dt>Network</dt><dd>{home.networkMode === 'n0' ? 'Iroh relays' : 'Local only'}</dd></div>
@@ -385,15 +386,36 @@
             <p>Share invitations privately with people you want to join this Home.</p>
           </div>
           <div class="section-controls">
-            <ul class="rows">
-              {#each home.communities as community, index (community)}
+            {#if defaultScope}
+              <ul class="rows">
                 <li>
-                  <div class="row-label">{community === home.sharedFeed ? 'Main Yap feed' : community.split('/').at(-1)}<code class="row-key">{community}</code></div>
-                  <ActionButton variant="outlined" type="button" aria-label={`Download invitation for ${community}`}
-                    disabled={!home.storageOnline || busy[`invite-${index}`]} onclick={() => downloadInvitation(community, index)}>Download JSON</ActionButton>
+                  <div class="row-label">
+                    <strong>{home.sharedFeed ? 'Main Yap feed' : defaultScope.split('/').at(-1)}</strong>
+                    {#if home.sharedFeed}<p class="peer-status">Members can read and post across the Yap network through this Home.</p>{/if}
+                  </div>
+                  <ActionButton variant="filled" type="button" disabled={!home.storageOnline || busy['invite-home']}
+                    onclick={() => downloadInvitation('home')}>Download Home invitation</ActionButton>
                 </li>
-              {/each}
-            </ul>
+              </ul>
+              {#if home.communities.length > 1}
+                <details class="community-invitations">
+                  <summary>Other community invitations</summary>
+                  <ul class="rows">
+                    {#each home.communities as community, index (community)}
+                      {#if community !== defaultScope}
+                        <li>
+                          <div class="row-label">{community.split('/').at(-1)}<code class="row-key">{community}</code></div>
+                          <ActionButton variant="outlined" type="button" aria-label={`Download invitation for ${community}`}
+                            disabled={!home.storageOnline || busy[`invite-${index}`]} onclick={() => downloadInvitation(index)}>Download JSON</ActionButton>
+                        </li>
+                      {/if}
+                    {/each}
+                  </ul>
+                </details>
+              {/if}
+            {:else}
+              <p class="feedback">This Home has no communities to invite members to.</p>
+            {/if}
             {@render feedback('invitation')}
           </div>
         </section>

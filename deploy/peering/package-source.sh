@@ -8,7 +8,7 @@ case "$release" in
 esac
 mkdir -p "$out"
 # Explicit build inputs. Private home configuration, runtime data and signing keys are never inputs.
-tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf "$out/home.tar" \
+tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode='a=rX,u+w' -cf "$out/home.tar" \
     Cargo.toml Cargo.lock rust-toolchain.toml LICENSING.md LICENSES \
     backend/Cargo.toml backend/src backend/tests netkit/Cargo.toml netkit/src netkit/tests netkit/migrations netkit/peering \
     website/static/app/fonts/geist-sans.woff2 website/static/app/fonts/OFL.txt \

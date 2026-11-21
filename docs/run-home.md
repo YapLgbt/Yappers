@@ -10,7 +10,7 @@ Use a Linux x86-64 machine with Git, Docker Engine, a current Docker Compose v2 
 git clone --depth 1 https://github.com/YapLgbt/Yappers.git
 cd Yappers
 export COMPOSE_FILE=compose.yaml:deploy/compose/registry.yaml
-export YAP_HOME_IMAGE=ghcr.io/yaplgbt/yappers-home:0.1.0
+export YAP_HOME_IMAGE=ghcr.io/yaplgbt/yappers-home:0.1.1
 docker compose --profile admin up -d --wait
 ```
 
@@ -27,7 +27,7 @@ docker compose --profile admin exec admin yappers-server admin code \
 
 Open Home admin on that machine and enter the code. It expires after five minutes. For a remote host, forward port 8787 over SSH and open the same localhost address. [Home admin](http://127.0.0.1:8787) · [Remote access](netkit/operations.md#browser-admin)
 
-Under **Invitations**, download the JSON. In the native Yap app, open **You → Join community**, paste the JSON, and choose **Join instance**. In the web app, choose **Create an account** and expand **Have an invitation to another home?**. Paste the JSON there. Anyone with this invitation can join your feed, so share it privately. [Yap web app](https://yap.lgbt/app/)
+Under **Invitations**, choose **Download Home invitation**. On Home 0.1.0, download the JSON for **Main Yap feed** if your Home has joined the federation, or for your local feed if it runs independently. In the native Yap app, open **You → Join community**, paste the JSON, and choose **Join instance**. In the web app, choose **Create an account** and expand **Have an invitation to another home?**. Paste the JSON there. Anyone with this invitation can join the feed it opens, so share it privately. [Yap web app](https://yap.lgbt/app/)
 
 ## Run and update your Home
 
@@ -45,33 +45,15 @@ To build from a source checkout, run `docker compose -f compose.yaml --profile a
 
 ## Optional: join the public Yap network
 
-Use the following example with the published image `ghcr.io/yaplgbt/yappers-home:0.1.0`. You’ll need `curl`, `jq`, an operator name and a working public contact. The signed receipt is shared with peers. Read the covenant before signing. Use the corresponding source for your own build if you modify the software. [Covenant v2](https://yap.lgbt/peering/v2.txt) · [Network discovery](https://yap.lgbt/.well-known/yap-peering.json)
+Read the covenant before signing. You’ll need Python 3.9 or newer on the Docker host, an operator name, and a working public contact. Your Home signs with its existing key and shares the signed receipt with peers, including the operator name and contact you provide. [Covenant v2](https://yap.lgbt/peering/v2.txt) · [Network discovery](https://yap.lgbt/.well-known/yap-peering.json)
 
 ```sh
-docker compose exec home yappers-server covenant-show
-
-state=/var/lib/yap/home
-revision=f9114c80cd1904eeaf88958c030175ba604a0eaddbc21e609d46b25ea386be29
-source_url="https://github.com/YapLgbt/Yappers/releases/download/home-v0.1.0/$revision.tar.gz"
-
-bootstrap=$(curl -fsS https://yap.lgbt/.well-known/yap-home.json | jq -ce '.join.serverAddr')
-main_home=$(printf '%s\n' "$bootstrap" | jq -er '.id')
-printf '%s\n' "$bootstrap" | docker compose exec -T home sh -ec \
-  'umask 077; cat > /var/lib/yap/home/covenant-bootstrap.json'
-
-docker compose exec home yappers-server covenant-accept \
-  --config "$state/config.json" --operator 'Your operator name' \
-  --contact 'Your public contact' --accept-version 2 \
-  --source-url "$source_url" --revision "$revision" \
-  --output "$state/acceptance-$revision.json"
-docker compose exec home yappers-server covenant-verify \
-  --receipt "$state/acceptance-$revision.json"
-docker compose exec home yappers-server covenant-enable \
-  --config "$state/config.json" --receipt "$state/acceptance-$revision.json" \
-  --main-home "$main_home" --bootstrap "$state/covenant-bootstrap.json"
-
-docker compose --profile admin restart home admin
-docker compose --profile admin up -d --wait
+./scripts/join-yap-federation --operator 'Your operator name' \
+  --contact 'Your public contact' --accept-version 2
 ```
 
-Once the public Home has admitted yours, it appears under **Federation peers**. Under **Invitations**, choose **Main Yap feed** to invite members to that feed through your Home. If you’re running without admin, restart just `home` and copy its `/var/lib/yap/home/join-shared.json` invitation with `docker compose cp`. Sign a new receipt for a new source revision and apply it using the same main Home ID. [Peering and suspension guide](../deploy/peering/OPERATIONS.md)
+Run this from the same Compose project directory and environment you used to start the Home. It verifies the covenant and the running image’s corresponding source, signs with your Home’s key, and restarts the Home and any running admin service. The command reports success after the main Yap Home confirms peering. If confirmation times out, check `docker compose logs --tail 100 home`, then retry the same command to reuse the signed receipt.
+
+**Download Home invitation** now opens the main Yap feed through your Home. Invited members can read posts, publish, and reply across participating Homes without another invitation or covenant signature. They can also discover and join public groups. **Other community invitations** are still available for local feeds. On Home 0.1.0, use **Main Yap feed** in the invitation list. Without an admin service, copy the same shared invitation with `docker compose cp home:/var/lib/yap/home/join-shared.json ./yap-home-invitation.json`. Existing members who joined a local feed can import the shared invitation after delivering pending posts. [Peering and suspension guide](../deploy/peering/OPERATIONS.md)
+
+After updating to a new image, run the command again to sign for its source revision. For a custom build, add `--source-url` with the public HTTPS URL of your corresponding source archive and `--revision` with that archive’s full lowercase SHA-256.

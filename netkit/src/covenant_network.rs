@@ -35,6 +35,15 @@ impl CovenantFederation {
 }
 
 impl ServerConfig {
+    /// Scope used when a member is invited to the Home without selecting a community.
+    pub fn home_invitation_scope(&self) -> Option<String> {
+        self.auto_federation
+            .covenant
+            .as_ref()
+            .map(CovenantFederation::scope)
+            .or_else(|| self.communities.keys().next().cloned())
+    }
+
     pub fn enable_covenant(
         &mut self,
         main_home: String,

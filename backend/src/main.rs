@@ -446,27 +446,25 @@ async fn serve_one(path: PathBuf, public_manifest: Option<PathBuf>) -> Result<()
     let config: ServerConfig = serde_json::from_slice(&fs::read(&path)?)?;
     let mode = config.network_mode;
     let communities: Vec<_> = config.communities.keys().cloned().collect();
-    let shared_feed = config
-        .auto_federation
-        .covenant
-        .as_ref()
-        .map(|covenant| covenant.scope());
+    let home_invitation = config.home_invitation_scope();
+    let federated = config.auto_federation.covenant.is_some();
     let server = Server::start(config).await?;
     health::listen(&server).await?;
     private_json(
         &path.with_file_name("address.json"),
         &server.public_address(),
     )?;
+    if let Some(scope) = home_invitation {
+        let invitation = server.join(&scope, mode)?;
+        private_json(&path.with_file_name("join-home.json"), &invitation)?;
+        if federated {
+            private_json(&path.with_file_name("join-shared.json"), &invitation)?;
+        }
+    }
     for (index, community) in communities.iter().enumerate() {
         private_json(
             &path.with_file_name(format!("join-{index}.json")),
             &server.join(community, mode)?,
-        )?;
-    }
-    if let Some(scope) = shared_feed {
-        private_json(
-            &path.with_file_name("join-shared.json"),
-            &server.join(&scope, mode)?,
         )?;
     }
     println!(

@@ -168,6 +168,7 @@ async fn loopback_admin_requires_a_session_and_reuses_home_operations() -> Resul
     browser.call("home", None, 401)?;
     browser.call("peers", None, 401)?;
     browser.call("moderation", None, 401)?;
+    browser.call("invitations/home", None, 401)?;
     browser.call("invitations/0", None, 401)?;
     let code = cli(&["admin", "code"], &config)?;
     let code_path = directory.path().join("admin-login.json");
@@ -214,6 +215,7 @@ async fn loopback_admin_requires_a_session_and_reuses_home_operations() -> Resul
     browser.call(&stop, Some(json!({})), 204)?;
     ensure!(browser.call("peers", None, 200)?[0]["status"] == "suspended");
     ensure!(browser.call("invitations/0", None, 200)? == serde_json::to_value(&join)?);
+    ensure!(browser.call("invitations/home", None, 200)? == serde_json::to_value(&join)?);
     let pending_id = new_secret();
     let change = json!({"event": pending_id, "hide": true});
     ensure!(

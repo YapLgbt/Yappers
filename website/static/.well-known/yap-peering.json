@@ -1,9 +1,1 @@
-{
-  "version": 1,
-  "externalAdmissions": "automatic",
-  "covenantVersion": "2",
-  "covenantUrl": "https://raw.githubusercontent.com/YapLgbt/Yappers/home-v0.1.0/netkit/peering/covenant-v2.txt",
-  "homeEnrollmentUrl": "https://yap.lgbt/.well-known/yap-home.json",
-  "sourceUrl": "https://github.com/YapLgbt/Yappers/releases/download/home-v0.1.0/e9e4a900ad026b39db9639bb12aa926778d88001e2fa32cabded079c19ff83ed.tar.gz",
-  "sourceSha256": "e9e4a900ad026b39db9639bb12aa926778d88001e2fa32cabded079c19ff83ed"
-}
+{"version":1,"externalAdmissions":"automatic","covenantVersion":"2","covenantUrl":"https://yap.lgbt/peering/v2.txt","homeEnrollmentUrl":"https://yap.lgbt/.well-known/yap-home.json","sourceUrl":"https://github.com/YapLgbt/Yappers/releases/download/home-v0.1.1/cb12f28970ee38c162b74ba779c742a61f5511ac194b8194e01205d4a9146a9a.tar.gz","sourceSha256":"cb12f28970ee38c162b74ba779c742a61f5511ac194b8194e01205d4a9146a9a"}

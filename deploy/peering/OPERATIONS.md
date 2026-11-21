@@ -23,7 +23,7 @@ yappers-server covenant-enable --config HOME_CONFIG --receipt acceptance.json \
   --main-home "$main_home" --bootstrap bootstrap.json
 ```
 
-Restart the Home to apply the configuration. Restart the admin panel to refresh its invitation list. The Home writes `join-shared.json` beside its config. Give that invitation to people who should use this Home for the main Yap feed. Current members on another feed of the same Home can import that invitation after delivering pending posts. The invitation is a local membership capability. The public bootstrap address and signed receipt can be exchanged between Homes.
+Restart the Home to apply the configuration and restart the admin panel to refresh its invitation list. The default Home invitation, `join-home.json`, opens the main Yap feed through this Home. `join-shared.json` is also available for that feed. Current members on another feed of the same Home can import the Home invitation after delivering pending posts. Numbered invitations continue to open their specific communities. Share invitations privately because they carry local membership capabilities. The public bootstrap address and signed receipt can be exchanged between Homes.
 
 For an updated source revision, sign a fresh acceptance and run `covenant-enable` again with the same main Home ID. The Home keeps its key, feed memberships, and database. The network uses the signed operator and source disclosures for accountability. A signature proves control of the key and agreement to the covenant. Operational checks can verify deletion and stale-replay behavior independently.
 

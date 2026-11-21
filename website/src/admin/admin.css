@@ -70,6 +70,9 @@ dd { margin: 0.22rem 0 0; font-variant-numeric: tabular-nums; }
 .rows > li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.65rem 1rem; padding-block: 0.65rem; }
 .rows > li:first-child { padding-top: 0; }
 .rows > li + li { border-top: 1px solid var(--line); }
+.community-invitations { margin-top: 0.65rem; }
+.community-invitations summary { cursor: pointer; color: var(--action); }
+.community-invitations .rows { margin-top: 0.65rem; }
 .peer-list details { margin-top: 0.25rem; color: var(--muted); font-size: 0.875rem; overflow-wrap: anywhere; }
 .peer-list details ul { margin-block: 0.25rem; padding-inline-start: 1.1rem; }
 .peer-list summary { cursor: pointer; }

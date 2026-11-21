@@ -172,6 +172,7 @@ fn router(state: Arc<Admin>, assets: &Path) -> Router {
         .route("/api/home", get(overview))
         .route("/api/peers", get(peers))
         .route("/api/peers/{peer}/stop", post(stop_peer))
+        .route("/api/invitations/home", get(home_invitation))
         .route("/api/invitations/{index}", get(invitation))
         .route("/api/moderation", get(hidden_events).post(moderate))
         .route("/api/moderation/{event}", get(moderation_event))
@@ -425,31 +426,49 @@ async fn invitation(
     maintenance(
         state,
         move |state| {
-            ensure!(
-                Store::live_admin_available(&state.config.database_path)?,
-                "Home storage is offline"
-            );
-            let (name, access) = state
+            let name = state
                 .config
                 .communities
-                .iter()
+                .keys()
                 .nth(index)
                 .context("unknown community")?;
-            let join: JoinConfig = serde_json::from_slice(&fs::read(
-                state.directory.join(format!("join-{index}.json")),
-            )?)?;
-            join.validate()?;
-            ensure!(
-                join.community == *name
-                    && join.access_token == *access
-                    && join.server_addr.id.to_string() == state.id,
-                "invitation belongs to another configuration"
-            );
-            Ok(Json(join))
+            load_invitation(state, name, &format!("join-{index}.json"))
         },
         "The invitation is unavailable. Check that the Home is running with this configuration.",
     )
     .await
+}
+
+async fn home_invitation(State(state): State<Arc<Admin>>) -> ApiResult<Json<JoinConfig>> {
+    maintenance(
+        state,
+        |state| {
+            let scope = state.config.home_invitation_scope().context("Home has no community")?;
+            load_invitation(state, &scope, "join-home.json")
+        },
+        "The Home invitation is unavailable. Check that the Home is running with this configuration.",
+    ).await
+}
+
+fn load_invitation(state: &Admin, scope: &str, filename: &str) -> Result<Json<JoinConfig>> {
+    ensure!(
+        Store::live_admin_available(&state.config.database_path)?,
+        "Home storage is offline"
+    );
+    let access = state
+        .config
+        .communities
+        .get(scope)
+        .context("unknown community")?;
+    let join: JoinConfig = serde_json::from_slice(&fs::read(state.directory.join(filename))?)?;
+    join.validate()?;
+    ensure!(
+        join.community == scope
+            && join.access_token == *access
+            && join.server_addr.id.to_string() == state.id,
+        "invitation belongs to another configuration"
+    );
+    Ok(Json(join))
 }
 
 fn is_id(value: &str) -> bool {

@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+"""Sign and enroll the running Compose Home in the public Yap network."""
+
+import argparse
+import hashlib
+import json
+import re
+import subprocess
+import time
+from urllib.parse import urlsplit
+from urllib.request import urlopen
+
+
+COMPOSE = ('docker', 'compose', '--profile', 'admin')
+HOME = '/var/lib/yap/home'
+DISCOVERY = 'https://yap.lgbt/.well-known/yap-peering.json'
+RELEASES = 'https://github.com/YapLgbt/Yappers/releases/download'
+SOURCE_LABEL = 'org.yap.home.source-archive'
+# The registry image and the downloadable 0.1.0 image were built separately.
+LEGACY_RELEASES = {
+    'f232e03a43cdfbe4aa056d48ecda5180a1eb5e2f94df0db5b35f020b4c3cd527':
+        'f9114c80cd1904eeaf88958c030175ba604a0eaddbc21e609d46b25ea386be29',
+    '3bd59ec109173622bb611a4ec850877fb3e2d741c23a3ef02eac1ff3eed9f35b':
+        'e9e4a900ad026b39db9639bb12aa926778d88001e2fa32cabded079c19ff83ed',
+}
+
+SAVE_COVENANT = '''
+set -eu
+umask 077
+cd "$1"
+receipt=$2 operator=$3 contact=$4 version=$5 source=$6 revision=$7 main=$8
+temporary=$(mktemp -d .covenant-XXXXXX)
+trap 'if test -e "$temporary/receipt"; then rm "$temporary/receipt"; fi
+      if test -e "$temporary/bootstrap"; then rm "$temporary/bootstrap"; fi
+      rmdir "$temporary"' EXIT
+cat > "$temporary/bootstrap"
+if ! test -s "$receipt"; then
+    yappers-server covenant-accept --config config.json --operator="$operator" \\
+        --contact="$contact" --accept-version "$version" --source-url "$source" \\
+        --revision "$revision" --output "$temporary/receipt"
+    ln "$temporary/receipt" "$receipt" 2>/dev/null || test -s "$receipt"
+fi
+yappers-server covenant-verify --receipt "$receipt"
+yappers-server covenant-enable --config config.json --receipt "$receipt" \\
+    --main-home "$main" --bootstrap "$temporary/bootstrap"
+'''
+
+
+def run(*command, input=None, timeout=90):
+    return subprocess.run(command, input=input, stdout=subprocess.PIPE, check=True,
+                          timeout=timeout).stdout
+
+
+def home_exec(*command, **kwargs):
+    return run(*COMPOSE, 'exec', '-T', 'home', *command, **kwargs)
+
+
+def canonical_hash(value):
+    return isinstance(value, str) and re.fullmatch(r'[0-9a-f]{64}', value) is not None
+
+
+def require_https(url):
+    if not isinstance(url, str):
+        raise ValueError('Expected a public HTTPS URL.')
+    parts = urlsplit(url)
+    if parts.scheme != 'https' or not parts.hostname or parts.username is not None:
+        raise ValueError('Use public HTTPS URLs without credentials.')
+
+
+def open_https(url):
+    require_https(url)
+    response = urlopen(url, timeout=20)
+    try:
+        require_https(response.geturl())
+    except ValueError:
+        response.close()
+        raise
+    return response
+
+
+def metadata(url):
+    with open_https(url) as response:
+        data = response.read(256 * 1024 + 1)
+    if len(data) > 256 * 1024:
+        raise ValueError('The network enrollment document is too large.')
+    return data
+
+
+def network_bootstrap(version, container):
+    discovery = json.loads(metadata(DISCOVERY))
+    if discovery['version'] != 1 or discovery['externalAdmissions'] != 'automatic':
+        raise ValueError('yap.lgbt is not advertising automatic Home admission.')
+    if discovery['covenantVersion'] != version:
+        raise ValueError(f"yap.lgbt requires covenant version {discovery['covenantVersion']}.")
+    if metadata(discovery['covenantUrl']) != run('docker', 'exec', container, 'yappers-server', 'covenant-show'):
+        raise ValueError('The running Home and yap.lgbt advertise different covenant text.')
+    bootstrap = json.loads(metadata(discovery['homeEnrollmentUrl']))['join']['serverAddr']
+    if not canonical_hash(bootstrap['id']):
+        raise ValueError('yap.lgbt returned an invalid bootstrap Home ID.')
+    return bootstrap
+
+
+def running_services(service):
+    return run(*COMPOSE, 'ps', '--status', 'running', '--quiet', service).decode().split()
+
+
+def image_source(container):
+    image = run('docker', 'inspect', '--format', '{{.Image}}', container).decode().strip()
+    legacy = LEGACY_RELEASES.get(image.removeprefix('sha256:'))
+    if legacy:
+        return f'{RELEASES}/home-v0.1.0/{legacy}.tar.gz', legacy
+    labels = json.loads(run('docker', 'image', 'inspect', '--format', '{{json .Config.Labels}}', image)) or {}
+    source = labels.get(SOURCE_LABEL, '')
+    revision = source.rsplit('/', 1)[-1].removesuffix('.tar.gz')
+    if not source.endswith('.tar.gz') or not canonical_hash(revision):
+        raise ValueError('The running image has no packaged source reference. Supply --source-url and --revision for this build.')
+    return source, revision
+
+
+def verify_source(source, revision):
+    digest = hashlib.sha256()
+    with open_https(source) as response:
+        for chunk in iter(lambda: response.read(128 * 1024), b''):
+            digest.update(chunk)
+    if digest.hexdigest() != revision:
+        raise ValueError('The downloaded source archive does not match its SHA-256 digest.')
+
+
+def peer_state(require_invitation=False):
+    script = '''
+        cd "$1"
+        if test "$2" = true; then
+            test -s join-shared.json && test join-shared.json -nt /tmp/yap-home-started || exit 0
+        fi
+        if test -s events.sqlite.federation.json; then cat events.sqlite.federation.json; fi
+    '''
+    return json.loads(home_exec('sh', '-ec', script, '--', HOME,
+                                'true' if require_invitation else 'false', timeout=5) or b'{}')
+
+
+def wait_for_admission(main, timeout=90):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            state = peer_state(require_invitation=True)
+        except (subprocess.SubprocessError, ValueError):
+            state = {}
+        if main in state.get('stopped', []):
+            raise ValueError('The main Yap Home is stopped in this Home’s peering settings.')
+        if state.get('network') == main and main in state.get('confirmed', []):
+            return
+        time.sleep(2)
+    raise ValueError('The covenant was saved, but the main Yap Home has not confirmed peering. Check the Home logs and run the same command again.')
+
+
+def join(args):
+    containers = running_services('home')
+    if len(containers) != 1:
+        raise ValueError('Start one Compose home service in this project before joining.')
+    container = containers[0]
+    source, revision = (args.source_url, args.revision) if args.source_url else image_source(container)
+    bootstrap = network_bootstrap(args.accept_version, container)
+    main = bootstrap['id']
+    if main in peer_state().get('stopped', []):
+        raise ValueError('The main Yap Home is stopped in this Home’s peering settings.')
+
+    print('Verifying the running Home’s corresponding source archive…', flush=True)
+    verify_source(source, revision)
+    claims = [args.operator, args.contact, args.accept_version, source, revision, main]
+    fingerprint = hashlib.sha256(json.dumps(claims).encode()).hexdigest()
+    run('docker', 'exec', '-i', container, 'sh', '-ec', SAVE_COVENANT, '--', HOME,
+        f'acceptance-{fingerprint}.json', *claims, input=json.dumps(bootstrap).encode())
+
+    print('Covenant signed. Restarting the Home and waiting for peering…', flush=True)
+    services = ['home']
+    if running_services('admin'):
+        services.append('admin')
+    run(*COMPOSE, 'restart', *services, timeout=150)
+    wait_for_admission(main)
+    if running_services('home') != containers:
+        raise ValueError('The Home container was replaced during enrollment. Run the command again for the current image.')
+    print('Joined the Yap federation. Download the Home invitation in Home admin.')
+    print(f'On Home 0.1.0, choose Main Yap feed. Without admin, copy {HOME}/join-shared.json from the home service.')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--operator', required=True, help='operator name shared with peers')
+    parser.add_argument('--contact', required=True, help='working public contact shared with peers')
+    parser.add_argument('--accept-version', required=True, help='covenant version you have read and agree to')
+    parser.add_argument('--source-url', help='public HTTPS source archive for a custom image')
+    parser.add_argument('--revision', help='full SHA-256 of that source archive')
+    args = parser.parse_args()
+    if (args.source_url or args.revision) and not (args.source_url and canonical_hash(args.revision)):
+        parser.error('--source-url and a lowercase SHA-256 --revision are required together')
+    try:
+        join(args)
+    except subprocess.SubprocessError:
+        parser.exit(1, 'Could not complete a Docker command. Check the Compose status and Home logs, then retry.\n')
+    except (KeyError, TypeError):
+        parser.exit(1, 'The public enrollment document or local peering state is invalid.\n')
+    except (OSError, ValueError) as error:
+        parser.exit(1, f'{error}\n')
+
+
+if __name__ == '__main__':
+    main()

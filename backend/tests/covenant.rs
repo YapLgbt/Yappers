@@ -257,6 +257,9 @@ async fn dedicated_home_policy_admits_current_covenant_without_a_manual_peer_ent
     let path = fixture.dir.join("store.sqlite");
     let mut settings: ServerConfig =
         serde_json::from_value(config(&hex::encode(key.to_bytes()), &path))?;
+    settings
+        .communities
+        .insert("0-private".into(), new_secret());
     let sign = |key: &_| {
         Acceptance::sign(
             key,
@@ -290,6 +293,14 @@ async fn dedicated_home_policy_admits_current_covenant_without_a_manual_peer_ent
     let join = fixture
         .start(&json!({"managedHomes":[main_home],"peers":[]}))
         .await?;
+    assert_eq!(join.community, "0-private");
+    let home_invitation = fs::read(fixture.dir.join("join-home.json"))?;
+    let shared = fs::read(fixture.dir.join("join-shared.json"))?;
+    assert_eq!(home_invitation, shared);
+    let home_invitation: JoinConfig = serde_json::from_slice(&home_invitation)?;
+    assert_eq!(home_invitation.community, main);
+    assert_eq!(home_invitation.server_addr.id, join.server_addr.id);
+    assert_ne!(home_invitation.access_token, join.access_token);
     let remote_key = signing_key(&new_secret())?;
     let remote = Server::start(serde_json::from_value(config(
         &hex::encode(remote_key.to_bytes()),

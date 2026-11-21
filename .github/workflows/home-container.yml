@@ -6,7 +6,7 @@ on:
       - 'home-v*'
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -26,13 +26,16 @@ jobs:
           source_dir="$(mktemp -d)"
           sh deploy/peering/package-source.sh "$source_dir"
           revision="$(cat "$source_dir/revision.txt")"
+          source_archive="$source_dir/$revision.tar.gz"
+          source_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$revision.tar.gz"
           docker build -f deploy/compose/Dockerfile \
             --build-arg "YAP_BUILD_SOURCE_SHA256=$revision" \
+            --label "org.yap.home.source-archive=$source_url" \
             --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --label "org.opencontainers.image.version=$version" \
             --tag "$IMAGE:$version" .
-          printf 'HOME_IMAGE=%s:%s\n' "$IMAGE" "$version" >> "$GITHUB_ENV"
+          printf 'HOME_IMAGE=%s:%s\nSOURCE_ARCHIVE=%s\n' "$IMAGE" "$version" "$source_archive" >> "$GITHUB_ENV"
       - name: Check the packaged server and admin
         run: |
           docker run --rm --network none "$HOME_IMAGE" sh -ec '
@@ -40,6 +43,19 @@ jobs:
             test -w /var/lib/yap-reports
             yappers-server covenant-show >/dev/null
           '
+      - name: Publish the corresponding source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+          fi
+          asset="${SOURCE_ARCHIVE##*/}"
+          assets="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')"
+          if ! printf '%s\n' "$assets" | rg -Fxq "$asset"; then
+            gh release upload "$GITHUB_REF_NAME" "$SOURCE_ARCHIVE"
+          fi
       - name: Push the release image
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
