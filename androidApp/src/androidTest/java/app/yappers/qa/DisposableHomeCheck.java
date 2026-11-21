@@ -56,12 +56,7 @@ public final class DisposableHomeCheck extends Instrumentation {
             }
             if ("public-discovery".equals(arguments.getString("check"))) {
                 stage = "public enrollment discovery";
-                android.content.Intent launch = getTargetContext().getPackageManager().getLaunchIntentForPackage(getTargetContext().getPackageName());
-                Activity activity = startActivitySync(launch);
-                try {
-                    waitForIdleSync();
-                    NearbyKt.publicHomeJoin(YapApplicationKt.fetchEnrollment());
-                } finally { runOnMainSync(activity::finish); }
+                NearbyKt.publicHomeJoin(YapApplicationKt.fetchEnrollment());
                 result.putString("checks", "Live enrollment address reachable and valid");
                 finish(Activity.RESULT_OK, result);
                 return;
@@ -107,7 +102,7 @@ public final class DisposableHomeCheck extends Instrumentation {
             }
             stage = "send and receive encrypted DM";
             MessageContact contact = await(c -> client.messageContact(other.getRemoteId(), c));
-            DisposableHomeCheck.<kotlin.Unit>await(c -> client.sendMessage(contact, "Android says hello 🌈", c));
+            DisposableHomeCheck.<kotlin.Unit>await(c -> client.sendMessage(contact, "Android says hello 🌈", null, c));
             boolean received = false;
             for (int attempt = 0; attempt < 45 && !received; attempt++) {
                 DisposableHomeCheck.<kotlin.Unit>await(client::sync);

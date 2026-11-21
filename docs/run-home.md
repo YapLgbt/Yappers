@@ -10,7 +10,7 @@ Use a Linux x86-64 machine with Git, Docker Engine, a current Docker Compose v2 
 git clone --depth 1 https://github.com/YapLgbt/Yappers.git
 cd Yappers
 export COMPOSE_FILE=compose.yaml:deploy/compose/registry.yaml
-export YAP_HOME_IMAGE=ghcr.io/yaplgbt/yappers-home:0.1.1
+export YAP_HOME_IMAGE=ghcr.io/yaplgbt/yappers-home:0.1.2
 docker compose --profile admin up -d --wait
 ```
 

@@ -78,7 +78,7 @@ pub mod transport;
 mod usernames;
 pub use model::*;
 /// Pinned transport dependency; update together with Cargo.toml and Cargo.lock.
-pub const IROH_VERSION: &str = "1.4.1";
+pub const IROH_VERSION: &str = "1.5.0";
 /// Changing incompatible application wire rules requires a new ALPN.
 pub const ALPN: &[u8] = b"yappers/netkit/6";
 /// The same JSON wire protocol with independent concurrent RPC streams.

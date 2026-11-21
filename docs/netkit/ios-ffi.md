@@ -6,7 +6,7 @@
 
 The existing Xcode static-framework integration uses a generated Swift identity containing the Kotlin framework checksum. It forces relinking in the same build when Kotlin or embedded Rust changes. Generated code stays under ignored `.generated/`; it does not rewrite committed Swift source. Build scripts fail on errors, use JDK 21 and the pinned Rust toolchain, and never fetch a floating Iroh version.
 
-Iroh 1.4.1's published lockfile uses `libc` 0.2.189 and `mio` 1.2.3. Those two transitive versions are constrained explicitly here: newer libc 0.2.190/191 removes iOS Darwin definitions still needed by netwatch/netdev, and mio 1.2.5 requires the newer libc. The tested compatible pair preserves the upstream implementation without a vendor patch. Revisit these pins together when upstream mobile compatibility is fixed. This does not downgrade Iroh, rustls, or the application protocol.
+Iroh 1.5.0's published lockfile uses `libc` 0.2.189 and `mio` 1.2.3. Those two transitive versions are constrained explicitly here: newer libc 0.2.190/191 removes iOS Darwin definitions still needed by netwatch/netdev, and mio 1.2.5 requires the newer libc. The tested compatible pair preserves the upstream implementation without a vendor patch. Revisit these pins together when upstream mobile compatibility is fixed. This does not downgrade Iroh, rustls, or the application protocol.
 
 ## ABI v1
 

@@ -1,1 +1,1 @@
-export const serverSourceRelease = 'https://github.com/YapLgbt/Yappers/releases/tag/home-v0.1.1';
+export const serverSourceRelease = 'https://github.com/YapLgbt/Yappers/releases/tag/home-v0.1.2';
