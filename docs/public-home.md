@@ -6,7 +6,7 @@ Fresh iPhone and Mac profiles discover the public home at `https://yap.lgbt/.wel
 
 The dedicated Linux host runs a single standalone Home with the [systemd unit](../deploy/systemd/yap-iroh-home.service). The service account is `yap-iroh-replica`. Its private configuration and live database files live under `/var/lib/yap-iroh-replica/standalone`. The same machine handles push, federation and reports. Use the [standalone backup procedure](netkit/deletion.md#storage-and-backup) for recovery.
 
-Fly runs Caddy and serves the compiled website, PWA, public enrollment and source downloads from the image. To publish enrollment, copy only the public `version` and `join` from the dedicated service’s generated `enrollment.json` into `website/static/.well-known/yap-home.json`. Keep relay addresses for public discovery and omit transient IP hints. Deploy the site from the repository root with `fly deploy --ha=false`. Verify a fresh client can load the PWA and read the dedicated feed.
+Fly runs Caddy and serves the compiled website, PWA and public enrollment. GitHub Releases hosts the server source archives. To publish enrollment, copy only the public `version` and `join` from the dedicated service’s generated `enrollment.json` into `website/static/.well-known/yap-home.json`. Keep relay addresses for public discovery and omit transient IP hints. Deploy the site from the repository root with `fly deploy --ha=false`. Verify a fresh client can load the PWA and read the dedicated feed.
 
 The dedicated Home loads the explicit scopes in `deploy/peering/yap.json`. See the [covenant operator procedure](../deploy/peering/OPERATIONS.md) to prepare and activate automatic admission.
 

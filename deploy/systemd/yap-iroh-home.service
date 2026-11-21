@@ -5,7 +5,7 @@ After=network-online.target
 
 [Service]
 Environment=YAP_PEERING_POLICY=/etc/yap/peering.json
-Environment=YAP_SOURCE_BASE_URL=https://yap.lgbt/source
+Environment=YAP_SOURCE_BASE_URL=https://github.com/YapLgbt/Yappers/releases/download/home-v0.1.0
 EnvironmentFile=-/var/lib/yap-iroh-replica/v6/push/environment
 User=yap-iroh-replica
 Group=yap-iroh-replica

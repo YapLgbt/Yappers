@@ -64,4 +64,4 @@ The native apps share a Kotlin UI in `composeApp/`. The browser app loads the Ru
 
 ## License
 
-The home server is licensed under AGPL-3.0-only. The shared Rust client and protocol code are available under MIT or Apache-2.0. [License details](LICENSING.md) · [Download the running server source](https://yap.lgbt/source/)
+The home server is licensed under AGPL-3.0-only. The shared Rust client and protocol code are available under MIT or Apache-2.0. [License details](LICENSING.md) · [Download the running server source on GitHub](https://github.com/YapLgbt/Yappers/releases/tag/home-v0.1.0)

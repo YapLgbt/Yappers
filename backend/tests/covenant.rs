@@ -203,6 +203,7 @@ async fn deployed_covenant() -> Result<()> {
     let m: Value = serde_json::from_slice(&fs::read(std::env::var("YAP_SMOKE_ENROLLMENT")?)?)?;
     let join: JoinConfig = serde_json::from_value(m["join"].clone())?;
     let revision = std::env::var("YAP_EXPECTED_SOURCE")?;
+    let expected_source_url = std::env::var("YAP_EXPECTED_SOURCE_URL")?;
     let observer = transport::bind(join.network_mode, None, false).await?;
     let addr = join.server_addr;
     let Response::ServerSource {
@@ -213,7 +214,7 @@ async fn deployed_covenant() -> Result<()> {
         anyhow::bail!("missing source offer")
     };
     ensure!(
-        running == revision && source_url == format!("https://yap.lgbt/source/{revision}.tar.gz"),
+        running == revision && source_url == expected_source_url,
         "source mismatch on the dedicated Home"
     );
     for request in [

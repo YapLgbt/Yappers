@@ -1,6 +1,7 @@
 <script lang="ts">
   import SiteFooter from "../../lib/SiteFooter.svelte";
   import SiteHeader from "../../lib/SiteHeader.svelte";
+  import { serverSourceRelease } from "../../lib/serverSource";
 </script>
 <svelte:head>
 <title>Peering covenant · Yap</title>
@@ -17,6 +18,6 @@
 <section><h2 id="clause-3">Honor deletion and prevent replay</h2><p>Once we receive a valid signed deletion, we will stop serving the payload, remove its plaintext and salt from storage under our control, and make them unrecoverable from managed backups. This includes attachments, thumbnails, logs, caches, indexes, replicas and raw snapshots. We will preserve the signed deletion, reject replay of the original payload, and apply known deletions before exposing a restored database. An offline home must catch up on deletions when it reconnects. If we discover a failure, we will promptly notify affected peers and remedy it. Our duties for content already received continue after peering ends.</p></section>
 <section><h2 id="clause-4">Be accountable to peers</h2><p>We will identify the responsible operator and keep a working contact for peering and deletion incidents. We permit checks using disposable content, including signed creation, deletion and stale replay. Yap may decline peering or suspend new deliveries when a home fails its checks or breaches this covenant. A suspended operator must continue processing valid deletions within its former peering scope. An operator must accept a new covenant version before Yap grants admission under that version.</p></section>
     <section><h2>What users can verify</h2><p>A deletion check shows how a peer responded to a signed deletion. An independent operator can keep a private copy. Public posts can also be read and copied by anyone.</p>
-    <p><a href="/peering/v2.txt">Download the covenant text operators sign</a> · <a href="/source/">View the running server source</a></p></section></article>
+    <p><a href="/peering/v2.txt">Download the covenant text operators sign</a> · <a href={serverSourceRelease}>View the running server source on GitHub</a></p></section></article>
   </main>
   <SiteFooter top="#top" />

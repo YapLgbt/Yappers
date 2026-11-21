@@ -2,6 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 set -eu
 out=$1
+release=${2:-}
+case "$release" in
+    *[!a-zA-Z0-9._-]*) printf '%s\n' 'Invalid GitHub release tag.' >&2; exit 2 ;;
+esac
 mkdir -p "$out"
 # Explicit build inputs. Private home configuration, runtime data and signing keys are never inputs.
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf "$out/home.tar" \
@@ -15,5 +19,7 @@ gzip -n "$out/home.tar"
 digest=$(sha256sum "$out/home.tar.gz" | cut -d' ' -f1)
 mv "$out/home.tar.gz" "$out/$digest.tar.gz"
 echo "$digest" > "$out/revision.txt"
-sed "s/@REVISION@/$digest/g" deploy/peering/source.html > "$out/index.html"
-sed "s/@REVISION@/$digest/g" deploy/peering/discovery.json > "$out/peering.json"
+if [ -n "$release" ]; then
+    sed -e "s/@REVISION@/$digest/g" -e "s/@SOURCE_RELEASE@/$release/g" \
+        deploy/peering/discovery.json > "$out/peering.json"
+fi

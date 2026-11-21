@@ -77,7 +77,7 @@
           <summary>Federated and Open<span class="toggle" aria-hidden="true"></span></summary>
           <p>A Home is the community you join on Yap. You start at yap.lgbt, a Home for people in lots of different towns.</p>
           <p>Communities can run their own Homes. Each one chooses its rules and which other Homes it shares public conversations with. A queer book club could look after its own space and still share an open reading night with neighbors on other Homes.</p>
-          <p>The software that runs a Home is open source. Anyone can see how it works and use it to start a Home of their own. <a href="/source/">Explore the Home software</a>.</p>
+          <p>The software that runs a Home is open source. Anyone can see how it works and use it to start a Home of their own. <a href="https://github.com/YapLgbt/Yappers">Explore the Home software on GitHub</a>.</p>
         </details>
       </div>
     </section>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import PrivacySwitch from './PrivacySwitch.svelte';
   import ActionButton from './ActionButton.svelte';
+  import { serverSourceRelease } from './serverSource';
   import type { Profile, BlockedAccount, RecoveryMode, Privacy } from './community';
   import type { Action } from 'svelte/action';
   let { profile, domain, discard, reports, chooseUsername, recovery, setPrivacy, unmute, refresh, guide, unblock, pull }: {
@@ -69,7 +70,7 @@
 <ActionButton onclick={() => {dialog.close();reports(true);}}>Check a private receipt</ActionButton></section>
 <ActionButton type="button" onclick={() => { dialog.close(); refresh(); }} id="refresh-preferences">Refresh posts</ActionButton>
 <ActionButton type="button" onclick={() => { dialog.close(); guide(); }} id="replay-guide">Welcome guide</ActionButton>
-<p><a href="/source/">Server source</a> · <a href="/peering/">Peering covenant</a> · <a href="/terms/">Terms of Service</a> · <a href="/privacy-policy/">Privacy Policy</a></p>
+<p><a href={serverSourceRelease}>Server source on GitHub</a> · <a href="/peering/">Peering covenant</a> · <a href="/terms/">Terms of Service</a> · <a href="/privacy-policy/">Privacy Policy</a></p>
 <section id="blocked-section" hidden={!showBlocked && !profile.blocks.length}><h3 id="blocked-heading" tabindex="-1">Blocked accounts</h3>{#if !profile.blocks.length}<p>No blocked accounts.</p>{/if}<div id="blocked-list">{#each profile.blocks as account (account.event)}<div class="actions"><span>{account.label}</span><ActionButton onclick={() => unblock(account)}>Unblock</ActionButton></div>{/each}</div></section>
 </div>
 </dialog>

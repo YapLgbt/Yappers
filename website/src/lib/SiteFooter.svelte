@@ -1,10 +1,11 @@
 <script lang="ts">
+  import { serverSourceRelease } from "./serverSource";
   let { top }: { top: string } = $props();
 </script>
 <footer class="wrap site-footer">
     <a class="wordmark" href="/" aria-label="Yap home"><img src="/assets/yap-wordmark.svg?v=3" width="1745" height="773" alt=""></a>
     <nav aria-label="Policies"><a href="/peering/">Peering covenant</a>
-      <a href="/source/">Server source</a>
+      <a href={serverSourceRelease}>Server source on GitHub</a>
       <a href="/terms/">Terms of Service</a>
       <a href="/privacy-policy/">Privacy Policy</a></nav>
     <a class="back-top" href={top}>
