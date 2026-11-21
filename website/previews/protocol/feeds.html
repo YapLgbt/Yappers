@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#faf7fc">
+  <meta name="description" content="A feed brings together signed posts, replies and votes with the profile details and visibility rules that apply when someone reads it.">
+  <title>Feeds, profiles and names · Yap protocol guide</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="mast wrap">
+    <a class="brand" href="topics.html"><img src="assets/yap-wordmark.svg" alt="Yap" width="60" height="27"><span>Protocol guide</span></a>
+    <nav aria-label="Guide navigation"><a href="topics.html">All topics</a></nav>
+  </header>
+  <main id="main" class="wrap">
+    <div class="intro">
+      <h1>Feeds, profiles and names</h1>
+      <p>A feed brings together signed posts, replies and votes with the profile details and visibility rules that apply when someone reads it.</p>
+    </div>
+    <section class="exchange">
+      <div><h2>Reading a named post</h2><p>The author saves a profile against its expected revision. A reader’s Home resolves named bylines when building a feed. After the next sync, an edit can appear beside an earlier post.</p></div>
+      <img class="sequence" src="diagrams/feeds.svg" alt="Author to Home: Save profile revision. Home to Author: New revision. Reader to Home: Fetch feed. Home to Reader: Posts and profiles.">
+    </section>
+    <div class="reading">
+        <section><h2>From events to conversations</h2><p>A reply names a parent in the community. A vote names a target and sets a value of −1, 0 or +1. The projection combines votes by account, orders conversations using Home acceptance time and event ID, and applies deletion and moderation decisions. The response is a bounded view. Older events can remain stored after conversations fall outside the response limit.</p></section>
+        <section><h2>A current profile and a lasting byline</h2><p>On a Home with a configured username domain, an authenticated account claims a case-insensitive local name. The Home signs a separate username receipt for each named event. A peer verifies the receipt and uses its trusted domain mapping for the originating Home. Display names, photos and bios come from a revisioned profile. Anonymous posts omit the public account reference and profile. Signing identifiers remain visible to Homes.</p></section>
+        <section><h2>Nearby, cached and personalized reads</h2><p>A nearby request supplies a center and radius. The Home applies distance filtering before feed limits. Location-bearing posts share a rounded area. All cities omits location on new posts. An authenticated feed can also apply account blocks, anonymous-content preferences and minimum account age. Age measures when this Home first saw an account.</p></section>
+        <section><h2>What stays on the device</h2><p>The app can show cached conversations and overlay its pending outbox. Bookmarks, local hides and muted-thread preferences affect the local reading experience. Sync reconciles accepted IDs and known deletions. A peer can request newer profile revisions for named authors in a shared community.</p></section>
+    </div>
+    <section class="related"><h2>Related wire operations</h2><p><a href="wire.html#social-privacyFeed"><code>privacyFeed</code></a> <a href="wire.html#social-setProfile"><code>setProfile</code></a> <a href="wire.html#social-claimUsername"><code>claimUsername</code></a> <a href="wire.html#request-peerProfiles"><code>peerProfiles</code></a></p></section>
+    <footer class="chapter-footer"><a href="topics.html">All protocol topics</a><a href="federation.html">Next · Trust between Homes</a></footer>
+  </main>
+</body>
+</html>

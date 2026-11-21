@@ -1,0 +1,7 @@
+sequenceDiagram
+    accTitle: Sign the post
+    participant You
+    participant D as Your device
+    You->>D: Write the invite
+    D->>D: Sign event ID
+    D->>D: Save to outbox

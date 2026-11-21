@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#faf7fc">
+  <meta name="description" content="An encrypted group on one Home admits individual devices. The owner’s signed membership list determines which devices receive keys for future posts.">
+  <title>Private groups · Yap protocol guide</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="mast wrap">
+    <a class="brand" href="topics.html"><img src="assets/yap-wordmark.svg" alt="Yap" width="60" height="27"><span>Protocol guide</span></a>
+    <nav aria-label="Guide navigation"><a href="topics.html">All topics</a></nav>
+  </header>
+  <main id="main" class="wrap">
+    <div class="intro">
+      <h1>Private groups</h1>
+      <p>An encrypted group on one Home admits individual devices. The owner’s signed membership list determines which devices receive keys for future posts.</p>
+    </div>
+    <section class="exchange">
+      <div><h2>Approving a new device</h2><p>The invitation pins the owner device’s signing key. The invited device returns a signed join request to the owner. The owner approves it in a new roster revision. Members verify the signed roster before using it.</p></div>
+      <img class="sequence" src="diagrams/private-groups.svg" alt="Owner to Invitee: Share invitation. Invitee to Owner: Signed join request. Owner to Home: Sign and save roster. Invitee to Home: Read roster history.">
+    </section>
+    <div class="reading">
+        <section><h2>Sending to the roster</h2><p>Each sending device creates a Megolm session for a roster revision and wraps its session key for each approved device with Olm. Titles, bodies and author labels are encrypted. The Home stores the signed event, ciphertext and wrapped keys. Approved readers fetch pages and decrypt locally.</p></section>
+        <section><h2>A membership change during a send</h2><p>The client checks the roster again before upload. A changed roster requires fresh sessions. The sender can re-encrypt a staged draft for the new recipients while retaining its publication ID. A new member’s history starts at admission. A removed device can retain keys and content it already received.</p></section>
+        <section><h2>What the Home sees</h2><p>The Home can see the group name, roster, sending device, reply links, timing and sizes. Restoring a portable account on another device requires fresh admission. The original owner device manages the roster. Private posts and keys stay outside the public directory and federated feed log.</p></section>
+    </div>
+    <section class="related"><h2>Related wire operations</h2><p><a href="wire.html#room-create"><code>create</code></a> <a href="wire.html#room-change"><code>change</code></a> <a href="wire.html#room-publish"><code>publish</code></a> <a href="wire.html#room-read"><code>read</code></a></p></section>
+    <footer class="chapter-footer"><a href="topics.html">All protocol topics</a><a href="messages.html">Next · Encrypted messages</a></footer>
+  </main>
+</body>
+</html>

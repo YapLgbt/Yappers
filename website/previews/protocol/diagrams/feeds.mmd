@@ -1,0 +1,9 @@
+sequenceDiagram
+    accTitle: Reading a named post
+    participant A as Author
+    participant H as Home
+    participant R as Reader
+    A->>H: Save profile revision
+    H-->>A: New revision
+    R->>H: Fetch feed
+    H-->>R: Posts and profiles

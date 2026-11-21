@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#faf7fc">
+  <meta name="description" content="Yap’s activity inbox tracks replies, encrypted mail and message requests. Each installation chooses which kinds of alerts to receive.">
+  <title>Inbox and notifications · Yap protocol guide</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="mast wrap">
+    <a class="brand" href="topics.html"><img src="assets/yap-wordmark.svg" alt="Yap" width="60" height="27"><span>Protocol guide</span></a>
+    <nav aria-label="Guide navigation"><a href="topics.html">All topics</a></nav>
+  </header>
+  <main id="main" class="wrap">
+    <div class="intro">
+      <h1>Inbox and notifications</h1>
+      <p>Yap’s activity inbox tracks replies, encrypted mail and message requests. Each installation chooses which kinds of alerts to receive.</p>
+    </div>
+    <section class="exchange">
+      <div><h2>Opening a device alert</h2><p>A registered installation opts into categories supported by its Home. A provider delivers a generic alert with an opaque route. Opening it makes a new authenticated request. The Home checks current visibility before returning the destination.</p></div>
+      <img class="sequence" src="diagrams/notifications.svg" alt="Device to Home: Choose alert categories. Home to Provider: Alert and opaque route. Provider to Device: Device notification. Device to Home: Resolve route. Home to Device: Visible destination.">
+    </section>
+    <div class="reading">
+        <section><h2>Reading activity</h2><p>Reply activity groups visible responses by thread and carries a read position. Opening a thread uses its target and anchor. Marking a category and target read advances the saved position through a given sequence. Muting a thread suppresses its reply notifications.</p></section>
+        <section><h2>Mail and held requests</h2><p>Message and request rows are available to the registered messaging installation. Accepting a held sender releases their mail. Dismissing the request clears the held packet. Blocking also prevents future delivery. The encrypted mailbox has its own delivery cursor, separate from notification read positions.</p></section>
+        <section><h2>Provider delivery</h2><p>Web Push, FCM and APNs depend on Home and platform configuration. The authenticated Home stores subscriptions, category choices and pending deliveries. Push carries the generic alert and route, while message contents and thread details are retrieved through their usual authorized channels.</p></section>
+    </div>
+    <section class="related"><h2>Related wire operations</h2><p><a href="wire.html#social-notificationInbox"><code>notificationInbox</code></a> <a href="wire.html#social-readNotification"><code>readNotification</code></a> <a href="wire.html#social-setPush"><code>setPush</code></a> <a href="wire.html#social-openPush"><code>openPush</code></a></p></section>
+    <footer class="chapter-footer"><a href="topics.html">All protocol topics</a><a href="moderation.html">Next · Privacy and reporting</a></footer>
+  </main>
+</body>
+</html>

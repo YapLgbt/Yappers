@@ -1,0 +1,9 @@
+sequenceDiagram
+    accTitle: Approving a new device
+    participant D as Invitee
+    participant O as Owner
+    participant H as Home
+    O-->>D: Share invitation
+    D->>O: Signed join request
+    O->>H: Sign and save roster
+    D->>H: Read roster history

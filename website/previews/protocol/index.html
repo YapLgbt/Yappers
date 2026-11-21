@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#faf7fc">
+  <meta name="description" content="Follow a public Yap post from a phone to two community-run Homes.">
+  <title>How a post travels · Yap protocol guide</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to walkthrough</a>
+  <header class="mast wrap">
+    <a class="brand" href="topics.html"><img src="assets/yap-wordmark.svg" alt="Yap" width="60" height="27"><span>Protocol guide</span></a>
+    <nav aria-label="Guide navigation"><a href="#notes">Protocol notes</a><a href="topics.html">All topics</a></nav>
+  </header>
+  <main id="main" class="wrap">
+    <div class="intro">
+      <h1>How a post <em>travels.</em></h1>
+      <p>Follow a book-swap invite from your phone to a neighbor’s feed, through the community-run servers Yap calls Homes.</p>
+    </div>
+    <div id="walkthrough">
+      <section class="exchange" aria-labelledby="sign">
+        <div>
+          <h2 id="sign">1. Sign the post.</h2>
+          <p>You write “Book swap on Sunday?” Your device signs a record of the invite and saves it in its outbox. That signature lets a Home check which device signed it and whether the post has changed.</p>
+        </div>
+        <img class="sequence" src="diagrams/sign.svg" alt="You write the invite. Your device signs the event ID and saves the event to its outbox.">
+      </section>
+      <section class="exchange" aria-labelledby="accept">
+        <div>
+          <h2 id="accept">2. Send it Home.</h2>
+          <p>Your device sends the invite to your Home. The Home checks the signature and your permission to post, then signs and stores its acceptance. Its acknowledgement lets your device clear the outbox.</p>
+        </div>
+        <img class="sequence" src="diagrams/accept.svg" alt="Your device submits the post. Your Home verifies and stores it, then acknowledges the event ID. Your device clears its outbox entry.">
+      </section>
+      <section class="exchange" aria-labelledby="sync">
+        <div>
+          <h2 id="sync">3. Reach a neighbor.</h2>
+          <p>A peer Home asks yours for new events in their shared community. It checks the device signature and your Home’s signature before saving the invite. A neighbor can now read it in that Home’s feed.</p>
+        </div>
+        <img class="sequence" src="diagrams/sync.svg" alt="The peer asks your Home for events. Your Home returns the post and receipt. The peer verifies both signatures and adds the post to its feed.">
+      </section>
+      <section class="exchange" aria-labelledby="delete">
+        <div>
+          <h2 id="delete">4. Take it down.</h2>
+          <p>You delete the invite. Your device signs a new event referring to the original. Your Home removes the text and keeps the proof. The peer does the same when it next pulls the deletion.</p>
+        </div>
+        <img class="sequence" src="diagrams/delete.svg" alt="Your device submits a signed deletion. Your Home erases the text. The peer pulls the deletion proof and erases its copy as well.">
+      </section>
+    </div>
+    <section id="notes" aria-labelledby="notes-title">
+      <h2 id="notes-title">Protocol <em>notes.</em></h2>
+      <div class="notes-body">
+        <details><summary>What does the device sign?</summary><p>The device gives the event an ID that commits to the post’s contents, then signs that ID with its private key. The Home resolves a named byline against the author’s current profile when it serves the feed. Anonymous bylines omit that profile, though Homes can still link posts by their signing identifiers.</p></details>
+        <details><summary>What if the connection drops?</summary><p>The device keeps the signed event in its outbox until its Home acknowledges the same ID. The Home checks the signature and posting permission, signs an acceptance record and saves it. If the acknowledgement gets lost, a retry returns the same ID and the invite appears just once.</p></details>
+        <details><summary>Which Homes get a copy?</summary><p>This example uses two Homes authorized for the same community. The peer asks for new events, checks both the device and Home signatures, and saves the invite so its members can read it. Each Home decides which origins it trusts. The diagram illustrates public posts. Private messages use a separate encrypted mailbox protocol.</p></details>
+        <details><summary>What survives a deletion?</summary><p>The author sends a signed deletion for the original event ID. Once a participating Home verifies it, the Home removes the post text and its random salt, retaining a header and signed proof of deletion. An offline peer catches up when it syncs. Readers may still have screenshots or other copies.</p></details>
+      </div>
+    </section>
+    <footer class="chapter-footer"><a href="topics.html">All protocol topics</a><a href="transport.html">Next · Connecting to a Home</a></footer>
+  </main>
+</body>
+</html>

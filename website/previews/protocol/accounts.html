@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#faf7fc">
+  <meta name="description" content="A person can change devices or move Homes while keeping the same account public key.">
+  <title>Accounts and recovery · Yap protocol guide</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="mast wrap">
+    <a class="brand" href="topics.html"><img src="assets/yap-wordmark.svg" alt="Yap" width="60" height="27"><span>Protocol guide</span></a>
+    <nav aria-label="Guide navigation"><a href="topics.html">All topics</a></nav>
+  </header>
+  <main id="main" class="wrap">
+    <div class="intro">
+      <h1>Accounts and recovery</h1>
+      <p>A person can change devices or move Homes while keeping the same account public key.</p>
+    </div>
+    <section class="exchange">
+      <div><h2>Moving to another Home</h2><p>The device opens the encrypted backup locally and checks the account history already known at the destination. With destination membership, it stages a new writing key and root-signed revision before registering. An interrupted import can resume with the same keys and original events.</p></div>
+      <img class="sequence" src="diagrams/accounts.svg" alt="New device to New Home: Look up account chain. New Home to New device: Known revisions. New device to New Home: Register signed revision. New device to New Home: Import owned events. New Home to New device: Confirm saved page.">
+    </section>
+    <div class="reading">
+        <section><h2>Who can write</h2><p>Each root-signed account revision names a Home, the authorized writing devices and the hash of its predecessor. Enrollment can add a device. Recovery or a move normally replaces the active set. A Home validates the chain and device proof and rejects a known fork. Each writing device maintains its own sequence counter.</p></section>
+        <section><h2>What a backup contains</h2><p>A passphrase-encrypted, root-signed archive carries recovery authority, owned history and supplied profile or preference data. The device can export locally saved acceptance receipts offline. An authenticated export from the Home can fill in older owned events. History that existed only on an unavailable Home may be missing. DM ratchets and private-group keys stay on their enrolled devices.</p></section>
+        <section><h2>What happens to pending posts</h2><p>A lost acknowledgement can leave a signed upload in doubt. The backup preserves it. During migration the owner can finish delivery or recover the signed content as a private draft for review. The destination imports validated history in pages with its original IDs and Home receipts. It keeps that history in a personal archive, separate from its public feed.</p></section>
+        <section><h2>How the old Home learns</h2><p>The device sends the signed revision chain to former Homes. A Home can advance an account it already knows without the old membership token. An offline Home enforces the latest revision it has received. Group membership and host authority have their own admission rules.</p></section>
+    </div>
+    <section class="related"><h2>Related wire operations</h2><p><a href="wire.html#request-accountRegister"><code>accountRegister</code></a> <a href="wire.html#request-accountExport"><code>accountExport</code></a> <a href="wire.html#request-accountImport"><code>accountImport</code></a> <a href="wire.html#request-announceAccount"><code>announceAccount</code></a></p></section>
+    <footer class="chapter-footer"><a href="topics.html">All protocol topics</a><a href="events.html">Next · Signed events and deletion</a></footer>
+  </main>
+</body>
+</html>

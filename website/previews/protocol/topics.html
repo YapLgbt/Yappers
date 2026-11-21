@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#faf7fc">
+  <meta name="description" content="Start with the journey of a public post, or choose a topic to follow a particular exchange in Netkit protocol 6.">
+  <title>All topics · Yap protocol guide</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="mast wrap">
+    <a class="brand" href="topics.html"><img src="assets/yap-wordmark.svg" alt="Yap" width="60" height="27"><span>Protocol guide</span></a>
+    <nav aria-label="Guide navigation"><a href="index.html">Post walkthrough</a></nav>
+  </header>
+  <main id="main" class="wrap">
+    <div class="intro">
+      <h1>Yap protocol guide</h1>
+      <p>Start with the journey of a public post, or choose a topic to follow a particular exchange in Netkit protocol 6.</p>
+    </div>
+    <section class="catalog-group"><h2>Getting connected</h2>
+      <ul>
+        <li><a href="index.html">How a post travels</a><p>Follow one book-swap invitation from signing to deletion.</p></li>
+        <li><a href="transport.html">Connecting to a Home</a><p>Before your device can fetch a feed, it needs to know which Home to call and which community it can enter.</p></li>
+        <li><a href="accounts.html">Accounts and recovery</a><p>A person can change devices or move Homes while keeping the same account public key.</p></li>
+      </ul>
+    </section>
+    <section class="catalog-group"><h2>Public conversations</h2>
+      <ul>
+        <li><a href="events.html">Signed events and deletion</a><p>A post has a stable ID even after its text is erased. That lets a peer verify both the original publication and the author’s decision to delete it.</p></li>
+        <li><a href="feeds.html">Feeds, profiles and names</a><p>A feed brings together signed posts, replies and votes with the profile details and visibility rules that apply when someone reads it.</p></li>
+        <li><a href="federation.html">Trust between Homes</a><p>Two Homes can share a community while keeping independent membership and moderation policies.</p></li>
+        <li><a href="public-groups.html">Public groups</a><p>A city book club and a worldwide reading group can each have a stable identity and a community feed hosted by several Homes.</p></li>
+      </ul>
+    </section>
+    <section class="catalog-group"><h2>Private conversations</h2>
+      <ul>
+        <li><a href="private-groups.html">Private groups</a><p>An encrypted group on one Home admits individual devices. The owner’s signed membership list determines which devices receive keys for future posts.</p></li>
+        <li><a href="messages.html">Encrypted messages</a><p>Two named accounts on the same Home can exchange messages while one of them is offline.</p></li>
+        <li><a href="notifications.html">Inbox and notifications</a><p>Yap’s activity inbox tracks replies, encrypted mail and message requests. Each installation chooses which kinds of alerts to receive.</p></li>
+      </ul>
+    </section>
+    <section class="catalog-group"><h2>Operating a Home</h2>
+      <ul>
+        <li><a href="moderation.html">Privacy and reporting</a><p>A local hide, an account block, a signed deletion and a safety report each reach a different audience.</p></li>
+        <li><a href="availability.html">Replicas, standby and backups</a><p>A Home can publish a read-only fallback feed or authorize a second server to handle private operations for the same logical identity.</p></li>
+        <li><a href="wire.html">Wire reference</a><p>Look up a request, its result and the operations it can carry.</p></li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#faf7fc">
+  <meta name="description" content="Two Homes can share a community while keeping independent membership and moderation policies.">
+  <title>Trust between Homes · Yap protocol guide</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="mast wrap">
+    <a class="brand" href="topics.html"><img src="assets/yap-wordmark.svg" alt="Yap" width="60" height="27"><span>Protocol guide</span></a>
+    <nav aria-label="Guide navigation"><a href="topics.html">All topics</a></nav>
+  </header>
+  <main id="main" class="wrap">
+    <div class="intro">
+      <h1>Trust between Homes</h1>
+      <p>Two Homes can share a community while keeping independent membership and moderation policies.</p>
+    </div>
+    <section class="exchange">
+      <div><h2>Pulling the next page</h2><p>The receiving Home asks a permitted peer for entries after its saved cursor. It validates the origin and signatures, then commits the accepted records and cursor together. Retrying an already imported event ID keeps one copy.</p></div>
+      <img class="sequence" src="diagrams/federation.svg" alt="Receiver to Peer: Pull after cursor. Peer to Receiver: Entries and generation. Receiver: Verify scope and origin. Receiver: Save page and cursor.">
+    </section>
+    <div class="reading">
+        <section><h2>Permission follows the community</h2><p>The serving Home authenticates the remote endpoint and limits its response to authorized communities. An importer also checks whether it trusts the originating Home for each community. Trusting an intermediary alone cannot admit a third Home’s publications. Explicit grants or verified public-group host permits establish the relevant scope.</p></section>
+        <section><h2>Catching up after a restart</h2><p>A page reports a generation, entries, next cursor and whether more pages remain. A cursor is local to the serving Home. A new generation or changed authorization scope can trigger a rescan. Pages scan at most 100 log rows. Invalid signatures or out-of-scope entries prevent the page and cursor from committing.</p></section>
+        <section><h2>Peering policy and moderation</h2><p>An operator can require a signed covenant acceptance and explicit community approval. The checked-in public Home policy closes outside admission. A Home skips valid records from locally blocked origins. Suspension can preserve the route for previously shared deletions while withholding new content. Each receiving Home also applies its own hides.</p></section>
+        <section><h2>What a deletion proves</h2><p>A version-4 post commits to its content and a random salt. The device signs the event ID and the Home signs acceptance. A valid owner deletion replaces the content and salt with a verifiable header and signed deletion proof. A newly syncing peer can verify the deletion without seeing the old text. Replaying an earlier live event cannot restore a deletion the Home already knows.</p></section>
+    </div>
+    <section class="related"><h2>Related wire operations</h2><p><a href="wire.html#request-pull"><code>pull</code></a> <a href="wire.html#request-peerProfiles"><code>peerProfiles</code></a></p></section>
+    <footer class="chapter-footer"><a href="topics.html">All protocol topics</a><a href="public-groups.html">Next · Public groups</a></footer>
+  </main>
+</body>
+</html>

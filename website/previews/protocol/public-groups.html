@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#faf7fc">
+  <meta name="description" content="A city book club and a worldwide reading group can each have a stable identity and a community feed hosted by several Homes.">
+  <title>Public groups · Yap protocol guide</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="mast wrap">
+    <a class="brand" href="topics.html"><img src="assets/yap-wordmark.svg" alt="Yap" width="60" height="27"><span>Protocol guide</span></a>
+    <nav aria-label="Guide navigation"><a href="topics.html">All topics</a></nav>
+  </header>
+  <main id="main" class="wrap">
+    <div class="intro">
+      <h1>Public groups</h1>
+      <p>A city book club and a worldwide reading group can each have a stable identity and a community feed hosted by several Homes.</p>
+    </div>
+    <section class="exchange">
+      <div><h2>Joining through your Home</h2><p>A member chooses a group from the catalog. If the member’s Home needs permission to host it, it contacts the founding authority. After enrollment it returns the group and Home-specific join configuration to the member.</p></div>
+      <img class="sequence" src="diagrams/public-groups.svg" alt="Member to Home: Join public group. Home to Authority: Enroll host endpoint. Authority to Home: Signed host permit. Home to Member: Group invitation.">
+    </section>
+    <div class="reading">
+        <section><h2>Creating a group</h2><p>A member submits a name, description, category and optional coarse locality. The founding Home signs an immutable descriptor. Its owner identity and a hash of the descriptor distinguish groups with the same name. A city label supports discovery. A group without a locality is worldwide.</p></section>
+        <section><h2>What the directory carries</h2><p>Homes exchange owner-signed descriptors, owner-signed host permits and host-signed address announcements through configured seeds. Address announcements expire and can be renewed. Directory records carry public discovery information. Community access tokens travel in the member’s join configuration.</p></section>
+        <section><h2>Hosting after enrollment</h2><p>The authority authenticates the enrolling endpoint before signing its permit. An enrolled Home advertises its address and pulls group events from other permitted hosts. Existing hosts can continue exchanging events while the authority is offline. A new enrollment needs the authority and any required local peering approval.</p></section>
+    </div>
+    <section class="related"><h2>Related wire operations</h2><p><a href="wire.html#request-directory"><code>directory</code></a> <a href="wire.html#request-enrollHost"><code>enrollHost</code></a> <a href="wire.html#request-createGroup"><code>createGroup</code></a> <a href="wire.html#request-joinGroup"><code>joinGroup</code></a></p></section>
+    <footer class="chapter-footer"><a href="topics.html">All protocol topics</a><a href="private-groups.html">Next · Private groups</a></footer>
+  </main>
+</body>
+</html>

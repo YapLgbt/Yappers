@@ -1,0 +1,8 @@
+sequenceDiagram
+    accTitle: Send the post to your Home
+    participant D as Your device
+    participant H as Your Home
+    D->>H: Submit signed post
+    H->>H: Verify and store
+    H-->>D: Acknowledge event ID
+    D->>D: Clear outbox entry

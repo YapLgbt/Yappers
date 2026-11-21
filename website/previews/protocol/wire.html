@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#faf7fc">
+  <meta name="description" content="Netkit 6 operations, their reply types and the chapters that explain when each exchange occurs.">
+  <title>Wire reference · Yap protocol guide</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="mast wrap">
+    <a class="brand" href="topics.html"><img src="assets/yap-wordmark.svg" alt="Yap" width="60" height="27"><span>Protocol guide</span></a>
+    <nav aria-label="Guide navigation"><a href="topics.html">All topics</a></nav>
+  </header>
+  <main id="main" class="wrap">
+    <div class="intro">
+      <h1>Wire reference</h1>
+      <p>Netkit 6 operations, their reply types and the chapters that explain when each exchange occurs.</p>
+    </div>
+    <div class="wire">
+    <nav class="reference-links" aria-label="Reference sections"><a href="#requests">Requests</a><a href="#social">Social operations</a><a href="#rooms">Private group operations</a><a href="#control">HA control</a></nav>
+    <section id="requests"><h2>Request and response types</h2><p>Top-level JSON messages use a <code>type</code> discriminator. The names below are case-sensitive. A refused application request can return <code>error</code> with a code and message. A transport failure may leave the caller without a response. For example, <code>{"type":"serverSource"}</code> asks a configured Home to return its <code>sourceUrl</code> and <code>revision</code>.</p>
+      <section><h3>Events and feeds</h3><p><a href="events.html">Signed events and deletion</a></p>
+        <dl class="operations">
+          <div id="request-feed"><dt><code>feed</code></dt><dd>Read a community projection with a member token and optional nearby filter. Returns <code>feed</code>.</dd></div>
+          <div id="request-submit"><dt><code>submit</code></dt><dd>Submit a device-signed event with membership and any account chain. A receipt names the accepted ID. Returns <code>accepted</code>.</dd></div>
+          <div id="request-pull"><dt><code>pull</code></dt><dd>An authenticated peer reads a bounded page in its authorized scopes, with generation and next cursor. Returns <code>page</code>.</dd></div>
+        </dl></section>
+      <section><h3>Accounts</h3><p><a href="accounts.html">Accounts and recovery</a></p>
+        <dl class="operations">
+          <div id="request-accountLookup"><dt><code>accountLookup</code></dt><dd>Read the account chain known to this Home using community membership. Returns <code>accountState</code>.</dd></div>
+          <div id="request-accountRegister"><dt><code>accountRegister</code></dt><dd>Verify the root-signed chain and active device proof before registering the account revision. Returns <code>accountState</code>.</dd></div>
+          <div id="request-accountExport"><dt><code>accountExport</code></dt><dd>Read a page of the owner’s accepted envelopes using membership and device proof. Returns <code>ownedEvents</code>.</dd></div>
+          <div id="request-accountImport"><dt><code>accountImport</code></dt><dd>Verify and save a batch of owned envelopes into private personal history. Returns <code>personalImported</code>.</dd></div>
+          <div id="request-announceAccount"><dt><code>announceAccount</code></dt><dd>Advance an already known account using its signed chain after a move or revocation. Returns <code>accountState</code>.</dd></div>
+        </dl></section>
+      <section><h3>Public groups and discovery</h3><p><a href="public-groups.html">Public groups</a></p>
+        <dl class="operations">
+          <div id="request-directory"><dt><code>directory</code></dt><dd>Exchange signed descriptors, host permits and address leases. Returns <code>directory</code>.</dd></div>
+          <div id="request-enrollHost"><dt><code>enrollHost</code></dt><dd>Ask the group authority to admit the authenticated connecting endpoint as a host. Returns <code>hostPermit</code>.</dd></div>
+          <div id="request-groups"><dt><code>groups</code></dt><dd>List group summaries known to the member’s Home. Returns <code>groups</code>.</dd></div>
+          <div id="request-createGroup"><dt><code>createGroup</code></dt><dd>Create a signed descriptor and receive the group summary and join configuration. Returns <code>groupJoined</code>.</dd></div>
+          <div id="request-joinGroup"><dt><code>joinGroup</code></dt><dd>Join through the member’s Home, enrolling the Home as a host if needed. Returns <code>groupJoined</code>.</dd></div>
+        </dl></section>
+      <section><h3>Authenticated member operations</h3><p><a href="messages.html">Encrypted messages</a></p>
+        <dl class="operations">
+          <div id="request-social"><dt><code>social</code></dt><dd>Use a member token and an account-device proof for one of the social operations below. Returns <code>social</code> / <code>feed</code>.</dd></div>
+          <div id="request-privateGroup"><dt><code>privateGroup</code></dt><dd>Run a roster or ciphertext operation with separate private-group authorization. Returns <code>privateGroup</code>.</dd></div>
+        </dl></section>
+      <section><h3>Profiles, projections and takeover</h3><p><a href="availability.html">Replicas, standby and backups</a></p>
+        <dl class="operations">
+          <div id="request-peerProfiles"><dt><code>peerProfiles</code></dt><dd>Fetch newer revisions from an authorized origin for named authors in a shared community. Returns <code>social</code>.</dd></div>
+          <div id="request-pullPublicProjection"><dt><code>pullPublicProjection</code></dt><dd>A trusted replica conditionally requests the founding Home’s moderated public snapshot. Returns <code>publicReplicaFeed</code> / <code>projectionUnchanged</code>.</dd></div>
+          <div id="request-publicReplicaFeed"><dt><code>publicReplicaFeed</code></dt><dd>Fetch a configured public snapshot by community, including its as-of time. Returns <code>publicReplicaFeed</code>.</dd></div>
+          <div id="request-homeOperation"><dt><code>homeOperation</code></dt><dd>An HA worker accepts a retryable wrapped request and returns the committed inner response. Returns Inner call result.</dd></div>
+        </dl></section>
+      <section><h3>Reports and source</h3><p><a href="moderation.html">Privacy and reporting</a></p>
+        <dl class="operations">
+          <div id="request-reportAvailability"><dt><code>reportAvailability</code></dt><dd>Check whether the enrolled primary accepts reports. Returns <code>reportAvailable</code>.</dd></div>
+          <div id="request-submitReport"><dt><code>submitReport</code></dt><dd>Use membership and a private receipt to submit selected evidence to that primary. Returns <code>reportResult</code>.</dd></div>
+          <div id="request-reportStatus"><dt><code>reportStatus</code></dt><dd>Present the private receipt to check a case disposition. Returns <code>reportResult</code>.</dd></div>
+          <div id="request-serverSource"><dt><code>serverSource</code></dt><dd>Ask a configured build for its published source archive URL and revision. Returns <code>serverSource</code>.</dd></div>
+        </dl></section>
+    </section><section id="social"><h2>Social operations</h2><p>A <code>social</code> request carries a community token, account, device proof and an <code>op</code> tagged by <code>kind</code>. The two feed operations return <code>feed</code>. The others return <code>social</code> with an operation-specific result.</p>
+      <section><h3>Personalized reads and identity</h3><p><a href="feeds.html">Feeds, profiles and names</a></p>
+        <dl class="operations">
+          <div id="social-feed"><dt><code>feed</code></dt><dd>Return the account’s personalized feed.</dd></div>
+          <div id="social-privacyFeed"><dt><code>privacyFeed</code></dt><dd>Include per-item visibility metadata for privacy-aware clients.</dd></div>
+          <div id="social-setProfile"><dt><code>setProfile</code></dt><dd>Save profile fields against an expected revision.</dd></div>
+          <div id="social-profiles"><dt><code>profiles</code></dt><dd>Resolve accessible named event references into current profiles.</dd></div>
+          <div id="social-claimUsername"><dt><code>claimUsername</code></dt><dd>Reserve the account’s local name on a Home with a username domain.</dd></div>
+          <div id="social-privacyStatus"><dt><code>privacyStatus</code></dt><dd>Read preferences, profile, request and notification state.</dd></div>
+          <div id="social-setPrivacy"><dt><code>setPrivacy</code></dt><dd>Update visibility, approval and age preferences.</dd></div>
+        </dl></section>
+      <section><h3>Blocks and encrypted mail</h3><p><a href="messages.html">Encrypted messages</a></p>
+        <dl class="operations">
+          <div id="social-contact"><dt><code>contact</code></dt><dd>Resolve a named event into a messaging contact and signed source event.</dd></div>
+          <div id="social-block"><dt><code>block</code></dt><dd>Block by account or event ID.</dd></div>
+          <div id="social-unblock"><dt><code>unblock</code></dt><dd>Remove an existing block using its list identifier.</dd></div>
+          <div id="social-blocks"><dt><code>blocks</code></dt><dd>Fetch the account’s block list.</dd></div>
+          <div id="social-approve"><dt><code>approve</code></dt><dd>Approve a sender and release held mail.</dd></div>
+          <div id="social-dismissRequest"><dt><code>dismissRequest</code></dt><dd>Discard held packets from a sender.</dd></div>
+          <div id="social-publish"><dt><code>publish</code></dt><dd>Register signed messaging prekeys.</dd></div>
+          <div id="social-claim"><dt><code>claim</code></dt><dd>Claim a peer’s signed prekey for a new session.</dd></div>
+          <div id="social-deliver"><dt><code>deliver</code></dt><dd>Submit a signed ciphertext letter.</dd></div>
+          <div id="social-inbox"><dt><code>inbox</code></dt><dd>Fetch encrypted mail after the saved cursor and acknowledge earlier deliveries.</dd></div>
+        </dl></section>
+      <section><h3>Activity and push</h3><p><a href="notifications.html">Inbox and notifications</a></p>
+        <dl class="operations">
+          <div id="social-notificationInbox"><dt><code>notificationInbox</code></dt><dd>Read grouped replies, messages and held requests.</dd></div>
+          <div id="social-notificationThread"><dt><code>notificationThread</code></dt><dd>Resolve a thread and anchor under current visibility rules.</dd></div>
+          <div id="social-readNotification"><dt><code>readNotification</code></dt><dd>Advance the read position for a category and target.</dd></div>
+          <div id="social-muteNotifications"><dt><code>muteNotifications</code></dt><dd>Set or clear a thread notification mute.</dd></div>
+          <div id="social-setPush"><dt><code>setPush</code></dt><dd>Set the installation’s provider subscription and categories.</dd></div>
+          <div id="social-openPush"><dt><code>openPush</code></dt><dd>Resolve a route for the authenticated account and device.</dd></div>
+        </dl></section>
+    </section><section id="rooms"><h2>Private group operations</h2><p>A <code>privateGroup</code> request carries its own proof and a <code>kind</code>-tagged operation. The response contains a tagged result.</p>      <section><h3>Room, roster and history</h3><p><a href="private-groups.html">Private groups</a></p>
+        <dl class="operations">
+          <div id="room-create"><dt><code>create</code></dt><dd>Store a signed room and initial roster. Returns <code>saved</code>.</dd></div>
+          <div id="room-roster"><dt><code>roster</code></dt><dd>Fetch the signed roster history. Returns <code>roster</code>.</dd></div>
+          <div id="room-change"><dt><code>change</code></dt><dd>Submit an owner-signed roster revision and join request when required. Returns <code>saved</code>.</dd></div>
+          <div id="room-publish"><dt><code>publish</code></dt><dd>Submit a signed encrypted event and, when needed, a session record. Returns <code>accepted</code>.</dd></div>
+          <div id="room-read"><dt><code>read</code></dt><dd>Read a page for the named group and roster with an optional history cursor. Returns <code>page</code>.</dd></div>
+        </dl></section></section>
+    <section id="control"><h2>HA control exchange</h2><p>The authorized workers and ledger exchange internal control messages. <code>Seed</code> initializes the authority. <code>Open</code> identifies an operation and known revision. <code>Ready</code> grants a permit, or <code>Committed</code> returns a previous result. <code>Commit</code> presents the permit and result for the staged revision. The authority can also return <code>Seeded</code>, <code>Busy</code> or <code>Refused</code>.</p></section>
+    </div>    <footer class="chapter-footer"><a href="topics.html">All protocol topics</a><a href="index.html">Post walkthrough</a></footer>
+  </main>
+</body>
+</html>

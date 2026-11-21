@@ -1,0 +1,8 @@
+sequenceDiagram
+    accTitle: An authorized peer pulls the post
+    participant H as Your Home
+    participant P as Peer Home
+    P->>H: Pull new events
+    H-->>P: Post and signed receipt
+    P->>P: Verify signatures
+    P->>P: Add to feed

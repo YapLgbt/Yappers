@@ -1,0 +1,9 @@
+sequenceDiagram
+    accTitle: Moving to another Home
+    participant D as New device
+    participant H as New Home
+    D->>H: Look up account chain
+    H-->>D: Known revisions
+    D->>H: Register signed revision
+    D->>H: Import owned events
+    H-->>D: Confirm saved page

@@ -1,0 +1,8 @@
+sequenceDiagram
+    accTitle: Verifying an erased post
+    participant H as Origin Home
+    participant P as Peer Home
+    P->>H: Pull community log
+    H-->>P: Header and deletion
+    P->>P: Verify both envelopes
+    P->>P: Record deletion

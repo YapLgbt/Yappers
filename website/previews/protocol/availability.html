@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#faf7fc">
+  <meta name="description" content="A Home can publish a read-only fallback feed or authorize a second server to handle private operations for the same logical identity.">
+  <title>Replicas, standby and backups · Yap protocol guide</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="mast wrap">
+    <a class="brand" href="topics.html"><img src="assets/yap-wordmark.svg" alt="Yap" width="60" height="27"><span>Protocol guide</span></a>
+    <nav aria-label="Guide navigation"><a href="topics.html">All topics</a></nav>
+  </header>
+  <main id="main" class="wrap">
+    <div class="intro">
+      <h1>Replicas, standby and backups</h1>
+      <p>A Home can publish a read-only fallback feed or authorize a second server to handle private operations for the same logical identity.</p>
+    </div>
+    <section class="exchange">
+      <div><h2>Committing through a standby</h2><p>A client verifies the owner-signed standby grant. A worker requests the current revision and a short one-use permit from the commit authority. It executes against that revision and returns success after the authority durably records the result.</p></div>
+      <img class="sequence" src="diagrams/availability.svg" alt="Client to Worker: Home operation. Worker to Ledger: Open at current revision. Ledger to Worker: Revision and permit. Worker to Ledger: Commit result. Ledger to Worker: Committed. Worker to Client: Return response.">
+    </section>
+    <div class="reading">
+        <section><h2>A public fallback feed</h2><p>A permitted replica pulls the founding Home’s moderated public projection, checks its digest on refresh and applies its own hides. A read-only client sends just the community ID and can check the snapshot time. When personalized privacy rules require it, the client keeps its saved feed instead. New writes stay in the outbox. An explicit Home refusal does not authorize fallback.</p></section>
+        <section><h2>Full-service takeover</h2><p>The standby grant binds a physical endpoint to the enrolled logical Home. Authenticated clients can retry eligible operations through it with the same request ID. Both workers use a single commit authority and retry receipts. A worker cut off from that authority cannot acknowledge new private state. Safety reports stay on the primary’s separate route.</p></section>
+        <section><h2>Restoring after deletion</h2><p>A protected Home backup encrypts recoverable post content using keys held in a separate live deletion guard. A valid deletion retires the corresponding key and records proof. Restoring an older protected backup with the current guard applies later deletions before serving content. Losing or rolling back the guard changes those guarantees. A reader’s screenshot and an independently retained copy remain under that reader’s control.</p></section>
+    </div>
+    <section class="related"><h2>Related wire operations</h2><p><a href="wire.html#request-homeOperation"><code>homeOperation</code></a> <a href="wire.html#request-pullPublicProjection"><code>pullPublicProjection</code></a> <a href="wire.html#request-publicReplicaFeed"><code>publicReplicaFeed</code></a></p></section>
+    <footer class="chapter-footer"><a href="topics.html">All protocol topics</a><a href="wire.html">Next · Wire reference</a></footer>
+  </main>
+</body>
+</html>

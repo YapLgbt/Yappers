@@ -1,0 +1,24 @@
+{
+  "theme": "base",
+  "themeVariables": {
+    "fontFamily": "system-ui, sans-serif",
+    "actorBkg": "#fbf7fe",
+    "actorBorder": "#836696",
+    "actorTextColor": "#31203b",
+    "actorLineColor": "#aa92ba",
+    "signalColor": "#633b77",
+    "signalTextColor": "#31203b"
+  },
+  "sequence": {
+    "mirrorActors": false,
+    "useMaxWidth": false,
+    "actorMargin": 40,
+    "width": 106,
+    "height": 38,
+    "diagramMarginX": 8,
+    "diagramMarginY": 10,
+    "messageMargin": 23,
+    "messageFontSize": 16,
+    "actorFontSize": 16
+  }
+}

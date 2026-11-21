@@ -1,0 +1,9 @@
+sequenceDiagram
+    accTitle: Sending a report
+    participant D as Reporter
+    participant H as Primary Home
+    D->>H: Check availability
+    D->>H: Submit selected evidence
+    H-->>D: Case disposition
+    D->>H: Check private receipt
+    H-->>D: Current status

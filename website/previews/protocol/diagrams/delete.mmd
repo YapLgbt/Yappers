@@ -1,0 +1,10 @@
+sequenceDiagram
+    accTitle: Both Homes process the signed deletion
+    participant D as Device
+    participant H as Your Home
+    participant P as Peer Home
+    D->>H: Signed deletion
+    H->>H: Erase text
+    P->>H: Pull events
+    H-->>P: Deletion proof
+    P->>P: Erase text

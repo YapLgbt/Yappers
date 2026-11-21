@@ -1,0 +1,10 @@
+sequenceDiagram
+    accTitle: Opening a device alert
+    participant D as Device
+    participant H as Home
+    participant P as Provider
+    D->>H: Choose alert categories
+    H->>P: Alert and opaque route
+    P-->>D: Device notification
+    D->>H: Resolve route
+    H-->>D: Visible destination

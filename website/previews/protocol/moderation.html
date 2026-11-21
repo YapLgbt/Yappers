@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#faf7fc">
+  <meta name="description" content="A local hide, an account block, a signed deletion and a safety report each reach a different audience.">
+  <title>Privacy and reporting · Yap protocol guide</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="mast wrap">
+    <a class="brand" href="topics.html"><img src="assets/yap-wordmark.svg" alt="Yap" width="60" height="27"><span>Protocol guide</span></a>
+    <nav aria-label="Guide navigation"><a href="topics.html">All topics</a></nav>
+  </header>
+  <main id="main" class="wrap">
+    <div class="intro">
+      <h1>Privacy and reporting</h1>
+      <p>A local hide, an account block, a signed deletion and a safety report each reach a different audience.</p>
+    </div>
+    <section class="exchange">
+      <div><h2>Sending a report</h2><p>The client checks whether the primary Home has a staffed report inbox. The reporter chooses the evidence and keeps a private receipt. Reusing the receipt lets the client retry a submission or look up its outcome.</p></div>
+      <img class="sequence" src="diagrams/moderation.svg" alt="Reporter to Primary Home: Check availability. Reporter to Primary Home: Submit selected evidence. Primary Home to Reporter: Case disposition. Reporter to Primary Home: Check private receipt. Primary Home to Reporter: Current status.">
+    </section>
+    <div class="reading">
+        <section><h2>What a moderator receives</h2><p>A report includes a category, subject type and a selected reference or excerpt. The primary stores the evidence in its separate readable report inbox. Reports stay outside the federation log, standby ledger and protected feed backups. A moderator reviews the case locally. Closing it records the outcome and clears the evidence.</p></section>
+        <section><h2>The receipt is private</h2><p>Possession of the receipt allows status lookup. The primary stores its digest. The status response discloses the disposition. Open evidence expires after seven days and case tracking expires after thirty days from submission under the implemented retention policy.</p></section>
+        <section><h2>Visibility choices</h2><p>A local hide changes one device’s view. A Home moderation hide changes what that Home serves. An account block filters the authenticated feed and private deliveries. A user can block from an anonymous event using its ID so the Home can resolve the author privately. Author-signed deletion travels to participating peers. Filing a report and taking a moderation action are separate operations.</p></section>
+    </div>
+    <section class="related"><h2>Related wire operations</h2><p><a href="wire.html#request-submitReport"><code>submitReport</code></a> <a href="wire.html#request-reportStatus"><code>reportStatus</code></a> <a href="wire.html#social-block"><code>block</code></a></p></section>
+    <footer class="chapter-footer"><a href="topics.html">All protocol topics</a><a href="availability.html">Next · Replicas, standby and backups</a></footer>
+  </main>
+</body>
+</html>

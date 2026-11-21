@@ -1,0 +1,11 @@
+sequenceDiagram
+    accTitle: Committing through a standby
+    participant D as Client
+    participant W as Worker
+    participant L as Ledger
+    D->>W: Home operation
+    W->>L: Open at current revision
+    L-->>W: Revision and permit
+    W->>L: Commit result
+    L-->>W: Committed
+    W-->>D: Return response

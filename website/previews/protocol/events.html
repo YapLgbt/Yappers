@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#faf7fc">
+  <meta name="description" content="A post has a stable ID even after its text is erased. That lets a peer verify both the original publication and the author’s decision to delete it.">
+  <title>Signed events and deletion · Yap protocol guide</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="mast wrap">
+    <a class="brand" href="topics.html"><img src="assets/yap-wordmark.svg" alt="Yap" width="60" height="27"><span>Protocol guide</span></a>
+    <nav aria-label="Guide navigation"><a href="topics.html">All topics</a></nav>
+  </header>
+  <main id="main" class="wrap">
+    <div class="intro">
+      <h1>Signed events and deletion</h1>
+      <p>A post has a stable ID even after its text is erased. That lets a peer verify both the original publication and the author’s decision to delete it.</p>
+    </div>
+    <section class="exchange">
+      <div><h2>Verifying an erased post</h2><p>A peer that has never seen the live post can receive its signed header together with the deletion envelope. It checks the event identities, the authorizations and the Home receipts before recording the deletion.</p></div>
+      <img class="sequence" src="diagrams/events.svg" alt="Peer Home to Origin Home: Pull community log. Origin Home to Peer Home: Header and deletion. Peer Home: Verify both envelopes. Peer Home: Record deletion.">
+    </section>
+    <div class="reading">
+        <section><h2>The device signature</h2><p>A signed event contains an ID, a typed payload and an Ed25519 signature. The payload identifies the Home, community, signing device, sequence, creation time and action. Portable writers include an account grant. Rust serializes the typed data in canonical field order. The client signs a domain-separated event ID and sends the original event bytes on retry.</p></section>
+        <section><h2>Content commitments</h2><p>For a version-4 post or reply, BLAKE3 commits to a random 32-byte salt and the encoded action. The permanent header holds the commitment and a flag identifying a reply. Its nonce field is empty. The event ID hashes this header. A reader with the live content can recompute the commitment. Votes and deletions retain their complete action in the header.</p></section>
+        <section><h2>Acceptance and erasure</h2><p>The Home signs the event ID, originating Home and acceptance time. A later deletion names the target event ID and must come from its owner. A newly authorized device can delete an earlier device’s post for the same account. Participating Homes remove the original text and salt after verification. Identifiers, timing and the signed proof remain.</p></section>
+        <section><h2>Content actions</h2><p>The action’s <code>kind</code> distinguishes <code>post</code>, headline-bearing <code>postV2</code>, <code>reply</code>, <code>vote</code> and <code>delete</code>. <code>erased</code> represents the retained header. The current signing domain separates these events from those of the earlier public Home generation.</p></section>
+    </div>
+    <section class="related"><h2>Related wire operations</h2><p><a href="wire.html#request-submit"><code>submit</code></a> <a href="wire.html#request-pull"><code>pull</code></a></p></section>
+    <footer class="chapter-footer"><a href="topics.html">All protocol topics</a><a href="feeds.html">Next · Feeds, profiles and names</a></footer>
+  </main>
+</body>
+</html>

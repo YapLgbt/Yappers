@@ -1,0 +1,9 @@
+sequenceDiagram
+    accTitle: Joining through your Home
+    participant D as Member
+    participant H as Home
+    participant A as Authority
+    D->>H: Join public group
+    H->>A: Enroll host endpoint
+    A-->>H: Signed host permit
+    H-->>D: Group invitation

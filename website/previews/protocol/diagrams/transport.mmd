@@ -1,0 +1,8 @@
+sequenceDiagram
+    accTitle: The first connection
+    participant D as Device
+    participant H as Home
+    D->>H: Connect to pinned ID
+    H-->>D: Authenticate endpoint
+    D->>H: Feed request and token
+    H-->>D: Community feed

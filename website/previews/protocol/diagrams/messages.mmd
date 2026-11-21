@@ -1,0 +1,11 @@
+sequenceDiagram
+    accTitle: Starting a conversation
+    participant S as Sender
+    participant H as Home
+    participant R as Recipient
+    R->>H: Publish prekeys
+    S->>H: Claim a prekey
+    H-->>S: Signed key
+    S->>H: Deliver ciphertext
+    R->>H: Poll mailbox
+    H-->>R: Encrypted letter

@@ -1,0 +1,8 @@
+sequenceDiagram
+    accTitle: Pulling the next page
+    participant R as Receiver
+    participant P as Peer
+    R->>P: Pull after cursor
+    P-->>R: Entries and generation
+    R->>R: Verify scope and origin
+    R->>R: Save page and cursor

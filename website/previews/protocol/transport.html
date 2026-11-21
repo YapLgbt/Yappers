@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#faf7fc">
+  <meta name="description" content="Before your device can fetch a feed, it needs to know which Home to call and which community it can enter.">
+  <title>Connecting to a Home · Yap protocol guide</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="mast wrap">
+    <a class="brand" href="topics.html"><img src="assets/yap-wordmark.svg" alt="Yap" width="60" height="27"><span>Protocol guide</span></a>
+    <nav aria-label="Guide navigation"><a href="topics.html">All topics</a></nav>
+  </header>
+  <main id="main" class="wrap">
+    <div class="intro">
+      <h1>Connecting to a Home</h1>
+      <p>Before your device can fetch a feed, it needs to know which Home to call and which community it can enter.</p>
+    </div>
+    <section class="exchange">
+      <div><h2>The first connection</h2><p>An invitation carries the Home’s public endpoint ID, an address, a community and an access token. The device pins the identity and opens an encrypted Iroh connection. The Home uses the token to check membership for the requested community.</p></div>
+      <img class="sequence" src="diagrams/transport.svg" alt="Device to Home: Connect to pinned ID. Home to Device: Authenticate endpoint. Device to Home: Feed request and token. Home to Device: Community feed.">
+    </section>
+    <div class="reading">
+        <section><h2>One request per stream</h2><p>The current application protocol negotiates <code>yappers/netkit/6</code>. Each exchange uses one bidirectional QUIC stream. The caller writes a UTF-8 JSON request and finishes its sending side. The receiver reads to EOF, dispatches on <code>type</code> and sends a JSON response. Ordinary Netkit request and response documents are each capped at 1 MiB. The exchange has a 20-second deadline.</p></section>
+        <section><h2>Three identities in one conversation</h2><p>The transport endpoint identifies the machine at the other end. An account root authorizes devices. A device signing key identifies the writer of an event. A member token permits access to a community. An authenticated social operation also carries a device proof bound to the operation, Home and request context.</p></section>
+        <section><h2>Direct and relayed routes</h2><p>Native endpoints can connect directly or through an Iroh relay. The browser client uses a relay-enabled Home. A relay carries encrypted traffic. The enrolled Home stores community records and decides who can read or write them. Local development can use loopback-only transport.</p></section>
+        <section><h2>Versions and refusals</h2><p>The transport version and event format have separate lifetimes. Protocol 6 accepts new version-4 content events using its current signing domain. An explicit refusal returns a structured error. A dropped connection can leave a write’s outcome uncertain, so the client keeps the original signed event for retry.</p></section>
+    </div>
+    <section class="related"><h2>Related wire operations</h2><p><a href="wire.html#request-feed"><code>feed</code></a> <a href="wire.html#request-serverSource"><code>serverSource</code></a></p></section>
+    <footer class="chapter-footer"><a href="topics.html">All protocol topics</a><a href="accounts.html">Next · Accounts and recovery</a></footer>
+  </main>
+</body>
+</html>

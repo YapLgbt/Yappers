@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#faf7fc">
+  <meta name="description" content="Two named accounts on the same Home can exchange messages while one of them is offline.">
+  <title>Encrypted messages · Yap protocol guide</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="mast wrap">
+    <a class="brand" href="topics.html"><img src="assets/yap-wordmark.svg" alt="Yap" width="60" height="27"><span>Protocol guide</span></a>
+    <nav aria-label="Guide navigation"><a href="topics.html">All topics</a></nav>
+  </header>
+  <main id="main" class="wrap">
+    <div class="intro">
+      <h1>Encrypted messages</h1>
+      <p>Two named accounts on the same Home can exchange messages while one of them is offline.</p>
+    </div>
+    <section class="exchange">
+      <div><h2>Starting a conversation</h2><p>The recipient’s registered device publishes signed one-time prekeys. The sender resolves a named event to its author, checks the signed contact and claims a prekey. Olm uses the recipient’s public key material to establish an encrypted session.</p></div>
+      <img class="sequence" src="diagrams/messages.svg" alt="Recipient to Home: Publish prekeys. Sender to Home: Claim a prekey. Home to Sender: Signed key. Sender to Home: Deliver ciphertext. Recipient to Home: Poll mailbox. Home to Recipient: Encrypted letter.">
+    </section>
+    <div class="reading">
+        <section><h2>Delivery and retries</h2><p>Before upload, the sender saves its updated encryption session, local history and signed ciphertext together. The Home deduplicates exact retries and holds queued mail for up to 30 days. The recipient saves the advanced session and cursor before its next inbox request acknowledges earlier delivery. A Home acknowledgement means the Home accepted the packet.</p></section>
+        <section><h2>Requests and blocks</h2><p>An account can restrict first contact to approved people or apply a minimum age. The Home holds matching requests until accepted, dismissed, blocked or expired. Approval releases held messages. A block stops new private deliveries in both directions and removes queued mail between the accounts. Conversation history already on either device remains there.</p></section>
+        <section><h2>Who can read what</h2><p>Message text and display labels travel inside ciphertext. The Home can see the participants, timing, volume and packet sizes. Each account currently registers one messaging device per Home. The Olm identity and ratchets stay on that device, including when the owner restores their public account elsewhere.</p></section>
+    </div>
+    <section class="related"><h2>Related wire operations</h2><p><a href="wire.html#social-contact"><code>contact</code></a> <a href="wire.html#social-claim"><code>claim</code></a> <a href="wire.html#social-deliver"><code>deliver</code></a> <a href="wire.html#social-inbox"><code>inbox</code></a></p></section>
+    <footer class="chapter-footer"><a href="topics.html">All protocol topics</a><a href="notifications.html">Next · Inbox and notifications</a></footer>
+  </main>
+</body>
+</html>
