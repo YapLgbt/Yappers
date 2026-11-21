@@ -4,7 +4,9 @@ Fresh iPhone and Mac profiles discover the public home at `https://yap.lgbt/.wel
 
 ## Deployment
 
-The dedicated Linux host runs a single standalone Home with the [systemd unit](../deploy/systemd/yap-iroh-home.service). The service account is `yap-iroh-replica`. Its private configuration and live database files live under `/var/lib/yap-iroh-replica/standalone`. The same machine handles push, federation and reports. Use the [standalone backup procedure](netkit/deletion.md#storage-and-backup) for recovery.
+The dedicated Linux host runs the Home and loopback admin from the same release image using [Docker Compose](../deploy/compose/dedicated.yaml) and the [systemd Compose unit](../deploy/systemd/yap-dedicated-compose.service). Both containers use the existing `yap-iroh-replica` UID and GID. The private configuration and live database remain under `/var/lib/yap-iroh-replica/standalone`. The Home uses the existing host push worker and keys. Both containers use the encrypted report inbox. Use the [standalone backup procedure](netkit/deletion.md#storage-and-backup) for recovery.
+
+The dedicated Compose files live in `/etc/yap/compose`. Its root-only `.env` selects the locally available image, service UID and GID, and matching GitHub source download base. Pull an authorized registry image or load the public release's Docker archive before switching versions. Take a protected backup, then restart `yap-dedicated-compose.service`. Compose waits for the Home to regenerate its enrollment before starting the admin. Keep the existing data paths and verify the public feed, source offer, federation policy and report inbox after the restart. The [previous native service](../deploy/systemd/yap-iroh-home.service) can be used for rollback when its binary is compatible with the current data. Stop the Compose unit before starting the native services.
 
 Fly runs Caddy and serves the compiled website, PWA and public enrollment. GitHub Releases hosts the server source archives. To publish enrollment, copy only the public `version` and `join` from the dedicated service’s generated `enrollment.json` into `website/static/.well-known/yap-home.json`. Keep relay addresses for public discovery and omit transient IP hints. Deploy the site from the repository root with `fly deploy --ha=false`. Verify a fresh client can load the PWA and read the dedicated feed.
 
@@ -25,9 +27,10 @@ The home applies great-circle distance before its 200-post and response-size lim
 On the dedicated primary, run these commands in a private terminal. The queue lists case IDs. Opening a case shows the evidence the reporter chose to share.
 
 ```sh
-sudo -u yap-iroh-replica yap-reports list
-sudo -u yap-iroh-replica yap-reports show CASE_ID
-sudo -u yap-iroh-replica yap-reports close CASE_ID --outcome noAction
+cd /etc/yap/compose
+sudo docker compose exec home yappers-server reports --inbox /var/lib/yap-report-inbox/private/reports.sqlite list
+sudo docker compose exec home yappers-server reports --inbox /var/lib/yap-report-inbox/private/reports.sqlite show CASE_ID
+sudo docker compose exec home yappers-server reports --inbox /var/lib/yap-report-inbox/private/reports.sqlite close CASE_ID --outcome noAction
 ```
 
 Use `actionTaken` for a case where you took moderation action. Closing clears the evidence and updates the reporter’s private receipt. The inbox is on a dedicated LUKS volume mounted at `/var/lib/yap-report-inbox`, with an unlock key sealed to the primary’s TPM. Check `systemctl status yap-report-storage` if intake is unavailable after a restart. Hardware or Secure Boot changes can prevent unlocking.

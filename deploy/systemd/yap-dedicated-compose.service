@@ -1,0 +1,21 @@
+[Unit]
+Description=Yap dedicated Home and loopback admin in Docker Compose
+Requires=docker.service
+BindsTo=yap-report-storage.service
+Wants=network-online.target
+After=docker.service network-online.target yap-report-storage.service yap-iroh-home.service yap-iroh-home-admin.service
+PartOf=docker.service
+Conflicts=yap-iroh-home.service yap-iroh-home-admin.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/etc/yap/compose
+ExecStartPre=/usr/bin/mountpoint -q /var/lib/yap-report-inbox
+ExecStart=/usr/bin/docker compose up --detach --wait --wait-timeout 110
+ExecStop=/usr/bin/docker compose stop --timeout 60
+TimeoutStartSec=120
+TimeoutStopSec=75
+
+[Install]
+WantedBy=multi-user.target

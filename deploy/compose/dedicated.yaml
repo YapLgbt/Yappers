@@ -1,0 +1,92 @@
+name: yap-dedicated
+
+x-runtime: &runtime
+  image: ${YAP_HOME_IMAGE:?Set a published Yap Home image}
+  pull_policy: never
+  user: ${YAP_HOME_USER:?Set the existing Home service UID and GID}
+  network_mode: host
+  working_dir: /var/lib/yap-iroh-replica/standalone
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs:
+    - /tmp:rw,nosuid,nodev,noexec,mode=1777
+  restart: on-failure
+  stop_grace_period: 60s
+
+x-state: &state
+  type: bind
+  source: /var/lib/yap-iroh-replica/standalone
+  target: /var/lib/yap-iroh-replica/standalone
+  bind:
+    create_host_path: false
+
+x-reports: &reports
+  type: bind
+  source: /var/lib/yap-report-inbox/private
+  target: /var/lib/yap-report-inbox/private
+  bind:
+    create_host_path: false
+
+x-report-environment: &report-environment
+  HOME: /var/lib/yap-iroh-replica/standalone
+  YAP_REPORT_INBOX: /var/lib/yap-report-inbox/private/reports.sqlite
+
+services:
+  home:
+    <<: *runtime
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        umask 077
+        test -s public-home.json
+        touch /tmp/yap-home-started
+        exec /usr/local/bin/yappers-server public-home --directory /var/lib/yap-iroh-replica/standalone --manifest /var/lib/yap-iroh-replica/standalone/enrollment.json
+    env_file:
+      - path: ${YAP_PUSH_ENV_FILE:-/var/lib/yap-iroh-replica/v6/push/environment}
+        format: raw
+    environment:
+      <<: *report-environment
+      PATH: /opt/yap-push/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      YAP_PEERING_POLICY: /etc/yap/peering.json
+      YAP_SOURCE_BASE_URL: ${YAP_SOURCE_BASE_URL:?Set the GitHub release download base URL}
+    volumes:
+      - *state
+      - *reports
+      - type: bind
+        source: /etc/yap/peering.json
+        target: /etc/yap/peering.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /opt/yap-push
+        target: /opt/yap-push
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/lib/yap-iroh-replica/v6/push
+        target: /var/lib/yap-iroh-replica/v6/push
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: [CMD-SHELL, test -s enrollment.json && test enrollment.json -nt /tmp/yap-home-started]
+      interval: 5s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    stop_signal: SIGINT
+
+  admin:
+    <<: *runtime
+    command: [yappers-server, admin, serve, --config, /var/lib/yap-iroh-replica/standalone/public-home.json, --assets, /usr/local/share/yap/admin, --port, "8787"]
+    environment: *report-environment
+    volumes:
+      - *state
+      - *reports
+    depends_on:
+      home:
+        condition: service_healthy
